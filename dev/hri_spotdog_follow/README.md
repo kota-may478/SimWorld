@@ -49,6 +49,13 @@ Related switches and parameters in the script:
 - `VISION_ENABLE_CLAHE`
 - `VISION_ENABLE_TILED_SEARCH`
 - `VISION_FAR_UPSAMPLE`
+- `VISION_TEMPORAL_HOLD_S`
+
+Far-distance robustness strategy (default ON):
+- CLAHE-based contrast enhancement before detection
+- Multi-scale search with upsampled pass for small/far targets
+- Tiled search to improve off-center and tiny-person recall
+- Short temporal hold to reduce one-frame detection drops
 
 ## Vision backend
 

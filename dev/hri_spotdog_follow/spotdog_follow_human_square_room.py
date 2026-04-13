@@ -18,28 +18,25 @@
 # %% [markdown]
 # # SpotDog Human Following in a 10m x 10m Room
 #
-# This project reuses the same square room setup from dev/hri_agv.
+# This project reuses the same square-room setup from `dev/hri_agv`.
 #
-# Human behavior:
-# - Walk straight continuously.
-# - If movement is blocked (collision), turn and keep walking.
+# Human:
+# - Walks straight continuously.
+# - If blocked, turns and keeps walking.
 #
-# SpotDog behavior:
-# - Follow the human and keep about 1m distance.
-# - Use camera-based person detection for heading control.
-# - Use depth sensing (LiDAR-like ranging) for distance control.
-#
-# Notes:
-# - Camera detection backend defaults to OpenCV HOG for portability.
-# - Optional YOLO backend can be enabled if ultralytics is installed.
+# SpotDog:
+# - Tracks the person and follows at about 1m.
+# - Uses camera detection for heading control.
+# - Uses depth sensing for distance control.
+# - If person is lost, spins in place to search.
 
 # %%
+import importlib
 import math
 import sys
 import threading
 import time
 from collections import deque
-import importlib
 from io import BytesIO
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -77,7 +74,7 @@ communicator = Communicator(ucv)
 
 # %%
 # ---------------------------------------------------------------------------
-# Simulation configuration (room/walls kept same as dev/hri_agv)
+# Simulation configuration
 # ---------------------------------------------------------------------------
 
 # Room in Unreal units (cm)
@@ -97,11 +94,10 @@ HUMAN_BP_PATH = "/Game/TrafficSystem/Pedestrian/Base_User_Agent.Base_User_Agent_
 ROBOT_BP_PATH = "/Game/Robot_Dog/Blueprint/BP_SpotRobot.BP_SpotRobot_C"
 ROBOT_NAME = "SpotDog_Follower"
 
-# Spawn points: robot starts roughly behind human.
 HUMAN_SPAWN = (750, 200, 100)
 ROBOT_SPAWN = (640, 200, 20)
 
-# Human movement parameters
+# Human movement
 HUMAN_SPEED = 180
 HUMAN_STEP_DUR = 0.35
 HUMAN_COLLISION_MOVE_EPS_CM = 6.0
@@ -114,7 +110,7 @@ WALL_CONTACT_MARGIN_CM = 45.0
 WALL_ESCAPE_JITTER_DEG = 20.0
 WALL_TURN_COOLDOWN_S = 0.6
 
-# SpotDog following parameters
+# SpotDog follow parameters
 FOLLOW_DISTANCE_CM = 100.0
 FOLLOW_DISTANCE_TOL_CM = 12.0
 FOLLOW_DISTANCE_KP = 1.25
@@ -148,10 +144,18 @@ VISION_USE_YOLO = False
 VISION_YOLO_MODEL_PATH = None
 VISION_HOG_SCALE = 0.65
 
+# Far-range robust detection settings (general methods)
+VISION_ENABLE_CLAHE = True
+VISION_ENABLE_TILED_SEARCH = True
+VISION_TILE_OVERLAP = 0.30
+VISION_FAR_UPSAMPLE = 1.8
+VISION_TEMPORAL_HOLD_S = 0.25
+
 # Search behavior when visual target is lost
 SEARCH_LOST_GRACE_S = 0.40
-SEARCH_SPIN_PERIOD_S = 3.0  # One full rotation in ~3 seconds
+SEARCH_SPIN_PERIOD_S = 2.0
 SEARCH_SPIN_CLOCKWISE = True
+SEARCH_ROTATE_SLICE_S = 0.05
 
 # Real-time monitor
 ENABLE_REALTIME_MONITOR = True
@@ -159,6 +163,7 @@ MONITOR_FPS = 15.0
 MONITOR_RANGE_WINDOW_S = 20.0
 MONITOR_RANGE_MIN_CM = 0.0
 MONITOR_RANGE_MAX_CM = 400.0
+MONITOR_CLOSE_KEY_HINT = "Press q or ESC to close monitor windows."
 
 # Simulation runtime
 SIM_DURATION = 60.0
@@ -255,7 +260,6 @@ def escape_yaw_from_wall(pos_xy: Tuple[float, float]) -> float:
 
 
 def choose_human_collision_turn(curr_pos: Tuple[float, float], curr_yaw: float) -> float:
-    # If close to a wall, favor tangential turning with mild inward jitter.
     nx, ny = wall_inward_normal(curr_pos)
     if nx != 0.0 or ny != 0.0:
         wall_normal_yaw = math.degrees(math.atan2(ny, nx))
@@ -345,8 +349,6 @@ def estimate_distance_cm_from_depth(depth_map: np.ndarray, bbox: Tuple[int, int,
         return None
 
     depth_value = float(np.percentile(valid, 35))
-
-    # Unreal depth can be returned in meters or centimeters depending on backend setup.
     if depth_value < 20.0:
         return depth_value * 100.0
     return depth_value
@@ -391,10 +393,7 @@ def draw_sensor_overlay(
     return canvas
 
 
-def render_range_waveform(
-    history: List[Tuple[float, float]],
-    now_ts: float,
-) -> np.ndarray:
+def render_range_waveform(history: List[Tuple[float, float]], now_ts: float) -> np.ndarray:
     width, height = 760, 260
     canvas = np.full((height, width, 3), 245, dtype=np.uint8)
 
@@ -403,7 +402,8 @@ def render_range_waveform(
     plot_h = height - top - bottom
 
     cv2.rectangle(canvas, (left, top), (left + plot_w, top + plot_h), (30, 30, 30), 1)
-    cv2.putText(canvas, "Range Sensor Timeline [cm]", (12, height - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (70, 70, 70), 1)
+    cv2.putText(canvas, "Distance [cm]", (8, top + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.47, (70, 70, 70), 1)
+    cv2.putText(canvas, "Time [s]", (left + plot_w - 72, top + plot_h + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.47, (70, 70, 70), 1)
 
     recent: List[Tuple[float, float]] = []
     for ts, val in history:
@@ -418,6 +418,20 @@ def render_range_waveform(
     y_min = min(MONITOR_RANGE_MIN_CM, min(v for _, v in recent) * 0.95)
     if y_max - y_min < 1.0:
         y_max = y_min + 1.0
+
+    nx = 5
+    ny = 5
+    for i in range(nx + 1):
+        x = int(left + (i / nx) * plot_w)
+        cv2.line(canvas, (x, top), (x, top + plot_h), (210, 210, 210), 1)
+        t_tick = -MONITOR_RANGE_WINDOW_S + (i / nx) * MONITOR_RANGE_WINDOW_S
+        cv2.putText(canvas, f"{t_tick:.0f}", (x - 12, top + plot_h + 16), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (95, 95, 95), 1)
+
+    for j in range(ny + 1):
+        y = int(top + (j / ny) * plot_h)
+        cv2.line(canvas, (left, y), (left + plot_w, y), (210, 210, 210), 1)
+        y_val = y_max - (j / ny) * (y_max - y_min)
+        cv2.putText(canvas, f"{y_val:.0f}", (8, y + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (95, 95, 95), 1)
 
     def to_px(ts: float, val: float) -> Tuple[int, int]:
         x_norm = 1.0 - (now_ts - ts) / MONITOR_RANGE_WINDOW_S
@@ -437,11 +451,24 @@ def render_range_waveform(
     return canvas
 
 
+# %%
+# ---------------------------------------------------------------------------
+# Robust person detector
+# ---------------------------------------------------------------------------
 class PersonDetector:
     def __init__(self, use_yolo: bool = False, yolo_model_path: Optional[str] = None, hog_scale: float = 0.65):
         self.backend = "hog"
         self.yolo_model = None
         self.hog_scale = clamp(hog_scale, 0.4, 1.0)
+
+        self.enable_clahe = VISION_ENABLE_CLAHE
+        self.enable_tiled_search = VISION_ENABLE_TILED_SEARCH
+        self.tile_overlap = clamp(VISION_TILE_OVERLAP, 0.0, 0.45)
+        self.far_upsample = max(1.0, VISION_FAR_UPSAMPLE)
+        self.temporal_hold_s = max(0.0, VISION_TEMPORAL_HOLD_S)
+
+        self.last_det: Optional[Dict[str, object]] = None
+        self.last_det_ts = 0.0
 
         self.hog = cv2.HOGDescriptor()
         self.hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
@@ -460,18 +487,106 @@ class PersonDetector:
         if frame_bgr is None or frame_bgr.size == 0:
             return None
 
+        processed = self._preprocess_for_far(frame_bgr)
+        candidates: List[Dict[str, object]] = []
+
         if self.backend == "yolo" and self.yolo_model is not None:
-            det = self._detect_yolo(frame_bgr)
-            if det is not None:
-                return det
+            candidates.extend(self._detect_yolo_candidates(processed, 0, 0, 1.0, "yolo_full"))
+            if self.enable_tiled_search:
+                candidates.extend(self._detect_yolo_tiled(processed))
 
-        return self._detect_hog(frame_bgr)
+        candidates.extend(self._detect_hog_candidates(processed, 0, 0, 1.0, "hog_full"))
 
-    def _detect_hog(self, frame_bgr: np.ndarray) -> Optional[Dict[str, object]]:
+        if self.far_upsample > 1.01:
+            up = cv2.resize(
+                processed,
+                dsize=None,
+                fx=self.far_upsample,
+                fy=self.far_upsample,
+                interpolation=cv2.INTER_CUBIC,
+            )
+            candidates.extend(self._detect_hog_candidates(up, 0, 0, 1.0 / self.far_upsample, "hog_up"))
+
+        if self.enable_tiled_search:
+            candidates.extend(self._detect_hog_tiled(processed))
+
+        det = self._select_best_detection(candidates, frame_bgr.shape[1], frame_bgr.shape[0])
+        if det is not None:
+            self.last_det = det
+            self.last_det_ts = time.time()
+            return det
+
+        if self.last_det is not None and (time.time() - self.last_det_ts) <= self.temporal_hold_s:
+            hold = dict(self.last_det)
+            hold["confidence"] = float(hold.get("confidence", 0.0)) * 0.88
+            hold["backend"] = str(hold.get("backend", "detector")) + "+temporal_hold"
+            return hold
+
+        return None
+
+    def _preprocess_for_far(self, frame_bgr: np.ndarray) -> np.ndarray:
+        if not self.enable_clahe:
+            return frame_bgr
+
+        lab = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2LAB)
+        l_channel, a_channel, b_channel = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        l_channel = clahe.apply(l_channel)
+        merged = cv2.merge((l_channel, a_channel, b_channel))
+        enhanced = cv2.cvtColor(merged, cv2.COLOR_LAB2BGR)
+
+        sharpen_kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
+        return cv2.filter2D(enhanced, -1, sharpen_kernel)
+
+    def _iter_tiles(self, width: int, height: int) -> List[Tuple[int, int, int, int]]:
+        tile_w = max(120, int(width * 0.58))
+        tile_h = max(120, int(height * 0.65))
+
+        step_x = max(40, int(tile_w * (1.0 - self.tile_overlap)))
+        step_y = max(40, int(tile_h * (1.0 - self.tile_overlap)))
+
+        x_starts = [0, max(0, (width - tile_w) // 2), max(0, width - tile_w)]
+        y_starts = [0, max(0, (height - tile_h) // 2), max(0, height - tile_h)]
+
+        x = 0
+        while x + tile_w < width:
+            x_starts.append(x)
+            x += step_x
+        x_starts.append(max(0, width - tile_w))
+
+        y = 0
+        while y + tile_h < height:
+            y_starts.append(y)
+            y += step_y
+        y_starts.append(max(0, height - tile_h))
+
+        x_starts = sorted(set(int(clamp(v, 0, max(0, width - tile_w))) for v in x_starts))
+        y_starts = sorted(set(int(clamp(v, 0, max(0, height - tile_h))) for v in y_starts))
+
+        tiles: List[Tuple[int, int, int, int]] = []
+        for y0 in y_starts:
+            for x0 in x_starts:
+                x1 = min(width, x0 + tile_w)
+                y1 = min(height, y0 + tile_h)
+                if (x1 - x0) >= 100 and (y1 - y0) >= 100:
+                    tiles.append((x0, y0, x1, y1))
+
+        return tiles[:16]
+
+    def _detect_hog_candidates(
+        self,
+        frame_bgr: np.ndarray,
+        offset_x: int,
+        offset_y: int,
+        scale_to_original: float,
+        tag: str,
+    ) -> List[Dict[str, object]]:
         if self.hog_scale < 0.999:
             small = cv2.resize(frame_bgr, dsize=None, fx=self.hog_scale, fy=self.hog_scale)
+            restore_scale = 1.0 / self.hog_scale
         else:
             small = frame_bgr
+            restore_scale = 1.0
 
         rects, weights = self.hog.detectMultiScale(
             small,
@@ -480,84 +595,184 @@ class PersonDetector:
             scale=1.05,
         )
 
-        if len(rects) == 0:
-            return None
-
-        best_idx = 0
-        best_score = -1e9
+        candidates: List[Dict[str, object]] = []
         for idx, (x, y, w, h) in enumerate(rects):
             conf = float(weights[idx]) if len(weights) > idx else 0.0
-            area_term = 0.00002 * float(w * h)
-            score = conf + area_term
-            if score > best_score:
-                best_score = score
-                best_idx = idx
+            x_img = x * restore_scale
+            y_img = y * restore_scale
+            w_img = w * restore_scale
+            h_img = h * restore_scale
 
-        x, y, w, h = rects[best_idx]
-        inv = 1.0 / self.hog_scale
-        x = int(x * inv)
-        y = int(y * inv)
-        w = int(w * inv)
-        h = int(h * inv)
+            x_ori = int(offset_x + x_img * scale_to_original)
+            y_ori = int(offset_y + y_img * scale_to_original)
+            w_ori = int(max(1.0, w_img * scale_to_original))
+            h_ori = int(max(1.0, h_img * scale_to_original))
 
+            candidates.append(
+                {
+                    "bbox": (x_ori, y_ori, w_ori, h_ori),
+                    "confidence": conf,
+                    "backend": tag,
+                }
+            )
+
+        return candidates
+
+    def _detect_hog_tiled(self, frame_bgr: np.ndarray) -> List[Dict[str, object]]:
         H, W = frame_bgr.shape[:2]
-        x = int(clamp(x, 0, W - 1))
-        y = int(clamp(y, 0, H - 1))
-        w = int(clamp(w, 1, W - x))
-        h = int(clamp(h, 1, H - y))
+        candidates: List[Dict[str, object]] = []
 
-        conf = float(weights[best_idx]) if len(weights) > best_idx else 0.0
-        return {
-            "bbox": (x, y, w, h),
-            "confidence": conf,
-            "backend": "hog",
-        }
+        for x0, y0, x1, y1 in self._iter_tiles(W, H):
+            tile = frame_bgr[y0:y1, x0:x1]
+            candidates.extend(self._detect_hog_candidates(tile, x0, y0, 1.0, "hog_tile"))
 
-    def _detect_yolo(self, frame_bgr: np.ndarray) -> Optional[Dict[str, object]]:
+            if self.far_upsample > 1.01:
+                tile_up = cv2.resize(
+                    tile,
+                    dsize=None,
+                    fx=self.far_upsample,
+                    fy=self.far_upsample,
+                    interpolation=cv2.INTER_CUBIC,
+                )
+                candidates.extend(
+                    self._detect_hog_candidates(
+                        tile_up,
+                        x0,
+                        y0,
+                        1.0 / self.far_upsample,
+                        "hog_tile_up",
+                    )
+                )
+
+        return candidates
+
+    def _detect_yolo_candidates(
+        self,
+        frame_bgr: np.ndarray,
+        offset_x: int,
+        offset_y: int,
+        scale_to_original: float,
+        tag: str,
+    ) -> List[Dict[str, object]]:
+        if self.yolo_model is None:
+            return []
+
         try:
-            results = self.yolo_model(frame_bgr, verbose=False, classes=[0], conf=0.25)
+            results = self.yolo_model(frame_bgr, verbose=False, classes=[0], conf=0.18)
             if not results:
-                return None
+                return []
 
             boxes = results[0].boxes
             if boxes is None or len(boxes) == 0:
-                return None
+                return []
 
-            best_idx = int(torch_argmax_safe(boxes.conf.tolist()))
-            xyxy = boxes.xyxy[best_idx].cpu().numpy().tolist()
-            conf = float(boxes.conf[best_idx].cpu().numpy().item())
+            xyxy_all = boxes.xyxy.cpu().numpy()
+            conf_all = boxes.conf.cpu().numpy()
 
-            x1, y1, x2, y2 = [int(v) for v in xyxy]
-            x = min(x1, x2)
-            y = min(y1, y2)
-            w = max(1, abs(x2 - x1))
-            h = max(1, abs(y2 - y1))
+            candidates: List[Dict[str, object]] = []
+            for i in range(len(xyxy_all)):
+                x1, y1, x2, y2 = [float(v) for v in xyxy_all[i].tolist()]
+                x = min(x1, x2)
+                y = min(y1, y2)
+                w = max(1.0, abs(x2 - x1))
+                h = max(1.0, abs(y2 - y1))
 
-            H, W = frame_bgr.shape[:2]
-            x = int(clamp(x, 0, W - 1))
-            y = int(clamp(y, 0, H - 1))
-            w = int(clamp(w, 1, W - x))
-            h = int(clamp(h, 1, H - y))
+                x_ori = int(offset_x + x * scale_to_original)
+                y_ori = int(offset_y + y * scale_to_original)
+                w_ori = int(max(1.0, w * scale_to_original))
+                h_ori = int(max(1.0, h * scale_to_original))
 
-            return {
-                "bbox": (x, y, w, h),
-                "confidence": conf,
-                "backend": "yolo",
-            }
+                candidates.append(
+                    {
+                        "bbox": (x_ori, y_ori, w_ori, h_ori),
+                        "confidence": float(conf_all[i]),
+                        "backend": tag,
+                    }
+                )
+
+            return candidates
         except Exception:
-            return None
+            return []
 
+    def _detect_yolo_tiled(self, frame_bgr: np.ndarray) -> List[Dict[str, object]]:
+        if self.yolo_model is None:
+            return []
 
-def torch_argmax_safe(values: List[float]) -> int:
-    if not values:
-        return 0
-    best_idx = 0
-    best_val = values[0]
-    for i, v in enumerate(values):
-        if v > best_val:
-            best_val = v
-            best_idx = i
-    return best_idx
+        H, W = frame_bgr.shape[:2]
+        candidates: List[Dict[str, object]] = []
+        for x0, y0, x1, y1 in self._iter_tiles(W, H):
+            tile = frame_bgr[y0:y1, x0:x1]
+            candidates.extend(self._detect_yolo_candidates(tile, x0, y0, 1.0, "yolo_tile"))
+
+        return candidates
+
+    def _bbox_iou(self, a: Tuple[int, int, int, int], b: Tuple[int, int, int, int]) -> float:
+        ax, ay, aw, ah = a
+        bx, by, bw, bh = b
+
+        ax2, ay2 = ax + aw, ay + ah
+        bx2, by2 = bx + bw, by + bh
+
+        ix1 = max(ax, bx)
+        iy1 = max(ay, by)
+        ix2 = min(ax2, bx2)
+        iy2 = min(ay2, by2)
+
+        iw = max(0, ix2 - ix1)
+        ih = max(0, iy2 - iy1)
+        inter = iw * ih
+        if inter <= 0:
+            return 0.0
+
+        union = aw * ah + bw * bh - inter
+        if union <= 0:
+            return 0.0
+
+        return float(inter / union)
+
+    def _select_best_detection(
+        self,
+        candidates: List[Dict[str, object]],
+        frame_w: int,
+        frame_h: int,
+    ) -> Optional[Dict[str, object]]:
+        best: Optional[Dict[str, object]] = None
+        best_score = -1e9
+
+        for cand in candidates:
+            x, y, w, h = cand["bbox"]
+            x = int(clamp(x, 0, frame_w - 1))
+            y = int(clamp(y, 0, frame_h - 1))
+            w = int(clamp(w, 1, frame_w - x))
+            h = int(clamp(h, 1, frame_h - y))
+
+            area = float(w * h)
+            if area < 120.0:
+                continue
+
+            conf = float(cand.get("confidence", 0.0))
+            cx = x + 0.5 * w
+            center_bias = 1.0 - min(1.0, abs(cx - 0.5 * frame_w) / (0.5 * frame_w))
+
+            ratio = w / max(1.0, float(h))
+            aspect_score = 1.0 - min(1.0, abs(ratio - 0.42) / 0.42)
+
+            far_bonus = 0.22 if area < 9000.0 else 0.0
+
+            temporal_bonus = 0.0
+            if self.last_det is not None:
+                temporal_bonus = 0.25 * self._bbox_iou((x, y, w, h), self.last_det["bbox"])
+
+            score = conf + 0.35 * center_bias + 0.20 * aspect_score + far_bonus + temporal_bonus
+            if score > best_score:
+                best_score = score
+                best = {
+                    "bbox": (x, y, w, h),
+                    "confidence": conf,
+                    "backend": str(cand.get("backend", "detector")),
+                }
+
+        return best
 
 
 # %%
@@ -595,40 +810,12 @@ def spawn_walls() -> None:
 
     walls = []
     for i, c in enumerate(ns_centers):
-        walls.append(
-            (
-                f"WALL_South_{i:02d}",
-                (c, -T / 2, z_center),
-                (T / S, seg_len / S, H / S),
-                (0, 90, 0),
-            )
-        )
-        walls.append(
-            (
-                f"WALL_North_{i:02d}",
-                (c, R + T / 2, z_center),
-                (T / S, seg_len / S, H / S),
-                (0, 90, 0),
-            )
-        )
+        walls.append((f"WALL_South_{i:02d}", (c, -T / 2, z_center), (T / S, seg_len / S, H / S), (0, 90, 0)))
+        walls.append((f"WALL_North_{i:02d}", (c, R + T / 2, z_center), (T / S, seg_len / S, H / S), (0, 90, 0)))
 
     for i, c in enumerate(ew_centers):
-        walls.append(
-            (
-                f"WALL_West_{i:02d}",
-                (-T / 2, c, z_center),
-                (T / S, seg_len / S, H / S),
-                (0, 0, 0),
-            )
-        )
-        walls.append(
-            (
-                f"WALL_East_{i:02d}",
-                (R + T / 2, c, z_center),
-                (T / S, seg_len / S, H / S),
-                (0, 0, 0),
-            )
-        )
+        walls.append((f"WALL_West_{i:02d}", (-T / 2, c, z_center), (T / S, seg_len / S, H / S), (0, 0, 0)))
+        walls.append((f"WALL_East_{i:02d}", (R + T / 2, c, z_center), (T / S, seg_len / S, H / S), (0, 0, 0)))
 
     corner_scale = (T / S, T / S, H / S)
     walls.extend(
@@ -650,16 +837,16 @@ def spawn_walls() -> None:
 
 
 def spawn_human() -> Humanoid:
-    human = Humanoid(position=Vector(HUMAN_SPAWN[0], HUMAN_SPAWN[1]), direction=Vector(1, 0))
+    h = Humanoid(position=Vector(HUMAN_SPAWN[0], HUMAN_SPAWN[1]), direction=Vector(1, 0))
     communicator.spawn_agent(
-        agent=human,
+        agent=h,
         name=None,
         position=HUMAN_SPAWN,
         model_path=HUMAN_BP_PATH,
         type="humanoid",
     )
-    communicator.humanoid_set_speed(human.id, HUMAN_SPEED)
-    return human
+    communicator.humanoid_set_speed(h.id, HUMAN_SPEED)
+    return h
 
 
 def spawn_robot(name: str) -> str:
@@ -708,6 +895,11 @@ vision_detector = PersonDetector(
 # ---------------------------------------------------------------------------
 sim_data: List[Dict[str, float]] = []
 stop_event = threading.Event()
+monitor_stop_event = threading.Event()
+simulation_done_event = threading.Event()
+
+MONITOR_CAMERA_WINDOW_NAME = "SpotDog Camera"
+MONITOR_RANGE_WINDOW_NAME = "Range Sensor Timeline"
 
 latest_sensor_state: Dict[str, float] = {
     "detected": 0.0,
@@ -716,6 +908,7 @@ latest_sensor_state: Dict[str, float] = {
     "confidence": float("nan"),
     "backend": "none",
 }
+
 sensor_lock = threading.Lock()
 latest_camera_frame: Optional[np.ndarray] = None
 sensor_range_history: deque = deque(maxlen=6000)
@@ -779,9 +972,7 @@ def human_control_loop() -> None:
         near_wall = is_near_wall(curr_pos)
         now_ts = time.time()
 
-        if (
-            moved_cm < HUMAN_COLLISION_MOVE_EPS_CM or near_wall
-        ) and (now_ts - last_turn_ts >= HUMAN_TURN_COOLDOWN_S):
+        if (moved_cm < HUMAN_COLLISION_MOVE_EPS_CM or near_wall) and (now_ts - last_turn_ts >= HUMAN_TURN_COOLDOWN_S):
             current_yaw = get_yaw(HUMAN_NAME)
             target_yaw = choose_human_collision_turn(curr_pos, current_yaw)
             angle_diff = normalize_angle(target_yaw - current_yaw)
@@ -838,6 +1029,7 @@ def build_follow_sensor_state() -> Dict[str, object]:
         sensor_state["yaw_delta_deg"] = yaw_delta_from_vision
         sensor_state["confidence"] = float(det["confidence"])
         sensor_state["backend"] = str(det["backend"])
+
         if depth_range_cm is not None:
             sensor_state["range_cm"] = depth_range_cm
             sensor_state["backend"] = sensor_state["backend"] + "+depth"
@@ -852,29 +1044,71 @@ def build_follow_sensor_state() -> Dict[str, object]:
         set_latest_camera_frame(overlay)
 
         return sensor_state
-    except Exception:
+    except Exception as exc:
+        sensor_state["backend"] = str(sensor_state.get("backend", "geometry")) + "+sensor_error"
+        fallback = draw_sensor_overlay(
+            None,
+            None,
+            float(sensor_state["range_cm"]),
+            str(sensor_state["backend"]),
+            searching=True,
+        )
+        cv2.putText(
+            fallback,
+            f"sensor exception: {str(exc)[:52]}",
+            (10, 104),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (0, 120, 255),
+            1,
+        )
+        set_latest_camera_frame(fallback)
         return sensor_state
 
 
 def monitor_loop() -> None:
-    camera_win = "SpotDog Camera"
-    range_win = "Range Sensor Timeline"
+    camera_win = MONITOR_CAMERA_WINDOW_NAME
+    range_win = MONITOR_RANGE_WINDOW_NAME
     dt = 1.0 / max(1.0, MONITOR_FPS)
 
     try:
-        while not stop_event.is_set():
+        while not monitor_stop_event.is_set():
             frame = get_latest_camera_frame()
             if frame is not None:
+                if simulation_done_event.is_set():
+                    cv2.putText(
+                        frame,
+                        MONITOR_CLOSE_KEY_HINT,
+                        (10, max(20, frame.shape[0] - 12)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.52,
+                        (0, 220, 255),
+                        2,
+                    )
                 cv2.imshow(camera_win, frame)
 
             waveform = render_range_waveform(get_sensor_range_history_snapshot(), time.time())
+            if simulation_done_event.is_set():
+                cv2.putText(
+                    waveform,
+                    MONITOR_CLOSE_KEY_HINT,
+                    (10, waveform.shape[0] - 12),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.50,
+                    (0, 220, 255),
+                    1,
+                )
             cv2.imshow(range_win, waveform)
 
-            # Keep windows responsive while simulation runs.
-            cv2.waitKey(1)
+            key = cv2.waitKey(1) & 0xFF
+            if key in (ord("q"), ord("Q"), 27):
+                monitor_stop_event.set()
+                break
+
             time.sleep(dt)
     except Exception as exc:
         print(f"[Monitor] Realtime monitor disabled: {exc}")
+        monitor_stop_event.set()
     finally:
         try:
             cv2.destroyWindow(camera_win)
@@ -884,102 +1118,161 @@ def monitor_loop() -> None:
             cv2.destroyWindow(range_win)
         except Exception:
             pass
+        monitor_stop_event.set()
+
+
+def prepare_monitor_windows() -> None:
+    if not ENABLE_REALTIME_MONITOR:
+        return
+
+    try:
+        frame = np.zeros((SENSOR_RESOLUTION[1], SENSOR_RESOLUTION[0], 3), dtype=np.uint8)
+        cv2.putText(frame, "SpotDog Camera Monitor", (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (255, 255, 255), 2)
+        cv2.putText(frame, "Waiting for simulation start...", (12, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (160, 255, 160), 1)
+        cv2.putText(frame, MONITOR_CLOSE_KEY_HINT, (12, frame.shape[0] - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (0, 220, 255), 1)
+        set_latest_camera_frame(frame)
+
+        wave = render_range_waveform([], time.time())
+        cv2.putText(wave, "Waiting for simulation start...", (58, 42), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (110, 110, 110), 1)
+        cv2.putText(wave, MONITOR_CLOSE_KEY_HINT, (10, wave.shape[0] - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (0, 220, 255), 1)
+
+        cv2.imshow(MONITOR_CAMERA_WINDOW_NAME, frame)
+        cv2.imshow(MONITOR_RANGE_WINDOW_NAME, wave)
+        cv2.waitKey(1)
+    except Exception as exc:
+        print(f"[Monitor] Failed to pre-open windows: {exc}")
+
+
+def reset_runtime_state() -> None:
+    stop_event.clear()
+    monitor_stop_event.clear()
+    simulation_done_event.clear()
+
+    with sensor_lock:
+        latest_sensor_state["detected"] = 0.0
+        latest_sensor_state["range_cm"] = float("nan")
+        latest_sensor_state["yaw_delta_deg"] = float("nan")
+        latest_sensor_state["confidence"] = float("nan")
+        latest_sensor_state["backend"] = "none"
+        sensor_range_history.clear()
+
+        global latest_camera_frame
+        latest_camera_frame = None
 
 
 def agv_follow_loop() -> None:
     last_wall_turn_ts = 0.0
     last_seen_ts = time.time()
-    search_spin_angle_deg = 360.0 * ROBOT_ROTATE_SLICE_S / SEARCH_SPIN_PERIOD_S
+    search_spin_angle_deg = 360.0 * SEARCH_ROTATE_SLICE_S / SEARCH_SPIN_PERIOD_S
     search_spin_clockwise = 1 if SEARCH_SPIN_CLOCKWISE else -1
 
     while not stop_event.is_set():
-        robot_pos = get_pos2d(ROBOT_NAME)
-        robot_yaw = get_yaw(ROBOT_NAME)
-
-        if should_stop_for_wall(robot_pos, robot_yaw):
-            ucv.dog_move(ROBOT_NAME, [0.0, ROBOT_STOP_PULSE_S, 0])
-            target_yaw = escape_yaw_from_wall(robot_pos)
-            angle_diff = normalize_angle(target_yaw - robot_yaw)
-            angle_diff = clamp(angle_diff, -ROBOT_MAX_TURN_DEG_PER_STEP, ROBOT_MAX_TURN_DEG_PER_STEP)
-            if abs(angle_diff) < 6.0:
-                angle_diff = 8.0 if rng.random() < 0.5 else -8.0
-            clockwise = 1 if angle_diff < 0.0 else -1
-            ucv.dog_rotate(ROBOT_NAME, [ROBOT_ROTATE_SLICE_S, abs(angle_diff), clockwise])
-            last_wall_turn_ts = time.time()
-            continue
-
-        sensor_state = build_follow_sensor_state()
-        now_ts = time.time()
-
-        if bool(sensor_state["detected"]):
-            last_seen_ts = now_ts
-        elif now_ts - last_seen_ts >= SEARCH_LOST_GRACE_S:
-            sensor_state["backend"] = str(sensor_state["backend"]) + "+search_spin"
-            set_latest_sensor_state(sensor_state)
-            ucv.dog_move(ROBOT_NAME, [0.0, ROBOT_STOP_PULSE_S, 0])
-            ucv.dog_rotate(ROBOT_NAME, [ROBOT_ROTATE_SLICE_S, search_spin_angle_deg, search_spin_clockwise])
-            continue
-
-        human_pos = get_pos2d(HUMAN_NAME)
-        human_yaw = get_yaw(HUMAN_NAME)
-        hx, hy = yaw_to_unit_vec(human_yaw)
-
-        # Rear-follow guidance: blend toward the human-rear target if not sufficiently behind.
-        rear_target = (
-            human_pos[0] - hx * FOLLOW_DISTANCE_CM,
-            human_pos[1] - hy * FOLLOW_DISTANCE_CM,
-        )
-        rear_yaw_delta = normalize_angle(yaw_to_target(robot_pos, rear_target) - robot_yaw)
-        rel_x = robot_pos[0] - human_pos[0]
-        rel_y = robot_pos[1] - human_pos[1]
-        behind_component_cm = rel_x * hx + rel_y * hy
-
-        yaw_delta_cmd = float(sensor_state["yaw_delta_deg"])
-        if behind_component_cm > -FOLLOW_MIN_BEHIND_CM:
-            blend = clamp(
-                FOLLOW_REAR_BLEND_GAIN * (behind_component_cm + FOLLOW_MIN_BEHIND_CM) / FOLLOW_DISTANCE_CM,
-                0.0,
-                1.0,
-            )
-            yaw_delta_cmd = (1.0 - blend) * yaw_delta_cmd + blend * rear_yaw_delta
-
-        yaw_turn = clamp(
-            ROBOT_HEADING_KP * yaw_delta_cmd,
-            -ROBOT_MAX_TURN_DEG_PER_STEP,
-            ROBOT_MAX_TURN_DEG_PER_STEP,
-        )
-
-        if abs(yaw_turn) > ROBOT_HEADING_DEADBAND_DEG:
-            clockwise = 1 if yaw_turn < 0.0 else -1
-            ucv.dog_rotate(ROBOT_NAME, [ROBOT_ROTATE_SLICE_S, abs(yaw_turn), clockwise])
+        try:
             robot_pos = get_pos2d(ROBOT_NAME)
             robot_yaw = get_yaw(ROBOT_NAME)
 
-        range_cm = float(sensor_state["range_cm"])
-        range_error_cm = range_cm - FOLLOW_DISTANCE_CM
-
-        speed_cmd = FOLLOW_DISTANCE_KP * range_error_cm
-        speed_cmd = clamp(speed_cmd, -ROBOT_SPEED_MAX_REV, ROBOT_SPEED_MAX_FWD)
-
-        if abs(range_error_cm) <= FOLLOW_DISTANCE_TOL_CM:
-            speed_cmd = 0.0
-        elif abs(speed_cmd) < ROBOT_MIN_MOVE_SPEED:
-            speed_cmd = math.copysign(ROBOT_MIN_MOVE_SPEED, speed_cmd)
-
-        # If close to wall and not yet turning away recently, force a wall-escape turn.
-        if is_near_wall(robot_pos, ROBOT_WALL_STOP_MARGIN_CM):
+            sensor_state = build_follow_sensor_state()
             now_ts = time.time()
-            if now_ts - last_wall_turn_ts >= WALL_TURN_COOLDOWN_S:
+
+            if bool(sensor_state["detected"]):
+                last_seen_ts = now_ts
+            elif now_ts - last_seen_ts >= SEARCH_LOST_GRACE_S:
+                sensor_state["backend"] = str(sensor_state["backend"]) + "+search_spin_cont"
+                set_latest_sensor_state(sensor_state)
+                ucv.dog_rotate(ROBOT_NAME, [SEARCH_ROTATE_SLICE_S, search_spin_angle_deg, search_spin_clockwise])
+                continue
+
+            set_latest_sensor_state(sensor_state)
+
+            if should_stop_for_wall(robot_pos, robot_yaw):
+                ucv.dog_move(ROBOT_NAME, [0.0, ROBOT_STOP_PULSE_S, 0])
                 target_yaw = escape_yaw_from_wall(robot_pos)
                 angle_diff = normalize_angle(target_yaw - robot_yaw)
                 angle_diff = clamp(angle_diff, -ROBOT_MAX_TURN_DEG_PER_STEP, ROBOT_MAX_TURN_DEG_PER_STEP)
+                if abs(angle_diff) < 6.0:
+                    angle_diff = 8.0 if rng.random() < 0.5 else -8.0
                 clockwise = 1 if angle_diff < 0.0 else -1
                 ucv.dog_rotate(ROBOT_NAME, [ROBOT_ROTATE_SLICE_S, abs(angle_diff), clockwise])
-                last_wall_turn_ts = now_ts
+                last_wall_turn_ts = time.time()
+                continue
 
-        ucv.dog_move(ROBOT_NAME, [speed_cmd, ROBOT_MOVE_SLICE_S, 0])
+            human_pos = get_pos2d(HUMAN_NAME)
+            human_yaw = get_yaw(HUMAN_NAME)
+            hx, hy = yaw_to_unit_vec(human_yaw)
 
-        set_latest_sensor_state(sensor_state)
+            rear_target = (
+                human_pos[0] - hx * FOLLOW_DISTANCE_CM,
+                human_pos[1] - hy * FOLLOW_DISTANCE_CM,
+            )
+            rear_yaw_delta = normalize_angle(yaw_to_target(robot_pos, rear_target) - robot_yaw)
+            rel_x = robot_pos[0] - human_pos[0]
+            rel_y = robot_pos[1] - human_pos[1]
+            behind_component_cm = rel_x * hx + rel_y * hy
+
+            yaw_delta_cmd = float(sensor_state["yaw_delta_deg"])
+            if behind_component_cm > -FOLLOW_MIN_BEHIND_CM:
+                blend = clamp(
+                    FOLLOW_REAR_BLEND_GAIN * (behind_component_cm + FOLLOW_MIN_BEHIND_CM) / FOLLOW_DISTANCE_CM,
+                    0.0,
+                    1.0,
+                )
+                yaw_delta_cmd = (1.0 - blend) * yaw_delta_cmd + blend * rear_yaw_delta
+
+            yaw_turn = clamp(
+                ROBOT_HEADING_KP * yaw_delta_cmd,
+                -ROBOT_MAX_TURN_DEG_PER_STEP,
+                ROBOT_MAX_TURN_DEG_PER_STEP,
+            )
+
+            if abs(yaw_turn) > ROBOT_HEADING_DEADBAND_DEG:
+                clockwise = 1 if yaw_turn < 0.0 else -1
+                ucv.dog_rotate(ROBOT_NAME, [ROBOT_ROTATE_SLICE_S, abs(yaw_turn), clockwise])
+                robot_pos = get_pos2d(ROBOT_NAME)
+                robot_yaw = get_yaw(ROBOT_NAME)
+
+            range_cm = float(sensor_state["range_cm"])
+            range_error_cm = range_cm - FOLLOW_DISTANCE_CM
+
+            speed_cmd = FOLLOW_DISTANCE_KP * range_error_cm
+            speed_cmd = clamp(speed_cmd, -ROBOT_SPEED_MAX_REV, ROBOT_SPEED_MAX_FWD)
+
+            if abs(range_error_cm) <= FOLLOW_DISTANCE_TOL_CM:
+                speed_cmd = 0.0
+            elif abs(speed_cmd) < ROBOT_MIN_MOVE_SPEED:
+                speed_cmd = math.copysign(ROBOT_MIN_MOVE_SPEED, speed_cmd)
+
+            if is_near_wall(robot_pos, ROBOT_WALL_STOP_MARGIN_CM):
+                now_ts = time.time()
+                if now_ts - last_wall_turn_ts >= WALL_TURN_COOLDOWN_S:
+                    target_yaw = escape_yaw_from_wall(robot_pos)
+                    angle_diff = normalize_angle(target_yaw - robot_yaw)
+                    angle_diff = clamp(angle_diff, -ROBOT_MAX_TURN_DEG_PER_STEP, ROBOT_MAX_TURN_DEG_PER_STEP)
+                    clockwise = 1 if angle_diff < 0.0 else -1
+                    ucv.dog_rotate(ROBOT_NAME, [ROBOT_ROTATE_SLICE_S, abs(angle_diff), clockwise])
+                    last_wall_turn_ts = now_ts
+
+            ucv.dog_move(ROBOT_NAME, [speed_cmd, ROBOT_MOVE_SLICE_S, 0])
+
+        except Exception as exc:
+            print(f"[AGV] loop exception: {exc}")
+            error_frame = draw_sensor_overlay(
+                None,
+                None,
+                float("nan"),
+                "agv_loop_exception",
+                searching=True,
+            )
+            cv2.putText(
+                error_frame,
+                f"AGV loop exception: {str(exc)[:52]}",
+                (10, 104),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                (0, 120, 255),
+                1,
+            )
+            set_latest_camera_frame(error_frame)
+            time.sleep(0.10)
 
 
 def recorder_loop() -> None:
@@ -1019,31 +1312,37 @@ def recorder_loop() -> None:
 # ---------------------------------------------------------------------------
 print(f"=== Starting SpotDog follow simulation for {SIM_DURATION:.0f}s ===")
 
+reset_runtime_state()
+
 thread_human = threading.Thread(target=human_control_loop, daemon=True)
 thread_robot = threading.Thread(target=agv_follow_loop, daemon=True)
 thread_rec = threading.Thread(target=recorder_loop, daemon=True)
 thread_monitor = None
 
 if ENABLE_REALTIME_MONITOR:
+    prepare_monitor_windows()
     thread_monitor = threading.Thread(target=monitor_loop, daemon=True)
+    thread_monitor.start()
 
 thread_human.start()
 thread_robot.start()
 thread_rec.start()
-if thread_monitor is not None:
-    thread_monitor.start()
 
 time.sleep(SIM_DURATION)
 stop_event.set()
+simulation_done_event.set()
 
-threads = [thread_human, thread_robot, thread_rec]
-if thread_monitor is not None:
-    threads.append(thread_monitor)
-
-for t in threads:
+for t in [thread_human, thread_robot, thread_rec]:
     t.join(timeout=5.0)
 
 print(f"=== Simulation finished. samples={len(sim_data)} ===")
+
+if thread_monitor is not None and thread_monitor.is_alive():
+    print("Simulation ended. Monitor windows remain open.")
+    print(MONITOR_CLOSE_KEY_HINT)
+    while not monitor_stop_event.is_set():
+        time.sleep(0.05)
+    thread_monitor.join(timeout=2.0)
 
 
 # %%
@@ -1101,8 +1400,8 @@ else:
 # ## Optional YOLO backend
 #
 # To use YOLO for camera detection:
-# 1. Install ultralytics in your python environment.
-# 2. Set VISION_USE_YOLO = True.
-# 3. Optionally set VISION_YOLO_MODEL_PATH to a local weight file.
+# 1. Install `ultralytics` in your python environment.
+# 2. Set `VISION_USE_YOLO = True`.
+# 3. Optionally set `VISION_YOLO_MODEL_PATH` to a local weight file.
 #
-# The current default is HOG + depth for portability.
+# Default still works without extra dependencies (HOG + far-range robust strategy).
