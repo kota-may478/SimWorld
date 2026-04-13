@@ -1,3 +1,7 @@
 [flake8]
 docstring-convention = google
 extend-ignore = E501, E731
+per-file-ignores =
+    # Jupytext notebook files: no module-level docstring required
+    examples/*.py: D100
+    dev/**/*.py: D100

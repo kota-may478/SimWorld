@@ -1,0 +1,8 @@
+# Jupytext configuration
+# Each .ipynb is paired with a .py file in percent format.
+# Only the .py files are tracked in Git; .ipynb files are local only.
+formats = "ipynb,py:percent"
+
+# Strip noisy metadata from .py files (keep only kernel info)
+notebook_metadata_filter = "-all,kernelspec,jupytext"
+cell_metadata_filter = "-all"

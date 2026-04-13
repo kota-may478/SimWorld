@@ -449,3 +449,7 @@ docs/source/_static/
 
 # Output
 output*/
+
+# Jupyter
+**/.ipynb_checkpoints/
+*.ipynb
