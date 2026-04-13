@@ -87,8 +87,8 @@ WALL_Z_CM     = 0     # 壁のスポーン高さ(中心) [cm]
 WALL_ASSET_SIZE_CM = 100
 # 1 枚を極端に伸ばすと BP 側で伸長が制限されるケースがあるため、
 # 壁を複数セグメントに分割して並べる
-WALL_SEGMENT_LEN_CM = 250      # 1 セグメントの長さ [cm]
-WALL_SEGMENT_OVERLAP_CM = 40   # セグメント重なり [cm]
+WALL_SEGMENT_LEN_CM = 100      # 1 セグメントの長さ [cm]
+WALL_SEGMENT_OVERLAP_CM = 25   # セグメント重なり [cm]
 
 # ---- エージェントアセットパス ----
 # NOTE: humanoid_step_forward / humanoid_rotate を使う場合は Base_User_Agent 系 BP が必要。
@@ -198,26 +198,40 @@ def spawn_walls():
         if str(obj).startswith("WALL_"):
             ucv.destroy(str(obj))
 
-    span = R + 2 * T
-    seg_len = WALL_SEGMENT_LEN_CM
-    seg_step = max(10.0, seg_len - WALL_SEGMENT_OVERLAP_CM)
+    seg_len = min(float(WALL_SEGMENT_LEN_CM), float(R))
+    seg_overlap = min(float(WALL_SEGMENT_OVERLAP_CM), seg_len - 1.0)
 
-    line_pos = []
-    p = -T
-    while p <= (R + T):
-        line_pos.append(p)
-        p += seg_step
-    if line_pos[-1] < (R + T):
-        line_pos.append(R + T)
+    # 角から角までを厳密に埋める中心位置を作る。
+    # 端点(0 と R)に対して、最初と最後のセグメント端がぴったり一致するように配置する。
+    if R <= seg_len:
+        edge_centers = [R / 2]
+        step = 0.0
+    else:
+        advance_target = max(1.0, seg_len - seg_overlap)
+        n_segments = int(math.ceil((R - seg_len) / advance_target)) + 1
+        step = (R - seg_len) / (n_segments - 1)
+        edge_centers = [seg_len / 2 + i * step for i in range(n_segments)]
 
     walls = []
-    for i, p in enumerate(line_pos):
-        walls.append((f"WALL_South_{i:02d}", (p,       -T / 2,     z_center), (seg_len / S, T / S, H / S)))
-        walls.append((f"WALL_North_{i:02d}", (p,        R + T / 2, z_center), (seg_len / S, T / S, H / S)))
-        walls.append((f"WALL_West_{i:02d}",  (-T / 2,   p,         z_center), (T / S, seg_len / S, H / S)))
-        walls.append((f"WALL_East_{i:02d}",  (R + T / 2, p,        z_center), (T / S, seg_len / S, H / S)))
+    for i, c in enumerate(edge_centers):
+        walls.append((f"WALL_South_{i:02d}", (c,       -T / 2,     z_center), (seg_len / S, T / S, H / S)))
+        walls.append((f"WALL_North_{i:02d}", (c,        R + T / 2, z_center), (seg_len / S, T / S, H / S)))
+        walls.append((f"WALL_West_{i:02d}",  (-T / 2,   c,         z_center), (T / S, seg_len / S, H / S)))
+        walls.append((f"WALL_East_{i:02d}",  (R + T / 2, c,        z_center), (T / S, seg_len / S, H / S)))
 
-    print(f"  Wall span target: {span:.1f} cm, segment_len={seg_len:.1f} cm, n_segments/edge={len(line_pos)}")
+    # 四隅を角壁で閉じて、角の微小隙間を防ぐ
+    corner_scale = (T / S, T / S, H / S)
+    walls.extend([
+        ("WALL_Corner_SW", (-T / 2,    -T / 2,    z_center), corner_scale),
+        ("WALL_Corner_SE", (R + T / 2, -T / 2,    z_center), corner_scale),
+        ("WALL_Corner_NW", (-T / 2,    R + T / 2, z_center), corner_scale),
+        ("WALL_Corner_NE", (R + T / 2, R + T / 2, z_center), corner_scale),
+    ])
+
+    print(
+        f"  Wall side={R:.1f} cm, seg_len={seg_len:.1f} cm, "
+        f"overlap~{(seg_len - step):.1f} cm, n_segments/edge={len(edge_centers)}"
+    )
 
     for name, loc, scale in walls:
         ucv.spawn_bp_asset(WALL_BP_PATH, name)
