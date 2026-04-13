@@ -122,6 +122,9 @@ TURN_MAX_DEG  = 150.0  # 衝突時の最大回頭角 [deg]
 WALL_CONTACT_MARGIN_CM = 45.0  # 壁接触判定のマージン [cm]
 WALL_ESCAPE_JITTER_DEG = 25.0  # 壁から離れる向きに加える揺らぎ [deg]
 WALL_TURN_COOLDOWN_S = 0.6     # 壁際での連続回頭クールダウン [s]
+AGENT_CONTACT_DIST_CM = 85.0   # 人-ロボット接触判定距離 [cm]
+AGENT_ESCAPE_JITTER_DEG = 20.0  # 接触時の回避方向に加える揺らぎ [deg]
+AGENT_TURN_COOLDOWN_S = 0.9     # 接触時の連続回頭クールダウン [s]
 
 # ---- シミュレーション時間 ----
 SIM_DURATION  = 20.0   # 総記録時間 [s]
@@ -208,6 +211,19 @@ def escape_yaw_from_wall(pos_xy: Tuple[float, float]) -> float:
 
     base_yaw = math.degrees(math.atan2(ny, nx))
     jitter = float(rng.uniform(-WALL_ESCAPE_JITTER_DEG, WALL_ESCAPE_JITTER_DEG))
+    return normalize_angle(base_yaw + jitter)
+
+
+def escape_yaw_from_other(self_pos: Tuple[float, float], other_pos: Tuple[float, float]) -> float:
+    """相手から離れる方向（両者を結ぶ法線方向）に向く目標 yaw を返す。"""
+    dx = self_pos[0] - other_pos[0]
+    dy = self_pos[1] - other_pos[1]
+    dist = math.hypot(dx, dy)
+    if dist < 1e-6:
+        return float(rng.uniform(-180.0, 180.0))
+
+    base_yaw = math.degrees(math.atan2(dy, dx))
+    jitter = float(rng.uniform(-AGENT_ESCAPE_JITTER_DEG, AGENT_ESCAPE_JITTER_DEG))
     return normalize_angle(base_yaw + jitter)
 
 
@@ -347,10 +363,12 @@ def human_control_loop():
     """
     直進し続ける。
     壁に接触したら即座に室内側へ向きを変え、
+    人・ロボット接触時は相手から離れる向きへ回頭し、
     それ以外で進めなければランダム回頭する。
     """
     was_near = False
     last_turn_ts = 0.0
+    last_contact_turn_ts = 0.0
 
     while not stop_event.is_set():
         prev_pos = get_pos2d(HUMAN_NAME)
@@ -361,15 +379,33 @@ def human_control_loop():
             break
 
         curr_pos = get_pos2d(HUMAN_NAME)
+        robot_pos = get_pos2d(ROBOT_NAME)
         moved_cm = math.hypot(curr_pos[0] - prev_pos[0], curr_pos[1] - prev_pos[1])
+        dist_to_robot = math.hypot(curr_pos[0] - robot_pos[0], curr_pos[1] - robot_pos[1])
         near_now = is_near_wall(curr_pos)
         now_ts = time.time()
+
+        contact_turn = (
+            dist_to_robot <= AGENT_CONTACT_DIST_CM
+            and (now_ts - last_contact_turn_ts >= AGENT_TURN_COOLDOWN_S)
+        )
 
         wall_turn = near_now and (
             (not was_near) or (now_ts - last_turn_ts >= WALL_TURN_COOLDOWN_S)
         )
 
-        if wall_turn:
+        if contact_turn:
+            target_yaw = escape_yaw_from_other(curr_pos, robot_pos)
+            yaw = get_yaw(HUMAN_NAME)
+            angle_diff = normalize_angle(target_yaw - yaw)
+            if abs(angle_diff) < 8.0:
+                angle_diff = 12.0 if rng.random() < 0.5 else -12.0
+
+            direction = 'left' if angle_diff > 0 else 'right'
+            communicator.humanoid_rotate(human.id, abs(angle_diff), direction)
+            last_contact_turn_ts = now_ts
+
+        elif wall_turn:
             target_yaw = escape_yaw_from_wall(curr_pos)
             yaw = get_yaw(HUMAN_NAME)
             angle_diff = normalize_angle(target_yaw - yaw)
@@ -395,10 +431,12 @@ def agv_control_loop():
     """
     直進し続ける。
     壁に接触したら即座に室内側へ向きを変え、
+    人・ロボット接触時は相手から離れる向きへ回頭し、
     それ以外で進めなければランダム回頭する。
     """
     was_near = False
     last_turn_ts = 0.0
+    last_contact_turn_ts = 0.0
 
     while not stop_event.is_set():
         prev_pos = get_pos2d(ROBOT_NAME)
@@ -412,15 +450,33 @@ def agv_control_loop():
             break
 
         curr_pos = get_pos2d(ROBOT_NAME)
+        human_pos = get_pos2d(HUMAN_NAME)
         moved_cm = math.hypot(curr_pos[0] - prev_pos[0], curr_pos[1] - prev_pos[1])
+        dist_to_human = math.hypot(curr_pos[0] - human_pos[0], curr_pos[1] - human_pos[1])
         near_now = is_near_wall(curr_pos)
         now_ts = time.time()
+
+        contact_turn = (
+            dist_to_human <= AGENT_CONTACT_DIST_CM
+            and (now_ts - last_contact_turn_ts >= AGENT_TURN_COOLDOWN_S)
+        )
 
         wall_turn = near_now and (
             (not was_near) or (now_ts - last_turn_ts >= WALL_TURN_COOLDOWN_S)
         )
 
-        if wall_turn:
+        if contact_turn:
+            target_yaw = escape_yaw_from_other(curr_pos, human_pos)
+            yaw = get_yaw(ROBOT_NAME)
+            angle_diff = normalize_angle(target_yaw - yaw)
+            if abs(angle_diff) < 8.0:
+                angle_diff = 12.0 if rng.random() < 0.5 else -12.0
+
+            clockwise = 1 if angle_diff < 0 else -1
+            ucv.dog_rotate(ROBOT_NAME, [0.3, abs(angle_diff), clockwise])
+            last_contact_turn_ts = now_ts
+
+        elif wall_turn:
             target_yaw = escape_yaw_from_wall(curr_pos)
             yaw = get_yaw(ROBOT_NAME)
             angle_diff = normalize_angle(target_yaw - yaw)
