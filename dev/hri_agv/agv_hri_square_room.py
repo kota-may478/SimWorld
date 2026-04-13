@@ -123,11 +123,16 @@ WALL_CONTACT_MARGIN_CM = 45.0  # 壁接触判定のマージン [cm]
 WALL_ESCAPE_JITTER_DEG = 25.0  # 壁から離れる向きに加える揺らぎ [deg]
 WALL_TURN_COOLDOWN_S = 0.6     # 壁際での連続回頭クールダウン [s]
 AGENT_CONTACT_DIST_CM = 85.0   # 人-ロボット接触判定距離 [cm]
-AGENT_ESCAPE_JITTER_DEG = 20.0  # 接触時の回避方向に加える揺らぎ [deg]
+AGENT_ESCAPE_HALF_PLANE_DEG = 90.0  # 接触面の手前側(180度範囲)で向きを選ぶ
 AGENT_TURN_COOLDOWN_S = 0.9     # 接触時の連続回頭クールダウン [s]
+ROBOT_WALL_STOP_MARGIN_CM = 70.0  # SpotDog の壁停止判定マージン [cm]
+ROBOT_MIN_INWARD_DOT = 0.15       # 壁際でこの内向き成分未満なら前進停止
+ROBOT_MOVE_SLICE_S = 0.15         # SpotDog の 1 回移動時間 [s]
+ROBOT_STOP_PULSE_S = 0.05         # 停止パルス時間 [s]
+ROBOT_TURN_DURATION_S = 1.0       # SpotDog の回頭時間 [s] (Humanoid と同等)
 
 # ---- シミュレーション時間 ----
-SIM_DURATION  = 20.0   # 総記録時間 [s]
+SIM_DURATION  = 40.0   # 総記録時間 [s]
 
 rng = np.random.default_rng(42)
 
@@ -215,16 +220,37 @@ def escape_yaw_from_wall(pos_xy: Tuple[float, float]) -> float:
 
 
 def escape_yaw_from_other(self_pos: Tuple[float, float], other_pos: Tuple[float, float]) -> float:
-    """相手から離れる方向（両者を結ぶ法線方向）に向く目標 yaw を返す。"""
+    """接触面の手前側半平面(180度範囲)で、相手から離れる向きを返す。"""
     dx = self_pos[0] - other_pos[0]
     dy = self_pos[1] - other_pos[1]
     dist = math.hypot(dx, dy)
     if dist < 1e-6:
         return float(rng.uniform(-180.0, 180.0))
 
+    # base_yaw は相手から遠ざかる法線方向。
+    # その前後 ±90 度の範囲は、接触面に対する「手前側」の 180 度半平面。
     base_yaw = math.degrees(math.atan2(dy, dx))
-    jitter = float(rng.uniform(-AGENT_ESCAPE_JITTER_DEG, AGENT_ESCAPE_JITTER_DEG))
+    jitter = float(rng.uniform(-AGENT_ESCAPE_HALF_PLANE_DEG, AGENT_ESCAPE_HALF_PLANE_DEG))
     return normalize_angle(base_yaw + jitter)
+
+
+def yaw_to_unit_vec(yaw_deg: float) -> Tuple[float, float]:
+    """Yaw [deg] を XY 単位ベクトルへ変換。"""
+    rad = math.radians(yaw_deg)
+    return math.cos(rad), math.sin(rad)
+
+
+def should_stop_for_wall(pos_xy: Tuple[float, float], yaw_deg: float) -> bool:
+    """壁近傍で壁向き/壁沿いなら前進を止めるべきか判定。"""
+    nx, ny = wall_inward_normal(pos_xy, ROBOT_WALL_STOP_MARGIN_CM)
+    if nx == 0.0 and ny == 0.0:
+        return False
+
+    n_len = math.hypot(nx, ny)
+    nx, ny = nx / n_len, ny / n_len
+    hx, hy = yaw_to_unit_vec(yaw_deg)
+    inward_dot = hx * nx + hy * ny
+    return inward_dot < ROBOT_MIN_INWARD_DOT
 
 
 # %%
@@ -327,6 +353,8 @@ def spawn_robot(name: str) -> str:
     ucv.spawn_bp_asset(ROBOT_BP_PATH, name)
     ucv.set_location(ROBOT_SPAWN, name)
     ucv.set_orientation((0, 90, 0), name)   # +Y 方向を向いてスポーン
+    ucv.set_collision(name, True)
+    ucv.set_movable(name, True)
     ucv.enable_controller(name, True)
     print(f"  Spawned robot [{name}] at {ROBOT_SPAWN[:2]}")
     return name
@@ -440,11 +468,25 @@ def agv_control_loop():
 
     while not stop_event.is_set():
         prev_pos = get_pos2d(ROBOT_NAME)
+        robot_yaw = get_yaw(ROBOT_NAME)
+
+        # 壁向き/壁沿いで壁近傍にいる場合は前進せず即回頭（貫通防止）
+        if should_stop_for_wall(prev_pos, robot_yaw):
+            ucv.dog_move(ROBOT_NAME, [0, ROBOT_STOP_PULSE_S, 0])
+            target_yaw = escape_yaw_from_wall(prev_pos)
+            angle_diff = normalize_angle(target_yaw - robot_yaw)
+            if abs(angle_diff) < 8.0:
+                angle_diff = 12.0 if rng.random() < 0.5 else -12.0
+            clockwise = 1 if angle_diff < 0 else -1
+            ucv.dog_rotate(ROBOT_NAME, [ROBOT_TURN_DURATION_S, abs(angle_diff), clockwise])
+            last_turn_ts = time.time()
+            was_near = is_near_wall(prev_pos)
+            continue
 
         if stop_event.is_set():
             break
 
-        ucv.dog_move(ROBOT_NAME, [AGV_CRUISE_SPEED, STEP_DUR, 0])
+        ucv.dog_move(ROBOT_NAME, [AGV_CRUISE_SPEED, ROBOT_MOVE_SLICE_S, 0])
 
         if stop_event.is_set():
             break
@@ -473,7 +515,7 @@ def agv_control_loop():
                 angle_diff = 12.0 if rng.random() < 0.5 else -12.0
 
             clockwise = 1 if angle_diff < 0 else -1
-            ucv.dog_rotate(ROBOT_NAME, [0.3, abs(angle_diff), clockwise])
+            ucv.dog_rotate(ROBOT_NAME, [ROBOT_TURN_DURATION_S, abs(angle_diff), clockwise])
             last_contact_turn_ts = now_ts
 
         elif wall_turn:
@@ -484,14 +526,14 @@ def agv_control_loop():
                 angle_diff = 12.0 if rng.random() < 0.5 else -12.0
 
             clockwise = 1 if angle_diff < 0 else -1
-            ucv.dog_rotate(ROBOT_NAME, [0.3, abs(angle_diff), clockwise])
+            ucv.dog_rotate(ROBOT_NAME, [ROBOT_TURN_DURATION_S, abs(angle_diff), clockwise])
             last_turn_ts = now_ts
 
         # 壁以外で前進量が極端に小さいときは、ランダム回頭
         elif moved_cm < COLLISION_MOVE_EPS_CM:
             turn_deg = float(rng.uniform(TURN_MIN_DEG, TURN_MAX_DEG))
             clockwise = 1 if rng.random() < 0.5 else -1
-            ucv.dog_rotate(ROBOT_NAME, [0.3, turn_deg, clockwise])
+            ucv.dog_rotate(ROBOT_NAME, [ROBOT_TURN_DURATION_S, turn_deg, clockwise])
             last_turn_ts = now_ts
 
         was_near = near_now
