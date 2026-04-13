@@ -453,3 +453,6 @@ output*/
 # Jupyter
 **/.ipynb_checkpoints/
 *.ipynb
+
+# Claude Code
+.claude/
