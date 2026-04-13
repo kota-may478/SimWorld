@@ -88,7 +88,8 @@ WALL_ASSET_SIZE_CM = 100
 # 1 枚を極端に伸ばすと BP 側で伸長が制限されるケースがあるため、
 # 壁を複数セグメントに分割して並べる
 WALL_SEGMENT_LEN_CM = 100      # 1 セグメントの長さ [cm]
-WALL_SEGMENT_OVERLAP_CM = 25   # セグメント重なり [cm]
+WALL_SEGMENT_OVERLAP_NS_CM = 40  # 南北壁(SpotDog の前後方向)の重なり [cm]
+WALL_SEGMENT_OVERLAP_EW_CM = 25  # 東西壁の重なり [cm]
 
 # ---- エージェントアセットパス ----
 # NOTE: humanoid_step_forward / humanoid_rotate を使う場合は Base_User_Agent 系 BP が必要。
@@ -118,6 +119,9 @@ WP_REACH_CM   = 80.0   # ウェイポイント到達判定距離 [cm]
 COLLISION_MOVE_EPS_CM = 5.0   # この距離未満しか進まなければ衝突とみなす [cm]
 TURN_MIN_DEG  = 45.0   # 衝突時の最小回頭角 [deg]
 TURN_MAX_DEG  = 150.0  # 衝突時の最大回頭角 [deg]
+WALL_CONTACT_MARGIN_CM = 45.0  # 壁接触判定のマージン [cm]
+WALL_ESCAPE_JITTER_DEG = 25.0  # 壁から離れる向きに加える揺らぎ [deg]
+WALL_TURN_COOLDOWN_S = 0.6     # 壁際での連続回頭クールダウン [s]
 
 # ---- シミュレーション時間 ----
 SIM_DURATION  = 20.0   # 総記録時間 [s]
@@ -176,6 +180,37 @@ def hri_zone(dist_cm: float) -> str:
     return "far"
 
 
+def wall_inward_normal(pos_xy: Tuple[float, float], margin_cm: float = WALL_CONTACT_MARGIN_CM) -> Tuple[float, float]:
+    """壁近傍なら、室内側を向く法線ベクトルを返す。"""
+    nx, ny = 0.0, 0.0
+    if pos_xy[0] <= margin_cm:
+        nx += 1.0
+    if pos_xy[0] >= ROOM_CM - margin_cm:
+        nx -= 1.0
+    if pos_xy[1] <= margin_cm:
+        ny += 1.0
+    if pos_xy[1] >= ROOM_CM - margin_cm:
+        ny -= 1.0
+    return nx, ny
+
+
+def is_near_wall(pos_xy: Tuple[float, float], margin_cm: float = WALL_CONTACT_MARGIN_CM) -> bool:
+    """位置が壁近傍かどうか。"""
+    nx, ny = wall_inward_normal(pos_xy, margin_cm)
+    return (nx != 0.0) or (ny != 0.0)
+
+
+def escape_yaw_from_wall(pos_xy: Tuple[float, float]) -> float:
+    """壁から離れる向き(室内側)に少しランダム性を足した目標 yaw を返す。"""
+    nx, ny = wall_inward_normal(pos_xy)
+    if nx == 0.0 and ny == 0.0:
+        return float(rng.uniform(-180.0, 180.0))
+
+    base_yaw = math.degrees(math.atan2(ny, nx))
+    jitter = float(rng.uniform(-WALL_ESCAPE_JITTER_DEG, WALL_ESCAPE_JITTER_DEG))
+    return normalize_angle(base_yaw + jitter)
+
+
 # %%
 # ==============================================================
 # ワールドスポーン
@@ -198,45 +233,55 @@ def spawn_walls():
         if str(obj).startswith("WALL_"):
             ucv.destroy(str(obj))
 
-    seg_len = min(float(WALL_SEGMENT_LEN_CM), float(R))
-    seg_overlap = min(float(WALL_SEGMENT_OVERLAP_CM), seg_len - 1.0)
+    def build_edge_centers(edge_len_cm: float, seg_len_cm: float, overlap_cm: float):
+        seg_len_cm = min(seg_len_cm, edge_len_cm)
+        overlap_cm = min(overlap_cm, seg_len_cm - 1.0)
 
-    # 角から角までを厳密に埋める中心位置を作る。
-    # 端点(0 と R)に対して、最初と最後のセグメント端がぴったり一致するように配置する。
-    if R <= seg_len:
-        edge_centers = [R / 2]
-        step = 0.0
-    else:
-        advance_target = max(1.0, seg_len - seg_overlap)
-        n_segments = int(math.ceil((R - seg_len) / advance_target)) + 1
-        step = (R - seg_len) / (n_segments - 1)
-        edge_centers = [seg_len / 2 + i * step for i in range(n_segments)]
+        # 角から角までを厳密に埋める中心位置。
+        if edge_len_cm <= seg_len_cm:
+            return [edge_len_cm / 2], 0.0
+
+        advance_target = max(1.0, seg_len_cm - overlap_cm)
+        n_segments = int(math.ceil((edge_len_cm - seg_len_cm) / advance_target)) + 1
+        step = (edge_len_cm - seg_len_cm) / (n_segments - 1)
+        centers = [seg_len_cm / 2 + i * step for i in range(n_segments)]
+        actual_overlap = seg_len_cm - step
+        return centers, actual_overlap
+
+    seg_len = float(WALL_SEGMENT_LEN_CM)
+    ns_centers, ns_overlap = build_edge_centers(float(R), seg_len, float(WALL_SEGMENT_OVERLAP_NS_CM))
+    ew_centers, ew_overlap = build_edge_centers(float(R), seg_len, float(WALL_SEGMENT_OVERLAP_EW_CM))
 
     walls = []
-    for i, c in enumerate(edge_centers):
-        walls.append((f"WALL_South_{i:02d}", (c,       -T / 2,     z_center), (seg_len / S, T / S, H / S)))
-        walls.append((f"WALL_North_{i:02d}", (c,        R + T / 2, z_center), (seg_len / S, T / S, H / S)))
-        walls.append((f"WALL_West_{i:02d}",  (-T / 2,   c,         z_center), (T / S, seg_len / S, H / S)))
-        walls.append((f"WALL_East_{i:02d}",  (R + T / 2, c,        z_center), (T / S, seg_len / S, H / S)))
+    # NOTE: 南北壁は 90 度回転して配置し、東西壁と同じスケール軸(y)を長手方向に使う。
+    #       これで方角による見かけの隙間差を抑える。
+    for i, c in enumerate(ns_centers):
+        walls.append((f"WALL_South_{i:02d}", (c,       -T / 2,     z_center), (T / S, seg_len / S, H / S), (0, 90, 0)))
+        walls.append((f"WALL_North_{i:02d}", (c,        R + T / 2, z_center), (T / S, seg_len / S, H / S), (0, 90, 0)))
+
+    for i, c in enumerate(ew_centers):
+        walls.append((f"WALL_West_{i:02d}",  (-T / 2,   c,         z_center), (T / S, seg_len / S, H / S), (0, 0, 0)))
+        walls.append((f"WALL_East_{i:02d}",  (R + T / 2, c,        z_center), (T / S, seg_len / S, H / S), (0, 0, 0)))
 
     # 四隅を角壁で閉じて、角の微小隙間を防ぐ
     corner_scale = (T / S, T / S, H / S)
     walls.extend([
-        ("WALL_Corner_SW", (-T / 2,    -T / 2,    z_center), corner_scale),
-        ("WALL_Corner_SE", (R + T / 2, -T / 2,    z_center), corner_scale),
-        ("WALL_Corner_NW", (-T / 2,    R + T / 2, z_center), corner_scale),
-        ("WALL_Corner_NE", (R + T / 2, R + T / 2, z_center), corner_scale),
+        ("WALL_Corner_SW", (-T / 2,    -T / 2,    z_center), corner_scale, (0, 0, 0)),
+        ("WALL_Corner_SE", (R + T / 2, -T / 2,    z_center), corner_scale, (0, 0, 0)),
+        ("WALL_Corner_NW", (-T / 2,    R + T / 2, z_center), corner_scale, (0, 0, 0)),
+        ("WALL_Corner_NE", (R + T / 2, R + T / 2, z_center), corner_scale, (0, 0, 0)),
     ])
 
     print(
         f"  Wall side={R:.1f} cm, seg_len={seg_len:.1f} cm, "
-        f"overlap~{(seg_len - step):.1f} cm, n_segments/edge={len(edge_centers)}"
+        f"NS overlap~{ns_overlap:.1f} cm (n={len(ns_centers)}), "
+        f"EW overlap~{ew_overlap:.1f} cm (n={len(ew_centers)})"
     )
 
-    for name, loc, scale in walls:
+    for name, loc, scale, orient in walls:
         ucv.spawn_bp_asset(WALL_BP_PATH, name)
         ucv.set_location(loc, name)
-        ucv.set_orientation((0, 0, 0), name)
+        ucv.set_orientation(orient, name)
         ucv.set_scale(scale, name)
         ucv.set_collision(name, True)
         ucv.set_movable(name, False)   # 壁は動かない
@@ -300,8 +345,13 @@ stop_event = threading.Event()
 # ---- 人間制御スレッド ----
 def human_control_loop():
     """
-    直進し続け、何かに当たって進めなかったらランダム回頭して再び直進する。
+    直進し続ける。
+    壁に接触したら即座に室内側へ向きを変え、
+    それ以外で進めなければランダム回頭する。
     """
+    was_near = False
+    last_turn_ts = 0.0
+
     while not stop_event.is_set():
         prev_pos = get_pos2d(HUMAN_NAME)
         if not stop_event.is_set():
@@ -312,19 +362,44 @@ def human_control_loop():
 
         curr_pos = get_pos2d(HUMAN_NAME)
         moved_cm = math.hypot(curr_pos[0] - prev_pos[0], curr_pos[1] - prev_pos[1])
+        near_now = is_near_wall(curr_pos)
+        now_ts = time.time()
 
-        # 前進量が極端に小さいときは何かに当たっているとみなしてランダム回頭
-        if moved_cm < COLLISION_MOVE_EPS_CM:
+        wall_turn = near_now and (
+            (not was_near) or (now_ts - last_turn_ts >= WALL_TURN_COOLDOWN_S)
+        )
+
+        if wall_turn:
+            target_yaw = escape_yaw_from_wall(curr_pos)
+            yaw = get_yaw(HUMAN_NAME)
+            angle_diff = normalize_angle(target_yaw - yaw)
+            if abs(angle_diff) < 8.0:
+                angle_diff = 12.0 if rng.random() < 0.5 else -12.0
+
+            direction = 'left' if angle_diff > 0 else 'right'
+            communicator.humanoid_rotate(human.id, abs(angle_diff), direction)
+            last_turn_ts = now_ts
+
+        # 壁以外で前進量が極端に小さいときは、ランダム回頭
+        elif moved_cm < COLLISION_MOVE_EPS_CM:
             turn_deg = float(rng.uniform(TURN_MIN_DEG, TURN_MAX_DEG))
             direction = 'left' if rng.random() < 0.5 else 'right'
             communicator.humanoid_rotate(human.id, turn_deg, direction)
+            last_turn_ts = now_ts
+
+        was_near = near_now
 
 
 # ---- AGV 制御スレッド ----
 def agv_control_loop():
     """
-    直進し続け、何かに当たって進めなかったらランダム回頭して再び直進する。
+    直進し続ける。
+    壁に接触したら即座に室内側へ向きを変え、
+    それ以外で進めなければランダム回頭する。
     """
+    was_near = False
+    last_turn_ts = 0.0
+
     while not stop_event.is_set():
         prev_pos = get_pos2d(ROBOT_NAME)
 
@@ -338,12 +413,32 @@ def agv_control_loop():
 
         curr_pos = get_pos2d(ROBOT_NAME)
         moved_cm = math.hypot(curr_pos[0] - prev_pos[0], curr_pos[1] - prev_pos[1])
+        near_now = is_near_wall(curr_pos)
+        now_ts = time.time()
 
-        # 前進量が極端に小さいときは何かに当たっているとみなしてランダム回頭
-        if moved_cm < COLLISION_MOVE_EPS_CM:
+        wall_turn = near_now and (
+            (not was_near) or (now_ts - last_turn_ts >= WALL_TURN_COOLDOWN_S)
+        )
+
+        if wall_turn:
+            target_yaw = escape_yaw_from_wall(curr_pos)
+            yaw = get_yaw(ROBOT_NAME)
+            angle_diff = normalize_angle(target_yaw - yaw)
+            if abs(angle_diff) < 8.0:
+                angle_diff = 12.0 if rng.random() < 0.5 else -12.0
+
+            clockwise = 1 if angle_diff < 0 else -1
+            ucv.dog_rotate(ROBOT_NAME, [0.3, abs(angle_diff), clockwise])
+            last_turn_ts = now_ts
+
+        # 壁以外で前進量が極端に小さいときは、ランダム回頭
+        elif moved_cm < COLLISION_MOVE_EPS_CM:
             turn_deg = float(rng.uniform(TURN_MIN_DEG, TURN_MAX_DEG))
             clockwise = 1 if rng.random() < 0.5 else -1
             ucv.dog_rotate(ROBOT_NAME, [0.3, turn_deg, clockwise])
+            last_turn_ts = now_ts
+
+        was_near = near_now
 
 
 # ---- データ記録スレッド ----
