@@ -81,17 +81,19 @@ WALL_MARGIN_CM = 80     # エージェントが壁から保つ最小距離 [cm]
 WALL_BP_PATH  = "/Game/InteractableAsset/Box/BP_Interactable_Box.BP_Interactable_Box_C"
 WALL_THICK_CM = 20    # 壁の厚み [cm]
 WALL_H_CM     = 300   # 壁の高さ [cm] (3 m)
+WALL_Z_OFFSET_CM = -80  # 壁中心の Z オフセット [cm] (負で下げる)
 # 壁アセットのデフォルトサイズが 100×100×100 cm の場合のスケール係数
 # 異なる場合はこの値を調整してください
 WALL_ASSET_SIZE_CM = 100
 
 # ---- エージェントアセットパス ----
-HUMAN_BP_PATH = "/Game/Human_Avatar/DefaultCharacter/Blueprint/BP_Default_Character.BP_Default_Character_C"
+# NOTE: humanoid_step_forward / humanoid_rotate を使う場合は Base_User_Agent 系 BP が必要。
+HUMAN_BP_PATH = "/Game/TrafficSystem/Pedestrian/Base_User_Agent.Base_User_Agent_C"
 ROBOT_BP_PATH = "/Game/Robot_Dog/Blueprint/BP_SpotRobot.BP_SpotRobot_C"
 ROBOT_NAME    = "AGV_SpotRobot"
 
 # ---- スポーン位置 (x, y, z) [cm] ----
-HUMAN_SPAWN = (750, 200, 20)   # z=20: Humanoid の標準スポーン高さ
+HUMAN_SPAWN = (750, 200, 100)   # z=100: Humanoid の標準スポーン高さ
 ROBOT_SPAWN = (200, 800, 20)    # z=20:  SpotDog の標準スポーン高さ
 
 # ---- 速度設定 ----
@@ -181,13 +183,14 @@ def spawn_walls():
     T = WALL_THICK_CM
     H = WALL_H_CM
     S = WALL_ASSET_SIZE_CM
+    z_center = H / 2 + WALL_Z_OFFSET_CM
 
     # (名前, 中心位置(x,y,z), スケール(sx,sy,sz))
     walls = [
-        ("WALL_South", (R / 2,       -T / 2,      H / 2), ((R + T) / S, T / S, H / S)),
-        ("WALL_North", (R / 2,        R + T / 2,  H / 2), ((R + T) / S, T / S, H / S)),
-        ("WALL_West",  (-T / 2,       R / 2,       H / 2), (T / S, (R + T) / S, H / S)),
-        ("WALL_East",  (R + T / 2,    R / 2,       H / 2), (T / S, (R + T) / S, H / S)),
+        ("WALL_South", (R / 2,       -T / 2,      z_center), ((R + T) / S, T / S, H / S)),
+        ("WALL_North", (R / 2,        R + T / 2,  z_center), ((R + T) / S, T / S, H / S)),
+        ("WALL_West",  (-T / 2,       R / 2,      z_center), (T / S, (R + T) / S, H / S)),
+        ("WALL_East",  (R + T / 2,    R / 2,      z_center), (T / S, (R + T) / S, H / S)),
     ]
 
     for name, loc, scale in walls:
