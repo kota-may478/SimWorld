@@ -16,7 +16,7 @@ SpotDog:
 - Uses camera-based human detection for heading alignment.
 - Uses depth sensing (LiDAR-like ranging) for distance control.
 - If the human is not detected for a short period, spins in place to search.
-   - Default: about 1 full turn in 3 seconds.
+   - Default: continuous spin, about 1 full turn in 2 seconds.
 
 ## Environment parity with `hri_agv`
 
@@ -35,10 +35,20 @@ During simulation, you can also watch:
 - SpotDog camera stream (with tracking/search overlay)
 - Real-time range sensor timeline window
 
+Window lifecycle:
+- Both monitor windows are opened right before simulation starts.
+- They stay open after simulation ends.
+- Close them manually by pressing `q` or `ESC` in an OpenCV window (or close the windows directly).
+- On each run, monitor/runtime states are reset before simulation starts (safe for repeated runs in interactive sessions).
+
 Related switches and parameters in the script:
 - `ENABLE_REALTIME_MONITOR`
 - `SEARCH_SPIN_PERIOD_S`
 - `SEARCH_LOST_GRACE_S`
+- `SEARCH_ROTATE_SLICE_S`
+- `VISION_ENABLE_CLAHE`
+- `VISION_ENABLE_TILED_SEARCH`
+- `VISION_FAR_UPSAMPLE`
 
 ## Vision backend
 
