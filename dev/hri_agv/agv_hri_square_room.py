@@ -81,10 +81,14 @@ WALL_MARGIN_CM = 80     # エージェントが壁から保つ最小距離 [cm]
 WALL_BP_PATH  = "/Game/InteractableAsset/Box/BP_Interactable_Box.BP_Interactable_Box_C"
 WALL_THICK_CM = 20    # 壁の厚み [cm]
 WALL_H_CM     = 300   # 壁の高さ [cm] (3 m)
-WALL_Z_OFFSET_CM = -80  # 壁中心の Z オフセット [cm] (負で下げる)
+WALL_Z_CM     = 0     # 壁のスポーン高さ(中心) [cm]
 # 壁アセットのデフォルトサイズが 100×100×100 cm の場合のスケール係数
 # 異なる場合はこの値を調整してください
 WALL_ASSET_SIZE_CM = 100
+# 1 枚を極端に伸ばすと BP 側で伸長が制限されるケースがあるため、
+# 壁を複数セグメントに分割して並べる
+WALL_SEGMENT_LEN_CM = 250      # 1 セグメントの長さ [cm]
+WALL_SEGMENT_OVERLAP_CM = 40   # セグメント重なり [cm]
 
 # ---- エージェントアセットパス ----
 # NOTE: humanoid_step_forward / humanoid_rotate を使う場合は Base_User_Agent 系 BP が必要。
@@ -100,6 +104,7 @@ ROBOT_SPAWN = (200, 800, 20)    # z=20:  SpotDog の標準スポーン高さ
 HUMAN_SPEED    = 180   # humanoid の移動速度 (UE 単位)
 AGV_SPEED_MAX  = 200   # AGV 最大速度 (far zone)
 AGV_SPEED_SLOW = 60    # AGV スロー速度 (social zone)
+AGV_CRUISE_SPEED = 140  # 直進巡航速度 [UE 単位]
 
 # ---- HRI ゾーン境界 [cm] ----
 SAFETY_R_CM   = 50    # 0.5 m
@@ -110,6 +115,9 @@ SOCIAL_R_CM   = 300   # 3.0 m
 STEP_DUR      = 0.5    # 1 ステップの移動時間 [s]
 ROTATE_THR    = 25.0   # この角度差以上でのみ回転 [deg]
 WP_REACH_CM   = 80.0   # ウェイポイント到達判定距離 [cm]
+COLLISION_MOVE_EPS_CM = 5.0   # この距離未満しか進まなければ衝突とみなす [cm]
+TURN_MIN_DEG  = 45.0   # 衝突時の最小回頭角 [deg]
+TURN_MAX_DEG  = 150.0  # 衝突時の最大回頭角 [deg]
 
 # ---- シミュレーション時間 ----
 SIM_DURATION  = 20.0   # 総記録時間 [s]
@@ -177,21 +185,39 @@ def spawn_walls():
     """
     部屋の 4 辺の壁をスポーンする。
     ルーム: x, y ∈ [0, ROOM_CM] (cm)
-    壁はデフォルトサイズ WALL_ASSET_SIZE_CM cm の立方体アセットをスケーリング。
+    壁はセグメントを並べて 10m 四方を確実に囲む。
     """
     R = ROOM_CM
     T = WALL_THICK_CM
     H = WALL_H_CM
     S = WALL_ASSET_SIZE_CM
-    z_center = H / 2 + WALL_Z_OFFSET_CM
+    z_center = WALL_Z_CM
 
-    # (名前, 中心位置(x,y,z), スケール(sx,sy,sz))
-    walls = [
-        ("WALL_South", (R / 2,       -T / 2,      z_center), ((R + T) / S, T / S, H / S)),
-        ("WALL_North", (R / 2,        R + T / 2,  z_center), ((R + T) / S, T / S, H / S)),
-        ("WALL_West",  (-T / 2,       R / 2,      z_center), (T / S, (R + T) / S, H / S)),
-        ("WALL_East",  (R + T / 2,    R / 2,      z_center), (T / S, (R + T) / S, H / S)),
-    ]
+    # 既存の WALL_* を削除して、再実行時の重複・検証ブレを防ぐ
+    for obj in ucv.get_objects():
+        if str(obj).startswith("WALL_"):
+            ucv.destroy(str(obj))
+
+    span = R + 2 * T
+    seg_len = WALL_SEGMENT_LEN_CM
+    seg_step = max(10.0, seg_len - WALL_SEGMENT_OVERLAP_CM)
+
+    line_pos = []
+    p = -T
+    while p <= (R + T):
+        line_pos.append(p)
+        p += seg_step
+    if line_pos[-1] < (R + T):
+        line_pos.append(R + T)
+
+    walls = []
+    for i, p in enumerate(line_pos):
+        walls.append((f"WALL_South_{i:02d}", (p,       -T / 2,     z_center), (seg_len / S, T / S, H / S)))
+        walls.append((f"WALL_North_{i:02d}", (p,        R + T / 2, z_center), (seg_len / S, T / S, H / S)))
+        walls.append((f"WALL_West_{i:02d}",  (-T / 2,   p,         z_center), (T / S, seg_len / S, H / S)))
+        walls.append((f"WALL_East_{i:02d}",  (R + T / 2, p,        z_center), (T / S, seg_len / S, H / S)))
+
+    print(f"  Wall span target: {span:.1f} cm, segment_len={seg_len:.1f} cm, n_segments/edge={len(line_pos)}")
 
     for name, loc, scale in walls:
         ucv.spawn_bp_asset(WALL_BP_PATH, name)
@@ -260,133 +286,50 @@ stop_event = threading.Event()
 # ---- 人間制御スレッド ----
 def human_control_loop():
     """
-    ランダムウェイポイントへ向かって歩行を繰り返す。
-    ウェイポイント到達または壁際で次のウェイポイントを生成。
+    直進し続け、何かに当たって進めなかったらランダム回頭して再び直進する。
     """
-    target = random_waypoint()
-
     while not stop_event.is_set():
-        pos = get_pos2d(HUMAN_NAME)
-        yaw = get_yaw(HUMAN_NAME)
-
-        # 壁際またはウェイポイント到達 → 新しいウェイポイントを設定
-        dist_to_wp = math.hypot(target[0] - pos[0], target[1] - pos[1])
-        near_wall = (pos[0] < WALL_MARGIN_CM
-                     or pos[0] > ROOM_CM - WALL_MARGIN_CM
-                     or pos[1] < WALL_MARGIN_CM
-                     or pos[1] > ROOM_CM - WALL_MARGIN_CM)
-
-        if dist_to_wp < WP_REACH_CM or near_wall:
-            target = random_waypoint()
-
-        # 目標方向に向いていなければ回転
-        # angle_diff > 0 → 左 (反時計回り), < 0 → 右 (時計回り)
-        target_yaw  = yaw_to_target(pos, target)
-        angle_diff  = normalize_angle(target_yaw - yaw)
-
-        if abs(angle_diff) > ROTATE_THR and not stop_event.is_set():
-            direction = 'left' if angle_diff > 0 else 'right'
-            communicator.humanoid_rotate(human.id, abs(angle_diff), direction)
-            # NOTE: humanoid_rotate は内部で time.sleep(1) するため 1 秒ブロックします
-
-        # 前進
+        prev_pos = get_pos2d(HUMAN_NAME)
         if not stop_event.is_set():
             communicator.humanoid_step_forward(human.id, STEP_DUR)
+
+        if stop_event.is_set():
+            break
+
+        curr_pos = get_pos2d(HUMAN_NAME)
+        moved_cm = math.hypot(curr_pos[0] - prev_pos[0], curr_pos[1] - prev_pos[1])
+
+        # 前進量が極端に小さいときは何かに当たっているとみなしてランダム回頭
+        if moved_cm < COLLISION_MOVE_EPS_CM:
+            turn_deg = float(rng.uniform(TURN_MIN_DEG, TURN_MAX_DEG))
+            direction = 'left' if rng.random() < 0.5 else 'right'
+            communicator.humanoid_rotate(human.id, turn_deg, direction)
 
 
 # ---- AGV 制御スレッド ----
 def agv_control_loop():
     """
-    ソーシャルフォースモデルで AGV を制御する。
-    - ウェイポイントへの引力
-    - 人間からの斥力 (指数減衰)
-    - 壁からの斥力
-    - 人間との距離に応じた速度スケーリング
+    直進し続け、何かに当たって進めなかったらランダム回頭して再び直進する。
     """
-    target = random_waypoint()
-
     while not stop_event.is_set():
-        robot_pos = get_pos2d(ROBOT_NAME)
-        robot_yaw = get_yaw(ROBOT_NAME)
-        human_pos = get_pos2d(HUMAN_NAME)
-
-        dist_to_human = math.hypot(
-            human_pos[0] - robot_pos[0],
-            human_pos[1] - robot_pos[1],
-        )
-
-        # ウェイポイント到達または壁際 → 新しいウェイポイントへ
-        dist_to_wp = math.hypot(target[0] - robot_pos[0], target[1] - robot_pos[1])
-        near_wall = (robot_pos[0] < WALL_MARGIN_CM
-                     or robot_pos[0] > ROOM_CM - WALL_MARGIN_CM
-                     or robot_pos[1] < WALL_MARGIN_CM
-                     or robot_pos[1] > ROOM_CM - WALL_MARGIN_CM)
-
-        if dist_to_wp < WP_REACH_CM or near_wall:
-            target = random_waypoint()
-
-        # ---- ソーシャルフォース計算 ----
-        # 1. ウェイポイントへの引力 (単位ベクトル)
-        dx_wp = target[0] - robot_pos[0]
-        dy_wp = target[1] - robot_pos[1]
-        wp_n  = math.hypot(dx_wp, dy_wp) + 1e-6
-        ax, ay = dx_wp / wp_n, dy_wp / wp_n
-
-        # 2. 人間からの斥力 (sigma = 150 cm)
-        dx_h = robot_pos[0] - human_pos[0]
-        dy_h = robot_pos[1] - human_pos[1]
-        h_n  = math.hypot(dx_h, dy_h) + 1e-6
-        sf   = 3.0 * math.exp(-h_n / 150.0)
-        rx, ry = sf * dx_h / h_n, sf * dy_h / h_n
-
-        # 3. 壁からの斥力 (sigma = 40 cm)
-        wx, wy = 0.0, 0.0
-        sigma_w = 40.0
-        for d, (fx, fy) in [
-            (robot_pos[0],          ( 1.0,  0.0)),
-            (ROOM_CM - robot_pos[0], (-1.0,  0.0)),
-            (robot_pos[1],          ( 0.0,  1.0)),
-            (ROOM_CM - robot_pos[1], ( 0.0, -1.0)),
-        ]:
-            if d < sigma_w * 4:
-                f  = 1.5 * math.exp(-d / sigma_w)
-                wx += f * fx
-                wy += f * fy
-
-        # 4. 合力 → 目標方位角
-        cx, cy  = ax + rx + wx, ay + ry + wy
-        c_n     = math.hypot(cx, cy) + 1e-6
-        desired_yaw = math.degrees(math.atan2(cy / c_n, cx / c_n))
-        angle_diff  = normalize_angle(desired_yaw - robot_yaw)
-
-        # ---- 速度スケーリング ----
-        if dist_to_human <= SAFETY_R_CM:
-            speed = 0
-        elif dist_to_human <= PERSONAL_R_CM:
-            t = (dist_to_human - SAFETY_R_CM) / (PERSONAL_R_CM - SAFETY_R_CM)
-            speed = int(t * AGV_SPEED_SLOW)
-        elif dist_to_human <= SOCIAL_R_CM:
-            t = (dist_to_human - PERSONAL_R_CM) / (SOCIAL_R_CM - PERSONAL_R_CM)
-            speed = int(AGV_SPEED_SLOW + t * (AGV_SPEED_MAX - AGV_SPEED_SLOW))
-        else:
-            speed = AGV_SPEED_MAX
+        prev_pos = get_pos2d(ROBOT_NAME)
 
         if stop_event.is_set():
             break
 
-        # ---- 回転 ----
-        if abs(angle_diff) > ROTATE_THR:
-            # clockwise=1: 時計回り, clockwise=-1: 反時計回り
-            clockwise = 1 if angle_diff < 0 else -1
-            ucv.dog_rotate(ROBOT_NAME, [0.3, abs(angle_diff), clockwise])
+        ucv.dog_move(ROBOT_NAME, [AGV_CRUISE_SPEED, STEP_DUR, 0])
 
-        # ---- 前進 (速度=0 の場合は待機) ----
         if stop_event.is_set():
             break
-        if speed > 0:
-            ucv.dog_move(ROBOT_NAME, [speed, STEP_DUR, 0])
-        else:
-            time.sleep(STEP_DUR)
+
+        curr_pos = get_pos2d(ROBOT_NAME)
+        moved_cm = math.hypot(curr_pos[0] - prev_pos[0], curr_pos[1] - prev_pos[1])
+
+        # 前進量が極端に小さいときは何かに当たっているとみなしてランダム回頭
+        if moved_cm < COLLISION_MOVE_EPS_CM:
+            turn_deg = float(rng.uniform(TURN_MIN_DEG, TURN_MAX_DEG))
+            clockwise = 1 if rng.random() < 0.5 else -1
+            ucv.dog_rotate(ROBOT_NAME, [0.3, turn_deg, clockwise])
 
 
 # ---- データ記録スレッド ----
