@@ -1066,59 +1066,72 @@ def build_follow_sensor_state() -> Dict[str, object]:
         return sensor_state
 
 
-def monitor_loop() -> None:
+def pump_monitor_windows(simulation_done: bool) -> bool:
+    """Pump OpenCV UI once from the main thread.
+
+    On Windows, calling imshow/waitKey from worker threads can freeze the window.
+    Keep all HighGUI calls in the main thread to avoid "Not Responding" windows.
+    """
     camera_win = MONITOR_CAMERA_WINDOW_NAME
     range_win = MONITOR_RANGE_WINDOW_NAME
-    dt = 1.0 / max(1.0, MONITOR_FPS)
 
     try:
-        while not monitor_stop_event.is_set():
-            frame = get_latest_camera_frame()
-            if frame is not None:
-                if simulation_done_event.is_set():
-                    cv2.putText(
-                        frame,
-                        MONITOR_CLOSE_KEY_HINT,
-                        (10, max(20, frame.shape[0] - 12)),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.52,
-                        (0, 220, 255),
-                        2,
-                    )
-                cv2.imshow(camera_win, frame)
-
-            waveform = render_range_waveform(get_sensor_range_history_snapshot(), time.time())
-            if simulation_done_event.is_set():
+        frame = get_latest_camera_frame()
+        if frame is not None:
+            if simulation_done:
                 cv2.putText(
-                    waveform,
+                    frame,
                     MONITOR_CLOSE_KEY_HINT,
-                    (10, waveform.shape[0] - 12),
+                    (10, max(20, frame.shape[0] - 12)),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.50,
+                    0.52,
                     (0, 220, 255),
-                    1,
+                    2,
                 )
-            cv2.imshow(range_win, waveform)
+            cv2.imshow(camera_win, frame)
 
-            key = cv2.waitKey(1) & 0xFF
-            if key in (ord("q"), ord("Q"), 27):
-                monitor_stop_event.set()
-                break
+        waveform = render_range_waveform(get_sensor_range_history_snapshot(), time.time())
+        if simulation_done:
+            cv2.putText(
+                waveform,
+                MONITOR_CLOSE_KEY_HINT,
+                (10, waveform.shape[0] - 12),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.50,
+                (0, 220, 255),
+                1,
+            )
+        cv2.imshow(range_win, waveform)
 
-            time.sleep(dt)
+        key = cv2.waitKey(1) & 0xFF
+        if key in (ord("q"), ord("Q"), 27):
+            monitor_stop_event.set()
+            return False
+
+        for win in (camera_win, range_win):
+            try:
+                visible = cv2.getWindowProperty(win, cv2.WND_PROP_VISIBLE)
+                if visible < 1:
+                    monitor_stop_event.set()
+                    return False
+            except Exception:
+                # getWindowProperty may fail depending on backend; ignore and continue.
+                pass
+
+        return True
     except Exception as exc:
         print(f"[Monitor] Realtime monitor disabled: {exc}")
         monitor_stop_event.set()
-    finally:
+        return False
+
+
+def close_monitor_windows() -> None:
+    for win in (MONITOR_CAMERA_WINDOW_NAME, MONITOR_RANGE_WINDOW_NAME):
         try:
-            cv2.destroyWindow(camera_win)
+            cv2.destroyWindow(win)
         except Exception:
             pass
-        try:
-            cv2.destroyWindow(range_win)
-        except Exception:
-            pass
-        monitor_stop_event.set()
+    monitor_stop_event.set()
 
 
 def prepare_monitor_windows() -> None:
@@ -1317,18 +1330,23 @@ reset_runtime_state()
 thread_human = threading.Thread(target=human_control_loop, daemon=True)
 thread_robot = threading.Thread(target=agv_follow_loop, daemon=True)
 thread_rec = threading.Thread(target=recorder_loop, daemon=True)
-thread_monitor = None
 
 if ENABLE_REALTIME_MONITOR:
     prepare_monitor_windows()
-    thread_monitor = threading.Thread(target=monitor_loop, daemon=True)
-    thread_monitor.start()
 
 thread_human.start()
 thread_robot.start()
 thread_rec.start()
 
-time.sleep(SIM_DURATION)
+sim_t0 = time.time()
+monitor_dt = 1.0 / max(1.0, MONITOR_FPS)
+while (time.time() - sim_t0) < SIM_DURATION:
+    if ENABLE_REALTIME_MONITOR and not monitor_stop_event.is_set():
+        pump_monitor_windows(simulation_done=False)
+        time.sleep(monitor_dt)
+    else:
+        time.sleep(0.05)
+
 stop_event.set()
 simulation_done_event.set()
 
@@ -1337,12 +1355,16 @@ for t in [thread_human, thread_robot, thread_rec]:
 
 print(f"=== Simulation finished. samples={len(sim_data)} ===")
 
-if thread_monitor is not None and thread_monitor.is_alive():
+if ENABLE_REALTIME_MONITOR and not monitor_stop_event.is_set():
     print("Simulation ended. Monitor windows remain open.")
     print(MONITOR_CLOSE_KEY_HINT)
     while not monitor_stop_event.is_set():
-        time.sleep(0.05)
-    thread_monitor.join(timeout=2.0)
+        if not pump_monitor_windows(simulation_done=True):
+            break
+        time.sleep(monitor_dt)
+
+if ENABLE_REALTIME_MONITOR:
+    close_monitor_windows()
 
 
 # %%
