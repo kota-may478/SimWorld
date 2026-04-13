@@ -15,6 +15,8 @@ SpotDog:
 - Tries to keep following at approximately 1 meter.
 - Uses camera-based human detection for heading alignment.
 - Uses depth sensing (LiDAR-like ranging) for distance control.
+- If the human is not detected for a short period, spins in place to search.
+   - Default: about 1 full turn in 3 seconds.
 
 ## Environment parity with `hri_agv`
 
@@ -28,6 +30,15 @@ The room and wall setup is intentionally kept the same as `hri_agv`:
 2. Run the script.
 3. After simulation, logs are saved to:
    - `dev/hri_spotdog_follow/spotdog_follow_log.csv`
+
+During simulation, you can also watch:
+- SpotDog camera stream (with tracking/search overlay)
+- Real-time range sensor timeline window
+
+Related switches and parameters in the script:
+- `ENABLE_REALTIME_MONITOR`
+- `SEARCH_SPIN_PERIOD_S`
+- `SEARCH_LOST_GRACE_S`
 
 ## Vision backend
 

@@ -38,6 +38,8 @@ import math
 import sys
 import threading
 import time
+from collections import deque
+import importlib
 from io import BytesIO
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -145,6 +147,18 @@ SENSOR_CAM_PITCH_DEG = -5.0
 VISION_USE_YOLO = False
 VISION_YOLO_MODEL_PATH = None
 VISION_HOG_SCALE = 0.65
+
+# Search behavior when visual target is lost
+SEARCH_LOST_GRACE_S = 0.40
+SEARCH_SPIN_PERIOD_S = 3.0  # One full rotation in ~3 seconds
+SEARCH_SPIN_CLOCKWISE = True
+
+# Real-time monitor
+ENABLE_REALTIME_MONITOR = True
+MONITOR_FPS = 15.0
+MONITOR_RANGE_WINDOW_S = 20.0
+MONITOR_RANGE_MIN_CM = 0.0
+MONITOR_RANGE_MAX_CM = 400.0
 
 # Simulation runtime
 SIM_DURATION = 60.0
@@ -345,6 +359,84 @@ def bbox_heading_error_deg(bbox: Tuple[int, int, int, int], frame_w: int) -> flo
     return float(norm * (SENSOR_FOV_DEG * 0.5))
 
 
+def draw_sensor_overlay(
+    frame_bgr: Optional[np.ndarray],
+    det: Optional[Dict[str, object]],
+    range_cm: float,
+    backend: str,
+    searching: bool,
+) -> np.ndarray:
+    if frame_bgr is None or frame_bgr.size == 0:
+        canvas = np.zeros((SENSOR_RESOLUTION[1], SENSOR_RESOLUTION[0], 3), dtype=np.uint8)
+    else:
+        canvas = frame_bgr.copy()
+
+    if det is not None:
+        x, y, w, h = det["bbox"]
+        cv2.rectangle(canvas, (x, y), (x + w, y + h), (0, 255, 0), 2)
+
+    H, W = canvas.shape[:2]
+    cx = W // 2
+    cy = H // 2
+    cv2.line(canvas, (cx - 10, cy), (cx + 10, cy), (255, 255, 0), 1)
+    cv2.line(canvas, (cx, cy - 10), (cx, cy + 10), (255, 255, 0), 1)
+
+    status_text = "SEARCHING" if searching else "TRACKING"
+    status_color = (0, 180, 255) if searching else (0, 255, 0)
+
+    range_text = "nan" if not np.isfinite(range_cm) else f"{range_cm:.1f} cm"
+    cv2.putText(canvas, f"state: {status_text}", (12, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.62, status_color, 2)
+    cv2.putText(canvas, f"range: {range_text}", (12, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.60, (255, 255, 255), 2)
+    cv2.putText(canvas, f"backend: {backend}", (12, 78), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (210, 210, 210), 1)
+    return canvas
+
+
+def render_range_waveform(
+    history: List[Tuple[float, float]],
+    now_ts: float,
+) -> np.ndarray:
+    width, height = 760, 260
+    canvas = np.full((height, width, 3), 245, dtype=np.uint8)
+
+    left, right, top, bottom = 52, 16, 14, 36
+    plot_w = width - left - right
+    plot_h = height - top - bottom
+
+    cv2.rectangle(canvas, (left, top), (left + plot_w, top + plot_h), (30, 30, 30), 1)
+    cv2.putText(canvas, "Range Sensor Timeline [cm]", (12, height - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (70, 70, 70), 1)
+
+    recent: List[Tuple[float, float]] = []
+    for ts, val in history:
+        if now_ts - ts <= MONITOR_RANGE_WINDOW_S and np.isfinite(val):
+            recent.append((ts, val))
+
+    if len(recent) < 2:
+        cv2.putText(canvas, "Waiting for range samples...", (left + 10, top + 24), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (100, 100, 100), 1)
+        return canvas
+
+    y_max = max(MONITOR_RANGE_MAX_CM, max(v for _, v in recent) * 1.05)
+    y_min = min(MONITOR_RANGE_MIN_CM, min(v for _, v in recent) * 0.95)
+    if y_max - y_min < 1.0:
+        y_max = y_min + 1.0
+
+    def to_px(ts: float, val: float) -> Tuple[int, int]:
+        x_norm = 1.0 - (now_ts - ts) / MONITOR_RANGE_WINDOW_S
+        x = int(left + clamp(x_norm, 0.0, 1.0) * plot_w)
+        y_norm = (val - y_min) / (y_max - y_min)
+        y = int(top + plot_h - clamp(y_norm, 0.0, 1.0) * plot_h)
+        return x, y
+
+    points = [to_px(ts, val) for ts, val in recent]
+    for i in range(1, len(points)):
+        cv2.line(canvas, points[i - 1], points[i], (40, 120, 255), 2)
+
+    latest_val = recent[-1][1]
+    cv2.putText(canvas, f"latest: {latest_val:.1f} cm", (left + 10, top + 22), cv2.FONT_HERSHEY_SIMPLEX, 0.56, (30, 30, 30), 1)
+    cv2.putText(canvas, f"window: {MONITOR_RANGE_WINDOW_S:.0f}s", (left + 220, top + 22), cv2.FONT_HERSHEY_SIMPLEX, 0.56, (30, 30, 30), 1)
+
+    return canvas
+
+
 class PersonDetector:
     def __init__(self, use_yolo: bool = False, yolo_model_path: Optional[str] = None, hog_scale: float = 0.65):
         self.backend = "hog"
@@ -356,8 +448,7 @@ class PersonDetector:
 
         if use_yolo:
             try:
-                from ultralytics import YOLO
-
+                YOLO = getattr(importlib.import_module("ultralytics"), "YOLO")
                 self.yolo_model = YOLO(yolo_model_path or "yolov8n.pt")
                 self.backend = "yolo"
                 print("[Vision] YOLO backend enabled.")
@@ -626,15 +717,40 @@ latest_sensor_state: Dict[str, float] = {
     "backend": "none",
 }
 sensor_lock = threading.Lock()
+latest_camera_frame: Optional[np.ndarray] = None
+sensor_range_history: deque = deque(maxlen=6000)
 
 
 def set_latest_sensor_state(state: Dict[str, object]) -> None:
+    range_cm = float(state.get("range_cm", float("nan")))
     with sensor_lock:
         latest_sensor_state["detected"] = 1.0 if state.get("detected", False) else 0.0
-        latest_sensor_state["range_cm"] = float(state.get("range_cm", float("nan")))
+        latest_sensor_state["range_cm"] = range_cm
         latest_sensor_state["yaw_delta_deg"] = float(state.get("yaw_delta_deg", float("nan")))
         latest_sensor_state["confidence"] = float(state.get("confidence", float("nan")))
         latest_sensor_state["backend"] = str(state.get("backend", "none"))
+        if np.isfinite(range_cm):
+            sensor_range_history.append((time.time(), range_cm))
+
+
+def set_latest_camera_frame(frame: Optional[np.ndarray]) -> None:
+    if frame is None:
+        return
+    with sensor_lock:
+        global latest_camera_frame
+        latest_camera_frame = frame.copy()
+
+
+def get_latest_camera_frame() -> Optional[np.ndarray]:
+    with sensor_lock:
+        if latest_camera_frame is None:
+            return None
+        return latest_camera_frame.copy()
+
+
+def get_sensor_range_history_snapshot() -> List[Tuple[float, float]]:
+    with sensor_lock:
+        return list(sensor_range_history)
 
 
 def get_latest_sensor_state_snapshot() -> Dict[str, object]:
@@ -699,6 +815,14 @@ def build_follow_sensor_state() -> Dict[str, object]:
         det = vision_detector.detect(rgb)
 
         if det is None:
+            overlay = draw_sensor_overlay(
+                rgb,
+                None,
+                float(sensor_state["range_cm"]),
+                str(sensor_state["backend"]),
+                searching=True,
+            )
+            set_latest_camera_frame(overlay)
             return sensor_state
 
         bbox = det["bbox"]
@@ -718,13 +842,55 @@ def build_follow_sensor_state() -> Dict[str, object]:
             sensor_state["range_cm"] = depth_range_cm
             sensor_state["backend"] = sensor_state["backend"] + "+depth"
 
+        overlay = draw_sensor_overlay(
+            rgb,
+            det,
+            float(sensor_state["range_cm"]),
+            str(sensor_state["backend"]),
+            searching=False,
+        )
+        set_latest_camera_frame(overlay)
+
         return sensor_state
     except Exception:
         return sensor_state
 
 
+def monitor_loop() -> None:
+    camera_win = "SpotDog Camera"
+    range_win = "Range Sensor Timeline"
+    dt = 1.0 / max(1.0, MONITOR_FPS)
+
+    try:
+        while not stop_event.is_set():
+            frame = get_latest_camera_frame()
+            if frame is not None:
+                cv2.imshow(camera_win, frame)
+
+            waveform = render_range_waveform(get_sensor_range_history_snapshot(), time.time())
+            cv2.imshow(range_win, waveform)
+
+            # Keep windows responsive while simulation runs.
+            cv2.waitKey(1)
+            time.sleep(dt)
+    except Exception as exc:
+        print(f"[Monitor] Realtime monitor disabled: {exc}")
+    finally:
+        try:
+            cv2.destroyWindow(camera_win)
+        except Exception:
+            pass
+        try:
+            cv2.destroyWindow(range_win)
+        except Exception:
+            pass
+
+
 def agv_follow_loop() -> None:
     last_wall_turn_ts = 0.0
+    last_seen_ts = time.time()
+    search_spin_angle_deg = 360.0 * ROBOT_ROTATE_SLICE_S / SEARCH_SPIN_PERIOD_S
+    search_spin_clockwise = 1 if SEARCH_SPIN_CLOCKWISE else -1
 
     while not stop_event.is_set():
         robot_pos = get_pos2d(ROBOT_NAME)
@@ -743,6 +909,16 @@ def agv_follow_loop() -> None:
             continue
 
         sensor_state = build_follow_sensor_state()
+        now_ts = time.time()
+
+        if bool(sensor_state["detected"]):
+            last_seen_ts = now_ts
+        elif now_ts - last_seen_ts >= SEARCH_LOST_GRACE_S:
+            sensor_state["backend"] = str(sensor_state["backend"]) + "+search_spin"
+            set_latest_sensor_state(sensor_state)
+            ucv.dog_move(ROBOT_NAME, [0.0, ROBOT_STOP_PULSE_S, 0])
+            ucv.dog_rotate(ROBOT_NAME, [ROBOT_ROTATE_SLICE_S, search_spin_angle_deg, search_spin_clockwise])
+            continue
 
         human_pos = get_pos2d(HUMAN_NAME)
         human_yaw = get_yaw(HUMAN_NAME)
@@ -846,15 +1022,25 @@ print(f"=== Starting SpotDog follow simulation for {SIM_DURATION:.0f}s ===")
 thread_human = threading.Thread(target=human_control_loop, daemon=True)
 thread_robot = threading.Thread(target=agv_follow_loop, daemon=True)
 thread_rec = threading.Thread(target=recorder_loop, daemon=True)
+thread_monitor = None
+
+if ENABLE_REALTIME_MONITOR:
+    thread_monitor = threading.Thread(target=monitor_loop, daemon=True)
 
 thread_human.start()
 thread_robot.start()
 thread_rec.start()
+if thread_monitor is not None:
+    thread_monitor.start()
 
 time.sleep(SIM_DURATION)
 stop_event.set()
 
-for t in [thread_human, thread_robot, thread_rec]:
+threads = [thread_human, thread_robot, thread_rec]
+if thread_monitor is not None:
+    threads.append(thread_monitor)
+
+for t in threads:
     t.join(timeout=5.0)
 
 print(f"=== Simulation finished. samples={len(sim_data)} ===")
