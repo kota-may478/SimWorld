@@ -34,7 +34,8 @@ from simworld.config import Config
 # %%
 config = Config()
 traffic_controller = TrafficController(config, 20, 10, "<path to your roads.json>", 1, 0.2)
-communicator = Communicator(UnrealCV())
+ucv = UnrealCV()
+communicator = Communicator(ucv)
 traffic_controller.init_communicator(communicator)
 
 # %%

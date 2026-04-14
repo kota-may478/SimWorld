@@ -107,3 +107,6 @@ print(f"Camera {camera_id} FOV set to: {new_fov}")
 new_resolution = (1920, 1080)  # Example: set to Full HD
 ucv.set_camera_resolution(camera_id, new_resolution)
 print(f"Camera {camera_id} resolution set to: {new_resolution}")
+
+# %%
+communicator.disconnect()

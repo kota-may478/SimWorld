@@ -40,7 +40,8 @@ config = Config()
 
 # %%
 # Initialize the communicator
-communicator = Communicator(UnrealCV())
+ucv = UnrealCV()
+communicator = Communicator(ucv)
 
 # %%
 # Initialize the LLM model
@@ -105,3 +106,6 @@ t.join()
 
 # %%
 communicator.clear_env()
+
+# %%
+communicator.disconnect()

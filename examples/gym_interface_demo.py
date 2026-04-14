@@ -38,7 +38,8 @@ from simworld.utils.vector import Vector
 # ## Init
 
 # %%
-communicator = Communicator(UnrealCV())
+ucv = UnrealCV()
+communicator = Communicator(ucv)
 
 # %%
 import os 

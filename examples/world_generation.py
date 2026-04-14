@@ -35,7 +35,8 @@ config = Config()
 # Start the game in Unreal Engine first before running the following code.
 
 # %%
-communicator = Communicator(UnrealCV())
+ucv = UnrealCV()
+communicator = Communicator(ucv)
 
 # %%
 communicator.generate_world('<path to your progen_world.json>', config['citygen.ue_asset_path'], run_time=False)
