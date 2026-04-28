@@ -60,6 +60,8 @@ class BaseLLM(metaclass=LLMMetaclass):
             if not openrouter_api_key:
                 raise ValueError('No OpenRouter API key provided. Please set OPENROUTER_API_KEY environment variable.')
             self.api_key = openrouter_api_key
+            if url is None:
+                url = 'https://openrouter.ai/api/v1'
         elif provider == 'local':
             # For local models (vLLM, etc.), API key is not required
             self.api_key = os.getenv('OPENAI_API_KEY', 'not-needed')

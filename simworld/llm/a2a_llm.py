@@ -75,7 +75,7 @@ class A2ALLM(BaseLLM):
 
         start_time = time.time()
         user_content = []
-        user_prompt += '\nPlease respond in valid JSON format following this schema: ' + str(response_format.to_json_schema())
+        user_prompt += '\nPlease respond in valid JSON format following this schema: ' + self._response_format_schema_text(response_format)
         user_content.append({'type': 'text', 'text': user_prompt})
 
         self.logger.info(f'user_content: {user_content}')
@@ -87,18 +87,25 @@ class A2ALLM(BaseLLM):
             })
 
         action_response = None
-        try:
-            response = self.client.beta.chat.completions.parse(
-                model=self.model_name,
-                messages=[{'role': 'system', 'content': system_prompt}, {'role': 'user', 'content': user_content}],
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=top_p,
-            )
-            action_response = response.choices[0].message.content
-        except Exception as e:
-            self.logger.error(f'Error in generate_instructions_openrouter: {e}')
-            action_response = None
+        model_candidates = self._openrouter_model_candidates()
+        for model_name in model_candidates:
+            try:
+                response = self.client.beta.chat.completions.parse(
+                    model=model_name,
+                    messages=[{'role': 'system', 'content': system_prompt}, {'role': 'user', 'content': user_content}],
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                )
+                action_response = response.choices[0].message.content
+                if self.model_name != model_name:
+                    self.logger.warning(f'OpenRouter model fallback: {self.model_name} -> {model_name}')
+                    self.model_name = model_name
+                break
+            except Exception as e:
+                self.logger.error(f'Error in generate_instructions_openrouter ({model_name}): {e}')
+                if not self._should_retry_openrouter_model(e, model_name):
+                    break
 
         if action_response is None:
             self.logger.warning('Warning: Failed to get action response, using default')
@@ -107,6 +114,44 @@ class A2ALLM(BaseLLM):
             action_json = self._extract_json_and_fix_escapes(action_response)
 
         return action_json, time.time() - start_time
+
+    def _openrouter_model_candidates(self):
+        candidates = [self.model_name]
+        if self.model_name != 'openrouter/free':
+            candidates.append('openrouter/free')
+        return candidates
+
+    def _should_retry_openrouter_model(self, error, model_name: str) -> bool:
+        if model_name == 'openrouter/free':
+            return False
+
+        error_text = str(error).lower()
+        return (
+            'no endpoints found for' in error_text
+            or 'model not found' in error_text
+            or 'no such model' in error_text
+            or 'code: 404' in error_text
+            or 'error code: 404' in error_text
+        )
+
+    def _response_format_schema_text(self, response_format) -> str:
+        """Return a JSON schema string for Pydantic v1/v2 response models."""
+        if response_format is None:
+            return '{}'
+
+        if isinstance(response_format, dict):
+            return json.dumps(response_format, ensure_ascii=False)
+
+        if hasattr(response_format, 'model_json_schema'):
+            schema = response_format.model_json_schema()
+        elif hasattr(response_format, 'schema'):
+            schema = response_format.schema()
+        elif hasattr(response_format, 'to_json_schema'):
+            schema = response_format.to_json_schema()
+        else:
+            schema = {'title': getattr(response_format, '__name__', 'ResponseFormat')}
+
+        return json.dumps(schema, ensure_ascii=False)
 
     def _process_image_to_base64(self, image: np.ndarray) -> str:
         """Convert numpy array image to base64 string.

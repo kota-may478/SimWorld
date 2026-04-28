@@ -426,6 +426,7 @@ develop-eggs/
 lib/
 lib64/
 venv/
+.env
 .env/
 .venv/
 
