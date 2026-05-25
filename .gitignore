@@ -451,9 +451,9 @@ docs/source/_static/
 # Output
 output*/
 
-# Jupyter
-**/.ipynb_checkpoints/
-*.ipynb
+# # Jupyter
+# **/.ipynb_checkpoints/
+# *.ipynb
 
 # Claude Code
 .claude/
