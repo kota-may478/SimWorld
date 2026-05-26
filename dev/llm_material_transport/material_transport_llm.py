@@ -700,16 +700,48 @@ def normalize_angle(deg: float) -> float:
     return deg
 
 
+def _parse_ue_location_response(response: str) -> Optional[Tuple[float, float, float]]:
+    """UnrealCV location 応答をパース。`error` や空応答は None。"""
+    if not response:
+        return None
+    text = response.strip()
+    if not text or text.lower() == "error" or text.lower().startswith("error "):
+        return None
+    try:
+        parts = [float(part) for part in text.split()]
+    except ValueError:
+        return None
+    if len(parts) < 3:
+        return None
+    return float(parts[0]), float(parts[1]), float(parts[2])
+
+
+def try_get_pos3d(actor_name: str) -> Optional[Tuple[float, float, float]]:
+    """UE アクターの XYZ [cm]。取得失敗・削除済み actor は None。"""
+    if not actor_name or ucv is None:
+        return None
+    try:
+        with ucv.lock:
+            raw = ucv.client.request(f"vget /object/{actor_name}/location")
+    except Exception:
+        return None
+    return _parse_ue_location_response(raw)
+
+
 def get_pos2d(actor_name: str) -> Tuple[float, float]:
     """UE アクターの XY 位置 [cm] を取得。"""
-    loc = ucv.get_location(actor_name)
-    return float(loc[0]), float(loc[1])
+    loc = try_get_pos3d(actor_name)
+    if loc is None:
+        raise ValueError(f"Failed to get location for actor {actor_name!r}")
+    return loc[0], loc[1]
 
 
 def get_pos3d(actor_name: str) -> Tuple[float, float, float]:
     """UE アクターの XYZ 位置 [cm] を取得。"""
-    loc = ucv.get_location(actor_name)
-    return float(loc[0]), float(loc[1]), float(loc[2])
+    loc = try_get_pos3d(actor_name)
+    if loc is None:
+        raise ValueError(f"Failed to get location for actor {actor_name!r}")
+    return loc
 
 
 def get_yaw(actor_name: str) -> float:
@@ -846,11 +878,13 @@ def get_robot_carry_pose() -> Tuple[Tuple[float, float, float], Tuple[float, flo
 
 
 def actor_exists(actor_name: Optional[str]) -> bool:
-    """指定した actor が UE 上に存在するかを返す。"""
+    """指定した actor が UE 上に存在し、位置取得できるかを返す。"""
     if not actor_name:
         return False
     active_ucv, _ = ensure_connection()
-    return actor_name in {str(name) for name in active_ucv.get_objects().tolist()}
+    if actor_name not in {str(name) for name in active_ucv.get_objects().tolist()}:
+        return False
+    return try_get_pos3d(actor_name) is not None
 
 
 def destroy_actor_if_exists(actor_name: Optional[str]) -> None:
@@ -928,8 +962,9 @@ def get_carried_material_actor_name() -> str:
 
 def _material_pickup_origin_xyz() -> Tuple[float, float, float]:
     """ピックアップ直前のマテリアル位置 [cm]。"""
-    if actor_exists(MATERIAL_NAME):
-        return get_pos3d(MATERIAL_NAME)
+    loc = try_get_pos3d(MATERIAL_NAME)
+    if loc is not None:
+        return loc
     return MATERIAL_SPAWN
 
 
@@ -992,9 +1027,10 @@ def get_delivery_location_for_handoff(
 ) -> Tuple[float, float, float]:
     """受け渡し箱の設置 [x, y, z]。既定は Humanoid 足元（床面 Z + drop オフセット）。"""
     if at_human_feet:
+        human_loc = try_get_pos3d(human_name) if human_name else None
         place_xy = (
-            get_pos2d(human_name)
-            if actor_exists(human_name)
+            (human_loc[0], human_loc[1])
+            if human_loc is not None
             else grid_map_xy_to_world(GRID_HUMAN_XY_M)
         )
     else:
@@ -1332,15 +1368,17 @@ def generate_task_instruction(
 _transport_costmap: Optional[Costmap2D] = None
 _path_plan_history: List[PathLegVisualization] = []
 _live_costmap_viz: Optional[LiveCostmapVisualizer] = None
+_task_ground_z_cm: Optional[float] = None
 
 
 def reset_path_planning_state() -> None:
     """コストマップと計画履歴をクリア（タスク開始時）。"""
-    global _transport_costmap, _path_plan_history, _live_costmap_viz
+    global _transport_costmap, _path_plan_history, _live_costmap_viz, _task_ground_z_cm
     finalize_live_costmap_visualization()
     _transport_costmap = None
     _path_plan_history = []
     _live_costmap_viz = None
+    _task_ground_z_cm = None
 
 
 def start_live_costmap_visualization() -> None:
@@ -1408,15 +1446,21 @@ def save_ue_game_camera_png(
     if ucv is None:
         print("[UE screenshot] skipped: UE not connected")
         return None
+    from PIL import Image
+
     cam_id = resolve_ue_camera_id(camera_name)
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    abs_path = str(path.resolve())
     try:
-        ucv.get_image(cam_id, viewmode, mode="file_path", img_path=abs_path)
+        img_bgr = ucv.get_image(cam_id, viewmode, mode="direct")
     except Exception as exc:
         print(f"[UE screenshot] capture failed: {exc}")
         return None
+    if img_bgr is None or getattr(img_bgr, "size", 0) == 0:
+        print(f"[UE screenshot] empty image from camera {camera_name!r} (id={cam_id})")
+        return None
+    img_rgb = img_bgr[:, :, ::-1] if len(img_bgr.shape) == 3 else img_bgr
+    Image.fromarray(img_rgb).save(path)
     if path.exists() and path.stat().st_size > 0:
         print(f"[UE screenshot] Saved: {path} (camera={camera_name!r}, id={cam_id})")
         return path
@@ -1443,14 +1487,33 @@ def estimate_costmap_ground_z_cm(
     真上 depth → 世界 XY 逆投影に使う床面 Z [cm]。
 
     Humanoid の root は足元より高いことが多いため、スポーン済み actor の最小 Z を床面とする。
-  """
+    ピックアップ後に削除された MATERIAL は一覧に残っても location=error になるため除外する。
+    """
+    global _task_ground_z_cm
+
+    candidate_names: List[str] = []
+    for name in (human_name, ROBOT_NAME):
+        if name:
+            candidate_names.append(name)
+    carried = get_carried_material_actor_name()
+    if carried:
+        candidate_names.append(carried)
+    if not USE_MATERIAL_CARRY_PROXY:
+        candidate_names.append(MATERIAL_NAME)
+
     zs: List[float] = []
-    for name in (human_name, ROBOT_NAME, MATERIAL_NAME):
-        if name and actor_exists(name):
-            zs.append(float(get_pos3d(name)[2]))
-    if not zs:
-        return float(fallback_z_cm)
-    return min(zs)
+    for name in candidate_names:
+        loc = try_get_pos3d(name)
+        if loc is not None:
+            zs.append(float(loc[2]))
+
+    if zs:
+        floor_z = min(zs)
+        _task_ground_z_cm = floor_z
+        return floor_z
+    if _task_ground_z_cm is not None:
+        return float(_task_ground_z_cm)
+    return float(fallback_z_cm)
 
 
 def obstacle_scan_exclude_actor_xy(
@@ -1880,8 +1943,10 @@ def robot_simulate_drop(
     ロボットが Human 手前 standoff 地点へマテリアルを渡す演出。
     箱は Human から約 1 m の受け渡し点（delivery_xy）に置き、ロボット中心とは分離する。
     """
-    human_xy = get_pos2d(human_name) if actor_exists(human_name) else delivery_xy
-    robot_xy = get_pos2d(ROBOT_NAME)
+    human_loc = try_get_pos3d(human_name) if human_name else None
+    human_xy = (human_loc[0], human_loc[1]) if human_loc is not None else delivery_xy
+    robot_loc = try_get_pos3d(ROBOT_NAME)
+    robot_xy = (robot_loc[0], robot_loc[1]) if robot_loc is not None else delivery_xy
     delivery_xy = get_human_handoff_delivery_xy(
         human_name,
         human_xy=human_xy,
@@ -1949,7 +2014,8 @@ def execute_transport_task(
         else grid_map_xy_to_world(GRID_HUMAN_XY_M)
     )
     ground_z_cm = estimate_costmap_ground_z_cm(human_name)
-    human_z = get_pos3d(human_name)[2] if actor_exists(human_name) else HUMAN_SPAWN[2]
+    human_loc = try_get_pos3d(human_name)
+    human_z = human_loc[2] if human_loc is not None else HUMAN_SPAWN[2]
     print(f"[Costmap] ground_z_cm={ground_z_cm:.1f} (for top-down projection)")
     ensure_transport_costmap(
         MAP_WORLD_ORIGIN_XY,
