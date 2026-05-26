@@ -106,6 +106,7 @@ from path_planning_costmap import (
     LiveCostmapVisualizer,
     plot_costmap_with_paths,
 )
+from costmap_obstacle_scan import enrich_costmap_with_obstacles
 
 # プロジェクトルートの .env を読み込む (OPENROUTER_API_KEY などを環境変数に設定)
 _env_path = _root / ".env"
@@ -566,7 +567,7 @@ PATH_REPLAN_STUCK_STEPS = 14        # これ以上進まなければ現在地か
 PATH_MAX_TOTAL_STEPS = 600          # レッグ全体の安全上限（無限ループ防止）
 
 # ---- Human 手前での停止・受け渡し [cm] ----
-HUMAN_APPROACH_STANDOFF_CM = 100.0  # Human から 1 m 手前の受け渡し点（ナビゴール＝箱の設置 XY）
+HUMAN_APPROACH_STANDOFF_CM = 1500.0  # Human から 15 m 手前の受け渡し点（ナビゴール＝箱の設置 XY）
 ROBOT_APPROACH_TOLERANCE_CM = 50.0  # 受け渡し点への到達判定 [cm]
 DELIVERY_ATTACH_STEPS = 10
 DELIVERY_ATTACH_STEP_SLEEP_S = 0.04
@@ -578,6 +579,9 @@ MATERIAL_RESPAWN_SETTLE_S = 0.15
 
 # ---- 記録設定 ----
 RECORD_INTERVAL  = 0.3    # データ記録間隔 [s]
+
+# ---- コストマップ障害物（柱など）スキャン ----
+COSTMAP_OBSTACLE_SCAN_ENABLE = True
 
 # ---- ライブコストマップ可視化（フレーム → MP4/GIF） ----
 LIVE_COSTMAP_ENABLE = True
@@ -1319,7 +1323,12 @@ def set_transport_costmap(costmap: Costmap2D) -> None:
     )
 
 
-def ensure_transport_costmap(origin_xy: Optional[Tuple[float, float]] = None) -> Costmap2D:
+def ensure_transport_costmap(
+    origin_xy: Optional[Tuple[float, float]] = None,
+    *,
+    ground_z_cm: Optional[float] = None,
+    scan_obstacles: bool = True,
+) -> Costmap2D:
     """
     Humanoid 位置をマップ左下隅（origin）とした 30 m 四方コストマップを用意する。
     セル解像度 10 cm → 300×300。
@@ -1336,6 +1345,21 @@ def ensure_transport_costmap(origin_xy: Optional[Tuple[float, float]] = None) ->
             f"[Costmap] {COSTMAP_SIZE_M:.0f} m square, cell={COSTMAP_RESOLUTION_CM:.0f} cm, "
             f"origin={corner_xy}, grid={_transport_costmap.costs.shape}"
         )
+        if scan_obstacles and COSTMAP_OBSTACLE_SCAN_ENABLE:
+            active_ucv, _ = ensure_connection()
+            gz = float(ground_z_cm if ground_z_cm is not None else HUMAN_SPAWN[2])
+            scan_result = enrich_costmap_with_obstacles(
+                active_ucv,
+                _transport_costmap,
+                ground_z_cm=gz,
+            )
+            print(
+                "[Costmap] Obstacle scan "
+                f"({scan_result.scan_method}): "
+                f"sampled={scan_result.sampled_cells}, "
+                f"hit_cells={scan_result.hit_cells}, "
+                f"manual_pillars={scan_result.manual_pillars}"
+            )
     return _transport_costmap
 
 
@@ -1646,7 +1670,10 @@ def robot_simulate_drop(
         replace_existing=True,
     )
     time.sleep(0.4)
-    print(f"  [Robot] {MATERIAL_LABEL} placed {HUMAN_APPROACH_STANDOFF_CM:.0f} cm before human.")
+    print(
+        f"  [Robot] {MATERIAL_LABEL} placed "
+        f"{HUMAN_APPROACH_STANDOFF_CM / 100:.1f} m before human."
+    )
 
 
 # %%
@@ -1675,7 +1702,12 @@ def execute_transport_task(
 
     reset_path_planning_state()
     human_corner_xy = get_pos2d(human_name) if actor_exists(human_name) else HUMAN_SPAWN[:2]
-    ensure_transport_costmap(human_corner_xy)
+    human_z = get_pos3d(human_name)[2] if actor_exists(human_name) else HUMAN_SPAWN[2]
+    ensure_transport_costmap(
+        human_corner_xy,
+        ground_z_cm=human_z,
+        scan_obstacles=True,
+    )
     start_live_costmap_visualization()
     if _live_costmap_viz is not None:
         _live_costmap_viz.set_human_xy(human_corner_xy)
@@ -1713,14 +1745,14 @@ def execute_transport_task(
     )
     print(
         f"  [Robot] Human at {human_xy}, handoff goal={delivery_xy} "
-        f"({HUMAN_APPROACH_STANDOFF_CM:.0f} cm before human, "
+        f"({HUMAN_APPROACH_STANDOFF_CM / 100:.0f} m before human, "
         f"dist={dist2d(human_xy, delivery_xy):.1f} cm)"
     )
     arrived = robot_navigate_to(
         delivery_xy,
         stop_event,
         tolerance_cm=ROBOT_APPROACH_TOLERANCE_CM,
-        label="(1 m before human)",
+        label=f"({HUMAN_APPROACH_STANDOFF_CM / 100:.0f} m before human)",
     )
     carry_stop.set()
     t_carry.join(timeout=5.0)
