@@ -363,17 +363,17 @@ MATERIAL_HIDDEN_Z_CM = -5000.0
 MATERIAL_HIDDEN_SCALE = (0.01, 0.01, 0.01)
 
 # ---- スポーンレイアウト設定 ----
-# "grid_map": 30m×30m マップ左下原点。Human (1m,1m), Robot (2m,1m), Material (20m,20m) [m]
+# "grid_map": 30m×30m マップ左下原点。Human (1m,1m), Robot (1m,3m), Material (20m,20m) [m]
 # "anchor":   ANCHOR_XYZ 周辺に Human / Robot / Material を配置
 # "boundary": 境界矩形と辺の指定から境界付近の座標を自動生成
 # "manual":   下の MANUAL_* 座標をそのまま使用
 SPAWN_LAYOUT_MODE = "grid_map"
 
 # ---- 30m×30m グリッドマップ配置（左下原点 = MAP_WORLD_ORIGIN_XY）----
-# マップ座標 [m]: Human (1,1), Robot (2,1), Material (20,20), カメラ (15,15)
+# マップ座標 [m]: Human (1,1), Robot (1,3), Material (20,20), カメラ (15,15)
 MAP_WORLD_ORIGIN_XY = (1325.755, -1811.4)  # UE 世界座標 [cm] でのマップ左下隅 (0,0)
 GRID_HUMAN_XY_M = (1.0, 1.0)
-GRID_ROBOT_XY_M = (2.0, 1.0)
+GRID_ROBOT_XY_M = (1.0, 3.0)
 GRID_MATERIAL_XY_M = (20.0, 20.0)
 GRID_CAMERA_XY_M = (15.0, 15.0)
 GRID_SPAWN_Z_CM = 3812.825  # Human / Robot / Material の Z [cm]（床面付近）
@@ -619,7 +619,8 @@ PATH_MAX_TOTAL_STEPS = 600          # レッグ全体の安全上限（無限ル
 
 # ---- Human 手前での停止・受け渡し [cm] ----
 HUMAN_APPROACH_STANDOFF_CM = 100.0  # Human から 1 m 手前の受け渡し点（ナビゴール＝箱の設置 XY）
-ROBOT_APPROACH_TOLERANCE_CM = 50.0  # 受け渡し点への到達判定 [cm]
+ROBOT_APPROACH_TOLERANCE_CM = 120.0  # 受け渡し点への到達判定 [cm]（WP 消化後は ARRIVE_TOLERANCE も併用）
+HANDOFF_COMPLETE_HUMAN_CM = 220.0  # 全 WP 到達後: Human からこの距離以内なら受け渡しフェーズへ進む
 DELIVERY_ATTACH_STEPS = 10
 DELIVERY_ATTACH_STEP_SLEEP_S = 0.04
 # ドロップ時: 先に kinematic 配置してから物理を有効化（即 physics+spawn は UE Fatal の原因になりやすい）
@@ -981,12 +982,19 @@ def get_delivery_location_for_handoff(
     human_name: str,
     *,
     delivery_xy: Optional[Tuple[float, float]] = None,
+    at_human_feet: bool = True,
 ) -> Tuple[float, float, float]:
-    """Human 手前 standoff の受け渡し点に箱を置く [x, y, z]（Z はロボット床面基準）。"""
-    if delivery_xy is None:
-        delivery_xy = get_human_handoff_delivery_xy(human_name)
-    _, _, robot_z = get_pos3d(ROBOT_NAME)
-    return (delivery_xy[0], delivery_xy[1], robot_z + MATERIAL_DROP_Z_CM)
+    """受け渡し箱の設置 [x, y, z]。既定は Humanoid 足元（床面 Z + drop オフセット）。"""
+    if at_human_feet:
+        place_xy = (
+            get_pos2d(human_name)
+            if actor_exists(human_name)
+            else grid_map_xy_to_world(GRID_HUMAN_XY_M)
+        )
+    else:
+        place_xy = delivery_xy or get_human_handoff_delivery_xy(human_name)
+    floor_z = estimate_costmap_ground_z_cm(human_name)
+    return (place_xy[0], place_xy[1], floor_z + MATERIAL_DROP_Z_CM)
 
 
 def begin_material_carry_visual() -> str:
@@ -1463,10 +1471,12 @@ def ensure_transport_costmap(
                 align_actors.append(("robot", get_pos2d(ROBOT_NAME)))
             if actor_exists(MATERIAL_NAME):
                 align_actors.append(("material", get_pos2d(MATERIAL_NAME)))
+            scan_camera_xy = grid_map_xy_to_world(GRID_CAMERA_XY_M, corner_xy)
             scan_result = enrich_costmap_with_obstacles(
                 active_ucv,
                 _transport_costmap,
                 ground_z_cm=gz,
+                camera_xy=scan_camera_xy,
                 exclude_actor_xy=excluded,
                 alignment_actors=align_actors,
                 save_debug_dir=_output_dir,
@@ -1616,12 +1626,31 @@ def execute_segment_command(command: SegmentCommand) -> None:
         ucv.dog_move(ROBOT_NAME, [ROBOT_SPEED, move_duration_s, 0])
 
 
+def handoff_approach_complete(
+    pos_xy: Tuple[float, float],
+    goal_xy: Tuple[float, float],
+    human_xy: Tuple[float, float],
+    tolerance_cm: float,
+) -> bool:
+    """受け渡しレッグ: ゴールまたは Human 近傍で完了とみなす。"""
+    if dist2d(pos_xy, goal_xy) <= tolerance_cm:
+        return True
+    if dist2d(pos_xy, goal_xy) <= ARRIVE_TOLERANCE:
+        return True
+    if dist2d(pos_xy, human_xy) <= HANDOFF_COMPLETE_HUMAN_CM:
+        return True
+    return False
+
+
 def robot_navigate_planned_leg(
     goal_xy: Tuple[float, float],
     stop_event: threading.Event,
     tolerance_cm: float = ARRIVE_TOLERANCE,
     label: str = "",
     planner: str = PATH_PLANNER,
+    *,
+    human_xy: Optional[Tuple[float, float]] = None,
+    handoff_leg: bool = False,
 ) -> bool:
     """
     グローバル WP 列 + 各 WP への (回転, 前進) オープンループ + 軽量フィードバック。
@@ -1662,7 +1691,19 @@ def robot_navigate_planned_leg(
             return True
 
         if wp_index >= len(waypoints):
-            if dist2d(pos_xy, goal_xy) <= tolerance_cm:
+            if handoff_leg and human_xy is not None:
+                if handoff_approach_complete(pos_xy, goal_xy, human_xy, tolerance_cm):
+                    print(
+                        f"  [Planner] Handoff approach complete "
+                        f"(goal={dist2d(pos_xy, goal_xy):.1f} cm, "
+                        f"human={dist2d(pos_xy, human_xy):.1f} cm)"
+                    )
+                    return True
+            elif dist2d(pos_xy, goal_xy) <= max(tolerance_cm, ARRIVE_TOLERANCE):
+                print(
+                    f"  [Planner] Arrived at goal after WPs "
+                    f"(dist={dist2d(pos_xy, goal_xy):.1f} cm)"
+                )
                 return True
             wp_index = max(0, len(waypoints) - 1)
 
@@ -1711,6 +1752,9 @@ def robot_navigate_to(
     stop_event: threading.Event,
     tolerance_cm: float = ARRIVE_TOLERANCE,
     label: str = "",
+    *,
+    human_xy: Optional[Tuple[float, float]] = None,
+    handoff_leg: bool = False,
 ) -> bool:
     """計画付きナビゲーション（PATH_PLANNER）へ委譲。"""
     return robot_navigate_planned_leg(
@@ -1718,6 +1762,8 @@ def robot_navigate_to(
         stop_event,
         tolerance_cm=tolerance_cm,
         label=label,
+        human_xy=human_xy,
+        handoff_leg=handoff_leg,
     )
 
 
@@ -1789,10 +1835,7 @@ def robot_simulate_drop(
         replace_existing=True,
     )
     time.sleep(0.4)
-    print(
-        f"  [Robot] {MATERIAL_LABEL} placed "
-        f"{HUMAN_APPROACH_STANDOFF_CM / 100:.1f} m before human."
-    )
+    print(f"  [Robot] {MATERIAL_LABEL} placed at Humanoid feet.")
 
 
 # %%
@@ -1879,6 +1922,8 @@ def execute_transport_task(
         stop_event,
         tolerance_cm=ROBOT_APPROACH_TOLERANCE_CM,
         label=f"({HUMAN_APPROACH_STANDOFF_CM / 100:.0f} m before human)",
+        human_xy=human_xy,
+        handoff_leg=True,
     )
     carry_stop.set()
     t_carry.join(timeout=5.0)

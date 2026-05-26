@@ -50,11 +50,13 @@ TOPDOWN_MIN_VALID_DEPTH_M = 0.5
 TOPDOWN_HEIGHT_SEARCH_START_CM = 600.0
 TOPDOWN_HEIGHT_SEARCH_STEP_CM = 150.0
 TOPDOWN_HEIGHT_SEARCH_MAX_CM = 5500.0
-TOPDOWN_FOV_EDGE_MARGIN_FRAC = 0.98
-TOPDOWN_HEIGHT_SAFETY_FACTOR = 1.12
+# 四隅が画角のかなり内側に入るまで上げる（30 m 四方に十分な余裕）
+TOPDOWN_FOV_EDGE_MARGIN_FRAC = 0.88
+TOPDOWN_HEIGHT_SAFETY_FACTOR = 1.28
 
 # depth → 柱（床との距離差）
 TOPDOWN_PILLAR_DEPTH_MARGIN_M = 1.26
+TOPDOWN_PILLAR_MARGIN_REF_HEIGHT_CM = 2257.0
 TOPDOWN_LOCAL_MAX_FILTER_PX = 31
 TOPDOWN_DEPTH_VOTES_PER_CELL = 1
 
@@ -71,6 +73,19 @@ TOPDOWN_AGENT_EXCLUDE_RADIUS_CM = 300.0
 MANUAL_PILLAR_OBSTACLES_CM: List[PillarObstacle] = []
 
 _LAST_TOPDOWN_CAPTURE: dict = {}
+
+
+@dataclass(frozen=True)
+class NadirProjectionCalib:
+    """アンカー actor でフィットした真上投影の水平スケール補正。"""
+
+    scale_x: float = 1.0
+    scale_y: float = 1.0
+
+    def apply_world_xy(self, wx_cm: np.ndarray, wy_cm: np.ndarray, cam_x: float, cam_y: float) -> Tuple[np.ndarray, np.ndarray]:
+        wx_out = (wx_cm - cam_x) * self.scale_x + cam_x
+        wy_out = (wy_cm - cam_y) * self.scale_y + cam_y
+        return wx_out, wy_out
 
 
 @dataclass(frozen=True)
@@ -126,6 +141,20 @@ def _costmap_center_xy(costmap: Costmap2D) -> WorldXY:
         costmap.origin_xy[0] + costmap.size_x_cm * 0.5,
         costmap.origin_xy[1] + costmap.size_y_cm * 0.5,
     )
+
+
+def effective_pillar_depth_margin_m(camera_height_cm: float) -> float:
+    """柱検出用 depth マージン [m]（高度はログ用、閾値は検証済み固定値）。"""
+    _ = camera_height_cm
+    return float(TOPDOWN_PILLAR_DEPTH_MARGIN_M)
+
+
+def resolve_topdown_camera_xy(
+    costmap: Costmap2D,
+    camera_xy: Optional[WorldXY] = None,
+) -> WorldXY:
+    """俯瞰カメラ XY [cm]。未指定時はコストマップ幾何中心 (= 30 m マップの 15 m, 15 m)。"""
+    return camera_xy if camera_xy is not None else _costmap_center_xy(costmap)
 
 
 def _costmap_corners_xy(costmap: Costmap2D) -> List[WorldXY]:
@@ -220,12 +249,13 @@ def find_camera_height_for_full_map(
     width_px: int,
     height_px: int,
     fov_deg: float = TOPDOWN_CAM_FOV_DEG,
+    camera_xy: Optional[WorldXY] = None,
 ) -> float:
     """
     マップ中心真上・真下のまま高度を上げ、30 m 四方の四隅が画角内に入る最初の高度 [cm]。
     理論値から開始し、UE へは数回だけカメラを置いて確認する。
     """
-    cx, cy = _costmap_center_xy(costmap)
+    cx, cy = resolve_topdown_camera_xy(costmap, camera_xy)
     analytic_cm = _analytic_min_camera_height_cm(costmap, fov_deg)
     start_cm = max(TOPDOWN_HEIGHT_SEARCH_START_CM, analytic_cm * 0.95)
     height_cm = start_cm
@@ -270,21 +300,147 @@ def _pixel_to_world_xy_nadir(
     width_px: int,
     height_px: int,
     fov_deg: float,
+    range_scale_m: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    各画素を地面 Z 平面へ逆投影（歪み補正）。
+    真下カメラ: 画素 → 世界 XY [cm]。
 
-    Returns:
-        wx_cm, wy_cm, slant_range_m
+    range_scale_m: 各画素の水平スケール [m]。未指定時は (cam_z - ground) を全画素に使用。
+    depth_m は slant_range 推定用に受け取るが、水平位置は range_scale_m を優先する。
     """
     cam_h_m = max((cam_z - ground_z_cm) / 100.0, 0.5)
+    if range_scale_m is None:
+        horiz_m = np.full_like(pu, cam_h_m, dtype=np.float64)
+    else:
+        horiz_m = np.maximum(range_scale_m.astype(np.float64), 0.5)
     focal = _focal_length_px(width_px, fov_deg)
-    dx_m = (pu.astype(np.float64) - width_px * 0.5) / focal * cam_h_m
-    dy_m = -(pv.astype(np.float64) - height_px * 0.5) / focal * cam_h_m
+    dx_m = (pu.astype(np.float64) - width_px * 0.5) / focal * horiz_m
+    dy_m = -(pv.astype(np.float64) - height_px * 0.5) / focal * horiz_m
     wx_cm = cam_x + dx_m * 100.0
     wy_cm = cam_y + dy_m * 100.0
-    slant_m = np.sqrt(cam_h_m * cam_h_m + dx_m * dx_m + dy_m * dy_m)
+    slant_m = np.sqrt(horiz_m * horiz_m + dx_m * dx_m + dy_m * dy_m)
     return wx_cm, wy_cm, slant_m
+
+
+def _log_anchor_projection_residuals(
+    anchors: Sequence[WorldXY],
+    *,
+    calib: NadirProjectionCalib,
+    cam_x: float,
+    cam_y: float,
+    cam_z: float,
+    ground_z_cm: float,
+    depth: np.ndarray,
+    width_px: int,
+    height_px: int,
+    fov_deg: float = TOPDOWN_CAM_FOV_DEG,
+) -> None:
+    """キャリブ後の床面アンカー残差 [cm] をログ（診断のみ）。"""
+    for index, (wx, wy) in enumerate(anchors):
+        pu, pv, inside = _world_xy_to_pixel_nadir(
+            wx,
+            wy,
+            cam_x=cam_x,
+            cam_y=cam_y,
+            cam_z=cam_z,
+            ground_z_cm=ground_z_cm,
+            width_px=width_px,
+            height_px=height_px,
+            fov_deg=fov_deg,
+        )
+        if not inside:
+            print(f"[Costmap] anchor[{index}] outside FOV at world=({wx:.1f},{wy:.1f})")
+            continue
+        d_m = float(depth[pv, pu])
+        if not math.isfinite(d_m) or d_m < TOPDOWN_MIN_VALID_DEPTH_M:
+            d_m = max((cam_z - ground_z_cm) / 100.0, 0.5)
+        wx_p, wy_p, _ = _pixel_to_world_xy_nadir(
+            np.array([[pu]]),
+            np.array([[pv]]),
+            depth,
+            cam_x=cam_x,
+            cam_y=cam_y,
+            cam_z=cam_z,
+            ground_z_cm=ground_z_cm,
+            width_px=width_px,
+            height_px=height_px,
+            fov_deg=fov_deg,
+            range_scale_m=np.array([[d_m]]),
+        )
+        wx_c, wy_c = calib.apply_world_xy(wx_p, wy_p, cam_x, cam_y)
+        err = math.hypot(wx - float(wx_c[0, 0]), wy - float(wy_c[0, 0]))
+        print(
+            f"[Costmap] anchor[{index}] residual after calib: {err:.1f} cm "
+            f"(world=({wx:.1f},{wy:.1f}) proj=({wx_c[0,0]:.1f},{wy_c[0,0]:.1f}))"
+        )
+
+
+def fit_nadir_projection_from_anchors(
+    anchors: Sequence[WorldXY],
+    *,
+    cam_x: float,
+    cam_y: float,
+    cam_z: float,
+    ground_z_cm: float,
+    depth: np.ndarray,
+    width_px: int,
+    height_px: int,
+    fov_deg: float = TOPDOWN_CAM_FOV_DEG,
+) -> NadirProjectionCalib:
+    """
+    地上に置いた actor の世界座標と、depth 付き逆投影の一致から水平スケールを推定。
+    """
+    sx_vals: List[float] = []
+    sy_vals: List[float] = []
+    cam_h_m = max((cam_z - ground_z_cm) / 100.0, 0.5)
+    focal = _focal_length_px(width_px, fov_deg)
+
+    for wx, wy in anchors:
+        pu, pv, inside = _world_xy_to_pixel_nadir(
+            wx,
+            wy,
+            cam_x=cam_x,
+            cam_y=cam_y,
+            cam_z=cam_z,
+            ground_z_cm=ground_z_cm,
+            width_px=width_px,
+            height_px=height_px,
+            fov_deg=fov_deg,
+        )
+        if not inside:
+            continue
+        d_m = float(depth[pv, pu])
+        if not math.isfinite(d_m) or d_m < TOPDOWN_MIN_VALID_DEPTH_M:
+            d_m = cam_h_m
+        wx_p, wy_p, _ = _pixel_to_world_xy_nadir(
+            np.array([[pu]], dtype=np.int32),
+            np.array([[pv]], dtype=np.int32),
+            depth,
+            cam_x=cam_x,
+            cam_y=cam_y,
+            cam_z=cam_z,
+            ground_z_cm=ground_z_cm,
+            width_px=width_px,
+            height_px=height_px,
+            fov_deg=fov_deg,
+            range_scale_m=np.array([[d_m]]),
+        )
+        wx_pred = float(wx_p[0, 0])
+        wy_pred = float(wy_p[0, 0])
+        if abs(wx_pred - cam_x) > 5.0:
+            sx_vals.append((wx - cam_x) / (wx_pred - cam_x))
+        if abs(wy_pred - cam_y) > 5.0:
+            sy_vals.append((wy - cam_y) / (wy_pred - cam_y))
+
+    def _median_or_one(values: List[float]) -> float:
+        if not values:
+            return 1.0
+        return float(np.median(values))
+
+    return NadirProjectionCalib(
+        scale_x=_median_or_one(sx_vals),
+        scale_y=_median_or_one(sy_vals),
+    )
 
 
 def _depth_image_to_pillar_votes(
@@ -297,6 +453,7 @@ def _depth_image_to_pillar_votes(
     ground_z_cm: float,
     fov_deg: float,
     depth_margin_m: float,
+    projection_calib: Optional[NadirProjectionCalib] = None,
 ) -> np.ndarray:
     """depth 画素を透視補正して格子へ投票（柱候補セル）。"""
     height_px, width_px = depth.shape
@@ -304,6 +461,8 @@ def _depth_image_to_pillar_votes(
         np.arange(width_px, dtype=np.int32),
         np.arange(height_px, dtype=np.int32),
     )
+    measured = depth.astype(np.float64)
+    # 柱の足元は床面上。画素 depth は柱天面までの距離なので、XY 逆投影は cam 高度（床面）を使う。
     wx_cm, wy_cm, slant_m = _pixel_to_world_xy_nadir(
         pu_grid,
         pv_grid,
@@ -316,8 +475,6 @@ def _depth_image_to_pillar_votes(
         height_px=height_px,
         fov_deg=fov_deg,
     )
-
-    measured = depth.astype(np.float64)
     finite = np.isfinite(measured) & (measured > TOPDOWN_MIN_VALID_DEPTH_M)
     depth_fill = np.where(finite, measured, 0.0)
     local_far = maximum_filter(depth_fill, size=TOPDOWN_LOCAL_MAX_FILTER_PX)
@@ -446,6 +603,8 @@ def scan_obstacles_topdown_depth(
     *,
     ground_z_cm: float,
     camera_id: Optional[int] = None,
+    camera_xy: Optional[WorldXY] = None,
+    anchor_world_xy: Optional[Sequence[WorldXY]] = None,
     exclude_actor_xy: Optional[Sequence[WorldXY]] = None,
     pillar_depth_margin_m: Optional[float] = None,
 ) -> Tuple[np.ndarray, float]:
@@ -455,13 +614,13 @@ def scan_obstacles_topdown_depth(
     Returns:
         (mask, camera_height_cm above ground)
     """
-    margin_m = float(
-        TOPDOWN_PILLAR_DEPTH_MARGIN_M
-        if pillar_depth_margin_m is None
-        else pillar_depth_margin_m
+    margin_m = (
+        float(pillar_depth_margin_m)
+        if pillar_depth_margin_m is not None
+        else None
     )
     cam_id = _first_numeric_camera_id(ucv) if camera_id is None else int(camera_id)
-    cx, cy = _costmap_center_xy(costmap)
+    cx, cy = resolve_topdown_camera_xy(costmap, camera_xy)
     width_px, height_px = TOPDOWN_CAPTURE_RESOLUTION
 
     ucv.set_camera_resolution(cam_id, (width_px, height_px))
@@ -474,6 +633,7 @@ def scan_obstacles_topdown_depth(
         camera_id=cam_id,
         width_px=width_px,
         height_px=height_px,
+        camera_xy=(cx, cy),
     )
     cam_z = float(ground_z_cm) + height_cm
     ucv.set_camera_location(cam_id, (cx, cy, cam_z))
@@ -481,12 +641,19 @@ def scan_obstacles_topdown_depth(
         cam_id,
         (TOPDOWN_CAM_PITCH_DEG, TOPDOWN_CAM_YAW_DEG, 0.0),
     )
+    map_x_m = (cx - costmap.origin_xy[0]) / 100.0
+    map_y_m = (cy - costmap.origin_xy[1]) / 100.0
     print(
-        f"[Costmap] Top-down camera at map center ({cx:.1f}, {cy:.1f}), "
+        f"[Costmap] Top-down camera at ({cx:.1f}, {cy:.1f}) "
+        f"map=({map_x_m:.1f}m, {map_y_m:.1f}m), "
         f"height={height_cm:.0f} cm, pitch={TOPDOWN_CAM_PITCH_DEG:.0f}°"
     )
     if TOPDOWN_CAPTURE_SETTLE_S > 0:
         time.sleep(TOPDOWN_CAPTURE_SETTLE_S)
+
+    if margin_m is None:
+        margin_m = effective_pillar_depth_margin_m(height_cm)
+    print(f"[Costmap] Pillar depth margin={margin_m:.2f} m (camera_h={height_cm:.0f} cm)")
 
     depth = _fetch_depth_npy(ucv, cam_id)
     global _LAST_TOPDOWN_CAPTURE
@@ -495,6 +662,22 @@ def scan_obstacles_topdown_depth(
         "cam_xyz": (cx, cy, cam_z),
         "ground_z_cm": float(ground_z_cm),
     }
+    calib = NadirProjectionCalib()
+    if anchor_world_xy:
+        calib = fit_nadir_projection_from_anchors(
+            anchor_world_xy,
+            cam_x=cx,
+            cam_y=cy,
+            cam_z=cam_z,
+            ground_z_cm=ground_z_cm,
+            depth=depth,
+            width_px=width_px,
+            height_px=height_px,
+        )
+        print(
+            f"[Costmap] Nadir projection calib from {len(anchor_world_xy)} anchor(s): "
+            f"scale_x={calib.scale_x:.4f}, scale_y={calib.scale_y:.4f}"
+        )
     candidate = _depth_image_to_pillar_votes(
         costmap,
         depth,
@@ -505,6 +688,18 @@ def scan_obstacles_topdown_depth(
         fov_deg=TOPDOWN_CAM_FOV_DEG,
         depth_margin_m=margin_m,
     )
+    if anchor_world_xy and calib.scale_x != 1.0:
+        _log_anchor_projection_residuals(
+            anchor_world_xy,
+            calib=calib,
+            cam_x=cx,
+            cam_y=cy,
+            cam_z=cam_z,
+            ground_z_cm=ground_z_cm,
+            depth=depth,
+            width_px=width_px,
+            height_px=height_px,
+        )
     boxes = _mask_to_square_bboxes(candidate)
     candidate = _apply_square_bboxes_to_mask(candidate.shape, boxes)
     candidate = _exclude_actor_disks_fast(
@@ -735,6 +930,8 @@ def enrich_costmap_with_obstacles(
     costmap: Costmap2D,
     *,
     ground_z_cm: float,
+    camera_xy: Optional[WorldXY] = None,
+    anchor_world_xy: Optional[Sequence[WorldXY]] = None,
     manual_pillars: Optional[Sequence[PillarObstacle]] = None,
     stride_cells: int = OBSTACLE_SCAN_STRIDE_CELLS,
     use_topdown_depth: bool = True,
@@ -745,10 +942,15 @@ def enrich_costmap_with_obstacles(
     scan_method = "topdown_depth_nadir"
     camera_height_cm = 0.0
     if use_topdown_depth:
+        anchor_xy = anchor_world_xy
+        if anchor_xy is None and alignment_actors:
+            anchor_xy = [xy for _, xy in alignment_actors]
         mask, camera_height_cm = scan_obstacles_topdown_depth(
             ucv,
             costmap,
             ground_z_cm=ground_z_cm,
+            camera_xy=camera_xy,
+            anchor_world_xy=anchor_xy,
             exclude_actor_xy=exclude_actor_xy,
         )
         sampled = int(costmap.width_cells * costmap.height_cells)
