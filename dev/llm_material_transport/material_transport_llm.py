@@ -525,8 +525,10 @@ ROTATE_THR_DEG    = 20.0   # この角度差以上でのみ回転する閾値 [d
 ARRIVE_TOLERANCE  = 120.0  # 目的地到達判定距離 [cm]
 PICKUP_HOVER_Z    = 60.0   # 搬送中のマテリアル高さオフセット [cm]
 
-# ---- 搬送演出: Human への受け渡し [cm] ----
-MATERIAL_DELIVERY_FORWARD_CM = 90.0  # Human 足元のやや前方
+# ---- Human 手前での停止・受け渡し [cm] ----
+HUMAN_APPROACH_STANDOFF_CM = 100.0  # Human から 1 m 手前で停止して箱を置く
+ROBOT_APPROACH_TOLERANCE_CM = 50.0  # 手前停止点への到達判定（ARRIVE_TOLERANCE より厳しめ）
+MATERIAL_DELIVERY_FORWARD_CM = 0.0  # 停止位置がそのまま置き場（ロボット前方オフセット不要）
 MATERIAL_DELIVERY_SIDE_CM = 0.0
 DELIVERY_ATTACH_STEPS = 10
 DELIVERY_ATTACH_STEP_SLEEP_S = 0.04
@@ -796,15 +798,47 @@ def remove_ground_material_at_pickup() -> None:
         print(f"  [Robot] Removed ground {MATERIAL_NAME} at pickup site.")
 
 
-def get_human_delivery_location(human_name: str) -> Tuple[float, float, float]:
-    """Humanoid 足元付近へ箱を渡す位置 [cm]（同一プラットフォーム高さ）。"""
+def xy_standoff_from_target(
+    target_xy: Tuple[float, float],
+    from_xy: Tuple[float, float],
+    standoff_cm: float,
+) -> Tuple[float, float]:
+    """target から from 方向へ standoff_cm 離れた XY（接近停止点）。"""
+    dx = from_xy[0] - target_xy[0]
+    dy = from_xy[1] - target_xy[1]
+    dist = math.hypot(dx, dy)
+    if dist < 1e-3:
+        return (target_xy[0] - standoff_cm, target_xy[1])
+    scale = standoff_cm / dist
+    return (target_xy[0] + dx * scale, target_xy[1] + dy * scale)
+
+
+def get_human_approach_xy(
+    human_xy: Tuple[float, float],
+    approach_from_xy: Tuple[float, float],
+    standoff_cm: float = HUMAN_APPROACH_STANDOFF_CM,
+) -> Tuple[float, float]:
+    """Human から standoff_cm 手前の停止 XY（from 側から接近する想定）。"""
+    return xy_standoff_from_target(human_xy, approach_from_xy, standoff_cm)
+
+
+def get_delivery_location_at_approach(
+    approach_xy: Tuple[float, float],
+    human_name: str,
+) -> Tuple[float, float, float]:
+    """停止点（Human 手前）の床面に箱を置く位置 [cm]。"""
     if actor_exists(human_name):
-        hx, hy, hz = get_pos3d(human_name)
+        _, _, hz = get_pos3d(human_name)
     else:
-        hx, hy, hz = HUMAN_SPAWN
+        _, _, hz = HUMAN_SPAWN
+    yaw_rad = math.radians(get_yaw(ROBOT_NAME))
+    forward_x = math.cos(yaw_rad)
+    forward_y = math.sin(yaw_rad)
+    side_x = -math.sin(yaw_rad)
+    side_y = math.cos(yaw_rad)
     return (
-        hx + MATERIAL_DELIVERY_FORWARD_CM,
-        hy + MATERIAL_DELIVERY_SIDE_CM,
+        approach_xy[0] + MATERIAL_DELIVERY_FORWARD_CM * forward_x + MATERIAL_DELIVERY_SIDE_CM * side_x,
+        approach_xy[1] + MATERIAL_DELIVERY_FORWARD_CM * forward_y + MATERIAL_DELIVERY_SIDE_CM * side_y,
         hz,
     )
 
@@ -1152,17 +1186,18 @@ def robot_carry_material(stop_event: threading.Event) -> None:
     sync_carried_material_pose()
 
 
-def robot_simulate_drop(home_xy: Tuple[float, float], human_name: str) -> None:
+def robot_simulate_drop(approach_xy: Tuple[float, float], human_name: str) -> None:
     """
-    ロボットが Humanoid 足元へマテリアルを渡す演出。
-    追従用 actor を足元へ下ろしたあと、地上に本体箱を再表示する。
+    ロボットが Human 手前の停止点へマテリアルを渡す演出。
+    追従用 actor を下ろしたあと、地上に本体箱を再表示する。
     """
     global _carry_visual_actor
 
-    delivery_location = get_human_delivery_location(human_name)
+    delivery_location = get_delivery_location_at_approach(approach_xy, human_name)
     print(
-        f"  [Robot] Delivering {MATERIAL_LABEL} to human at "
-        f"{delivery_location[:2]} (z={delivery_location[2]:.1f})..."
+        f"  [Robot] Delivering {MATERIAL_LABEL} at approach point "
+        f"{delivery_location[:2]} ({HUMAN_APPROACH_STANDOFF_CM:.0f} cm before human, "
+        f"z={delivery_location[2]:.1f})..."
     )
     time.sleep(0.3)
     animate_material_detach_to_location(delivery_location)
@@ -1170,7 +1205,7 @@ def robot_simulate_drop(home_xy: Tuple[float, float], human_name: str) -> None:
     _carry_visual_actor = None
     spawn_material_actor(delivery_location, enable_physics=True)
     time.sleep(0.4)
-    print(f"  [Robot] {MATERIAL_LABEL} placed at human's feet.")
+    print(f"  [Robot] {MATERIAL_LABEL} placed {HUMAN_APPROACH_STANDOFF_CM:.0f} cm before human.")
 
 
 # %%
@@ -1221,7 +1256,18 @@ def execute_transport_task(
     t_carry    = threading.Thread(target=robot_carry_material, args=(carry_stop,), daemon=True)
     t_carry.start()
 
-    arrived = robot_navigate_to(home_loc, stop_event, label="(home base)")
+    approach_from = get_pos2d(ROBOT_NAME)
+    approach_xy = get_human_approach_xy(home_loc, approach_from)
+    print(
+        f"  [Robot] Home={home_loc}, approach stop={approach_xy} "
+        f"({HUMAN_APPROACH_STANDOFF_CM:.0f} cm before human)"
+    )
+    arrived = robot_navigate_to(
+        approach_xy,
+        stop_event,
+        tolerance_cm=ROBOT_APPROACH_TOLERANCE_CM,
+        label="(1 m before human)",
+    )
     carry_stop.set()
     t_carry.join(timeout=2)
 
@@ -1234,7 +1280,7 @@ def execute_transport_task(
 
     state = RobotState.DROPPING
     print(f"\n[Robot] State: {state.name}")
-    robot_simulate_drop(home_loc, human_name)
+    robot_simulate_drop(approach_xy, human_name)
 
     # Humanoid がロボットの帰還を確認してジェスチャー
     ucv.humanoid_discuss(human_name, 0)
