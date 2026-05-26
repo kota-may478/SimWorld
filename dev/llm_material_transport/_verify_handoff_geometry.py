@@ -6,7 +6,7 @@ import math
 import sys
 from pathlib import Path
 
-HUMAN_APPROACH_STANDOFF_CM = 100.0
+HUMAN_APPROACH_STANDOFF_CM = 1500.0
 
 
 def xy_standoff_from_target(
