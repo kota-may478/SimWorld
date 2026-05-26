@@ -363,10 +363,20 @@ MATERIAL_HIDDEN_Z_CM = -5000.0
 MATERIAL_HIDDEN_SCALE = (0.01, 0.01, 0.01)
 
 # ---- スポーンレイアウト設定 ----
+# "grid_map": 30m×30m マップ左下原点。Human (1m,1m), Robot (2m,1m), Material (20m,20m) [m]
 # "anchor":   ANCHOR_XYZ 周辺に Human / Robot / Material を配置
 # "boundary": 境界矩形と辺の指定から境界付近の座標を自動生成
 # "manual":   下の MANUAL_* 座標をそのまま使用
-SPAWN_LAYOUT_MODE = "anchor"
+SPAWN_LAYOUT_MODE = "grid_map"
+
+# ---- 30m×30m グリッドマップ配置（左下原点 = MAP_WORLD_ORIGIN_XY）----
+# マップ座標 [m]: Human (1,1), Robot (2,1), Material (20,20), カメラ (15,15)
+MAP_WORLD_ORIGIN_XY = (1325.755, -1811.4)  # UE 世界座標 [cm] でのマップ左下隅 (0,0)
+GRID_HUMAN_XY_M = (1.0, 1.0)
+GRID_ROBOT_XY_M = (2.0, 1.0)
+GRID_MATERIAL_XY_M = (20.0, 20.0)
+GRID_CAMERA_XY_M = (15.0, 15.0)
+GRID_SPAWN_Z_CM = 3812.825  # Human / Robot / Material の Z [cm]（床面付近）
 
 # ---- アンカー配置 (/Game/Maps/Level 作業エリア) [cm] ----
 ANCHOR_XYZ = (1725.755, -1011.4, 3812.825)
@@ -483,6 +493,32 @@ def build_boundary_spawn_layout(
     return human_spawn, robot_spawn, material_spawn, home_xy
 
 
+def grid_map_xy_to_world(
+    map_xy_m: Tuple[float, float],
+    origin_xy: Optional[Tuple[float, float]] = None,
+) -> Tuple[float, float]:
+    """マップ座標 [m]（左下原点）→ UE 世界 XY [cm]。"""
+    ox, oy = origin_xy or MAP_WORLD_ORIGIN_XY
+    return (ox + map_xy_m[0] * 100.0, oy + map_xy_m[1] * 100.0)
+
+
+def build_grid_map_spawn_layout(
+    origin_xy: Tuple[float, float] = MAP_WORLD_ORIGIN_XY,
+    human_xy_m: Tuple[float, float] = GRID_HUMAN_XY_M,
+    robot_xy_m: Tuple[float, float] = GRID_ROBOT_XY_M,
+    material_xy_m: Tuple[float, float] = GRID_MATERIAL_XY_M,
+    spawn_z_cm: float = GRID_SPAWN_Z_CM,
+) -> Tuple[Tuple[float, float, float], Tuple[float, float, float], Tuple[float, float, float], Tuple[float, float]]:
+    """30m 四方マップ（左下原点）上の格子座標 [m] から UE スポーン位置を生成。"""
+    human_xy = grid_map_xy_to_world(human_xy_m, origin_xy)
+    robot_xy = grid_map_xy_to_world(robot_xy_m, origin_xy)
+    material_xy = grid_map_xy_to_world(material_xy_m, origin_xy)
+    human_spawn = (human_xy[0], human_xy[1], float(spawn_z_cm))
+    robot_spawn = (robot_xy[0], robot_xy[1], float(spawn_z_cm))
+    material_spawn = (material_xy[0], material_xy[1], float(spawn_z_cm))
+    return human_spawn, robot_spawn, material_spawn, human_xy
+
+
 def build_anchor_spawn_layout(
     anchor_xyz: Tuple[float, float, float],
     robot_lateral_cm: float,
@@ -503,7 +539,9 @@ def build_anchor_spawn_layout(
     return human_spawn, robot_spawn, material_spawn, home_xy
 
 
-if SPAWN_LAYOUT_MODE == "anchor":
+if SPAWN_LAYOUT_MODE == "grid_map":
+    HUMAN_SPAWN, ROBOT_SPAWN, MATERIAL_SPAWN, HOME_XY = build_grid_map_spawn_layout()
+elif SPAWN_LAYOUT_MODE == "anchor":
     HUMAN_SPAWN, ROBOT_SPAWN, MATERIAL_SPAWN, HOME_XY = build_anchor_spawn_layout(
         anchor_xyz=ANCHOR_XYZ,
         robot_lateral_cm=ROBOT_LATERAL_OFFSET_CM,
@@ -524,17 +562,30 @@ else:
     MATERIAL_SPAWN = MANUAL_MATERIAL_SPAWN
     HOME_XY = HUMAN_SPAWN[:2]
 
-HUMAN_SPAWN, ROBOT_SPAWN, MATERIAL_SPAWN, HOME_XY = apply_global_spawn_offset_to_layout(
-    HUMAN_SPAWN, ROBOT_SPAWN, MATERIAL_SPAWN, HOME_XY,
-)
+if SPAWN_LAYOUT_MODE != "grid_map":
+    HUMAN_SPAWN, ROBOT_SPAWN, MATERIAL_SPAWN, HOME_XY = apply_global_spawn_offset_to_layout(
+        HUMAN_SPAWN, ROBOT_SPAWN, MATERIAL_SPAWN, HOME_XY,
+    )
 
 _spawn_edge = BOUNDARY_EDGE if SPAWN_LAYOUT_MODE == "boundary" else "n/a"
-print(
-    f"[SpawnLayout] mode={SPAWN_LAYOUT_MODE}, edge={_spawn_edge}, material={MATERIAL_PRESET}, "
-    f"offset=(left={SPAWN_OFFSET_LEFT_CM}cm, back={SPAWN_OFFSET_BACK_CM}cm, "
-    f"height={SPAWN_OFFSET_HEIGHT_CM}cm), "
-    f"human={HUMAN_SPAWN}, robot={ROBOT_SPAWN}, material_spawn={MATERIAL_SPAWN}"
-)
+if SPAWN_LAYOUT_MODE == "grid_map":
+    print(
+        f"[SpawnLayout] mode=grid_map, map_origin={MAP_WORLD_ORIGIN_XY}, "
+        f"human@({GRID_HUMAN_XY_M[0]}m,{GRID_HUMAN_XY_M[1]}m), "
+        f"robot@({GRID_ROBOT_XY_M[0]}m,{GRID_ROBOT_XY_M[1]}m), "
+        f"material@({GRID_MATERIAL_XY_M[0]}m,{GRID_MATERIAL_XY_M[1]}m), "
+        f"camera@({GRID_CAMERA_XY_M[0]}m,{GRID_CAMERA_XY_M[1]}m)"
+    )
+    print(
+        f"  UE world: human={HUMAN_SPAWN}, robot={ROBOT_SPAWN}, material={MATERIAL_SPAWN}"
+    )
+else:
+    print(
+        f"[SpawnLayout] mode={SPAWN_LAYOUT_MODE}, edge={_spawn_edge}, material={MATERIAL_PRESET}, "
+        f"offset=(left={SPAWN_OFFSET_LEFT_CM}cm, back={SPAWN_OFFSET_BACK_CM}cm, "
+        f"height={SPAWN_OFFSET_HEIGHT_CM}cm), "
+        f"human={HUMAN_SPAWN}, robot={ROBOT_SPAWN}, material_spawn={MATERIAL_SPAWN}"
+    )
 
 # ---- LLM 設定 ----
 # OpenRouter を使用 (無料枠あり)。
@@ -567,7 +618,7 @@ PATH_REPLAN_STUCK_STEPS = 14        # これ以上進まなければ現在地か
 PATH_MAX_TOTAL_STEPS = 600          # レッグ全体の安全上限（無限ループ防止）
 
 # ---- Human 手前での停止・受け渡し [cm] ----
-HUMAN_APPROACH_STANDOFF_CM = 1500.0  # Human から 15 m 手前の受け渡し点（ナビゴール＝箱の設置 XY）
+HUMAN_APPROACH_STANDOFF_CM = 100.0  # Human から 1 m 手前の受け渡し点（ナビゴール＝箱の設置 XY）
 ROBOT_APPROACH_TOLERANCE_CM = 50.0  # 受け渡し点への到達判定 [cm]
 DELIVERY_ATTACH_STEPS = 10
 DELIVERY_ATTACH_STEP_SLEEP_S = 0.04
@@ -1327,6 +1378,25 @@ def set_transport_costmap(costmap: Costmap2D) -> None:
     )
 
 
+def estimate_costmap_ground_z_cm(
+    human_name: Optional[str] = None,
+    *,
+    fallback_z_cm: float = GRID_SPAWN_Z_CM,
+) -> float:
+    """
+    真上 depth → 世界 XY 逆投影に使う床面 Z [cm]。
+
+    Humanoid の root は足元より高いことが多いため、スポーン済み actor の最小 Z を床面とする。
+  """
+    zs: List[float] = []
+    for name in (human_name, ROBOT_NAME, MATERIAL_NAME):
+        if name and actor_exists(name):
+            zs.append(float(get_pos3d(name)[2]))
+    if not zs:
+        return float(fallback_z_cm)
+    return min(zs)
+
+
 def obstacle_scan_exclude_actor_xy(
     human_name: Optional[str] = None,
 ) -> List[Tuple[float, float]]:
@@ -1350,24 +1420,33 @@ def ensure_transport_costmap(
     exclude_actor_xy: Optional[List[Tuple[float, float]]] = None,
 ) -> Costmap2D:
     """
-    Humanoid 位置をマップ左下隅（origin）とした 30 m 四方コストマップを用意する。
+    30 m 四方コストマップ（左下隅 = origin）。カメラはマップ上 (15m, 15m)。
     セル解像度 10 cm → 300×300。
     """
     global _transport_costmap
     if _transport_costmap is None:
-        corner_xy = origin_xy or HUMAN_SPAWN[:2]
+        corner_xy = origin_xy or MAP_WORLD_ORIGIN_XY
         _transport_costmap = build_uniform_costmap(
             origin_xy=corner_xy,
             size_m=COSTMAP_SIZE_M,
             resolution_cm=COSTMAP_RESOLUTION_CM,
         )
+        cam_xy = grid_map_xy_to_world(GRID_CAMERA_XY_M, corner_xy)
+        human_xy = grid_map_xy_to_world(GRID_HUMAN_XY_M, corner_xy)
+        human_g = _transport_costmap.world_xy_to_grid(human_xy, clamp=True)
         print(
             f"[Costmap] {COSTMAP_SIZE_M:.0f} m square, cell={COSTMAP_RESOLUTION_CM:.0f} cm, "
-            f"origin={corner_xy}, grid={_transport_costmap.costs.shape}"
+            f"origin(lower-left)={corner_xy}, camera@({GRID_CAMERA_XY_M[0]}m,{GRID_CAMERA_XY_M[1]}m)={cam_xy}, "
+            f"human@({GRID_HUMAN_XY_M[0]}m,{GRID_HUMAN_XY_M[1]}m) grid={human_g}, "
+            f"grid={_transport_costmap.costs.shape}"
         )
         if scan_obstacles and COSTMAP_OBSTACLE_SCAN_ENABLE:
             active_ucv, _ = ensure_connection()
-            gz = float(ground_z_cm if ground_z_cm is not None else HUMAN_SPAWN[2])
+            gz = float(
+                ground_z_cm
+                if ground_z_cm is not None
+                else estimate_costmap_ground_z_cm(human_name)
+            )
             excluded = (
                 exclude_actor_xy
                 if exclude_actor_xy is not None
@@ -1377,11 +1456,19 @@ def ensure_transport_costmap(
                 f"[Costmap] Top-down scan after spawn "
                 f"(excluding {len(excluded)} actor region(s))..."
             )
+            align_actors: List[Tuple[str, Tuple[float, float]]] = []
+            if human_name and actor_exists(human_name):
+                align_actors.append(("human", get_pos2d(human_name)))
+            if actor_exists(ROBOT_NAME):
+                align_actors.append(("robot", get_pos2d(ROBOT_NAME)))
+            if actor_exists(MATERIAL_NAME):
+                align_actors.append(("material", get_pos2d(MATERIAL_NAME)))
             scan_result = enrich_costmap_with_obstacles(
                 active_ucv,
                 _transport_costmap,
                 ground_z_cm=gz,
                 exclude_actor_xy=excluded,
+                alignment_actors=align_actors,
                 save_debug_dir=_output_dir,
             )
             print(
@@ -1733,17 +1820,23 @@ def execute_transport_task(
     print(f"  material={mat_loc}, home={home_loc}, priority={instruction.priority}")
 
     reset_path_planning_state()
-    human_corner_xy = get_pos2d(human_name) if actor_exists(human_name) else HUMAN_SPAWN[:2]
+    human_xy = (
+        get_pos2d(human_name)
+        if actor_exists(human_name)
+        else grid_map_xy_to_world(GRID_HUMAN_XY_M)
+    )
+    ground_z_cm = estimate_costmap_ground_z_cm(human_name)
     human_z = get_pos3d(human_name)[2] if actor_exists(human_name) else HUMAN_SPAWN[2]
+    print(f"[Costmap] ground_z_cm={ground_z_cm:.1f} (for top-down projection)")
     ensure_transport_costmap(
-        human_corner_xy,
-        ground_z_cm=human_z,
+        MAP_WORLD_ORIGIN_XY,
+        ground_z_cm=ground_z_cm,
         scan_obstacles=True,
         human_name=human_name,
     )
     start_live_costmap_visualization()
     if _live_costmap_viz is not None:
-        _live_costmap_viz.set_human_xy(human_corner_xy)
+        _live_costmap_viz.set_human_xy(human_xy)
 
     # Humanoid がロボットに手を振る
     ucv.humanoid_wave_to_dog(human_name)

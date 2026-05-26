@@ -2,7 +2,8 @@
 2D costmap + grid A* for material transport navigation.
 
 Costmap frame:
-  - origin_xy is the world (UE) position of the map corner (humanoid anchor).
+  - origin_xy is the world (UE) position of the map minimum-X/minimum-Y corner.
+  - With MAP_WORLD_ORIGIN_XY (lower-left), the map center is at origin + (size/2, size/2).
   - The map extends +X and +Y for size_m meters.
   - Cell size resolution_cm (default 10 cm).
   - costs[gy, gx]: row gy along +Y, column gx along +X.
@@ -271,13 +272,22 @@ def costmap_cell_count(size_m: float, resolution_cm: float) -> int:
     return int(round(size_cm / resolution_cm))
 
 
+def costmap_origin_for_centered_agent(
+    agent_xy: WorldXY,
+    size_m: float = COSTMAP_SIZE_M,
+) -> WorldXY:
+    """agent_xy がコストマップの幾何中心に来るよう origin（最小 XY 隅）を返す。"""
+    half_cm = size_m * 50.0
+    return (float(agent_xy[0]) - half_cm, float(agent_xy[1]) - half_cm)
+
+
 def build_uniform_costmap(
     origin_xy: WorldXY,
     size_m: float = COSTMAP_SIZE_M,
     resolution_cm: float = COSTMAP_RESOLUTION_CM,
     default_cost: float = COSTMAP_DEFAULT_CELL_COST,
 ) -> Costmap2D:
-    """Humanoid 付近を原点とした size_m 四方の均一コストマップ。"""
+    """origin を最小 XY 隅とした size_m 四方の均一コストマップ。"""
     cells = costmap_cell_count(size_m, resolution_cm)
     costs = np.full((cells, cells), default_cost, dtype=np.float32)
     return Costmap2D(costs=costs, origin_xy=origin_xy, resolution_cm=resolution_cm)

@@ -50,7 +50,8 @@ TOPDOWN_MIN_VALID_DEPTH_M = 0.5
 TOPDOWN_HEIGHT_SEARCH_START_CM = 600.0
 TOPDOWN_HEIGHT_SEARCH_STEP_CM = 150.0
 TOPDOWN_HEIGHT_SEARCH_MAX_CM = 5500.0
-TOPDOWN_FOV_EDGE_MARGIN_FRAC = 0.94
+TOPDOWN_FOV_EDGE_MARGIN_FRAC = 0.98
+TOPDOWN_HEIGHT_SAFETY_FACTOR = 1.12
 
 # depth → 柱（床との距離差）
 TOPDOWN_PILLAR_DEPTH_MARGIN_M = 1.26
@@ -68,6 +69,8 @@ TOPDOWN_SQUARE_BBOX_PAD_CELLS = 1
 TOPDOWN_AGENT_EXCLUDE_RADIUS_CM = 300.0
 
 MANUAL_PILLAR_OBSTACLES_CM: List[PillarObstacle] = []
+
+_LAST_TOPDOWN_CAPTURE: dict = {}
 
 
 @dataclass(frozen=True)
@@ -177,7 +180,7 @@ def _analytic_min_camera_height_cm(costmap: Costmap2D, fov_deg: float) -> float:
     corner_horiz_m = math.hypot(half_x, half_y) / 100.0
     half_fov = math.radians(fov_deg * 0.5)
     min_h_m = corner_horiz_m / max(math.tan(half_fov), 1e-3)
-    return min_h_m * 100.0 * 1.08
+    return min_h_m * 100.0 * TOPDOWN_HEIGHT_SAFETY_FACTOR
 
 
 def _map_corners_fit_in_image(
@@ -486,6 +489,12 @@ def scan_obstacles_topdown_depth(
         time.sleep(TOPDOWN_CAPTURE_SETTLE_S)
 
     depth = _fetch_depth_npy(ucv, cam_id)
+    global _LAST_TOPDOWN_CAPTURE
+    _LAST_TOPDOWN_CAPTURE = {
+        "depth": depth,
+        "cam_xyz": (cx, cy, cam_z),
+        "ground_z_cm": float(ground_z_cm),
+    }
     candidate = _depth_image_to_pillar_votes(
         costmap,
         depth,
@@ -502,6 +511,83 @@ def scan_obstacles_topdown_depth(
         costmap, candidate, list(exclude_actor_xy or ())
     )
     return candidate, height_cm
+
+
+def log_actor_alignment_on_costmap(
+    costmap: Costmap2D,
+    actors: Sequence[Tuple[str, WorldXY]],
+    *,
+    cam_x: float,
+    cam_y: float,
+    cam_z: float,
+    ground_z_cm: float,
+    width_px: int,
+    height_px: int,
+    fov_deg: float = TOPDOWN_CAM_FOV_DEG,
+) -> None:
+    """スキャン直後: actor の格子・画素位置をログ（投影ずれの診断用）。"""
+    for label, (wx, wy) in actors:
+        grid = costmap.world_xy_to_grid((wx, wy), clamp=False)
+        pu, pv, inside = _world_xy_to_pixel_nadir(
+            wx,
+            wy,
+            cam_x=cam_x,
+            cam_y=cam_y,
+            cam_z=cam_z,
+            ground_z_cm=ground_z_cm,
+            width_px=width_px,
+            height_px=height_px,
+            fov_deg=fov_deg,
+        )
+        print(
+            f"[Costmap] align {label}: world=({wx:.1f},{wy:.1f}) "
+            f"grid={grid} pixel=({pu},{pv}) in_fov={inside}"
+        )
+
+
+def save_topdown_camera_debug(
+    depth: np.ndarray,
+    costmap: Costmap2D,
+    actors: Sequence[Tuple[str, WorldXY]],
+    output_dir: Path,
+    *,
+    cam_x: float,
+    cam_y: float,
+    cam_z: float,
+    ground_z_cm: float,
+    fov_deg: float = TOPDOWN_CAM_FOV_DEG,
+) -> Path:
+    """真上 depth に actor 投影位置を重ねた診断 PNG。"""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    height_px, width_px = depth.shape
+    out = Path(output_dir) / "topdown_scan_camera.png"
+    fig, ax = plt.subplots(figsize=(8, 8))
+    valid = np.isfinite(depth) & (depth > TOPDOWN_MIN_VALID_DEPTH_M)
+    show = np.where(valid, depth, np.nan)
+    ax.imshow(show, origin="upper", cmap="viridis")
+    for label, (wx, wy) in actors:
+        pu, pv, inside = _world_xy_to_pixel_nadir(
+            wx,
+            wy,
+            cam_x=cam_x,
+            cam_y=cam_y,
+            cam_z=cam_z,
+            ground_z_cm=ground_z_cm,
+            width_px=width_px,
+            height_px=height_px,
+            fov_deg=fov_deg,
+        )
+        if inside:
+            ax.plot(pu, pv, "o", markersize=10, label=label)
+    ax.legend(loc="upper right")
+    ax.set_title("Top-down depth + actor projections")
+    fig.savefig(out, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+    return out
 
 
 def save_obstacle_scan_debug(
@@ -653,6 +739,7 @@ def enrich_costmap_with_obstacles(
     stride_cells: int = OBSTACLE_SCAN_STRIDE_CELLS,
     use_topdown_depth: bool = True,
     exclude_actor_xy: Optional[Sequence[WorldXY]] = None,
+    alignment_actors: Optional[Sequence[Tuple[str, WorldXY]]] = None,
     save_debug_dir: Optional[Path] = None,
 ) -> ObstacleScanResult:
     scan_method = "topdown_depth_nadir"
@@ -674,6 +761,31 @@ def enrich_costmap_with_obstacles(
             stride_cells=stride_cells,
         )
         sampled = len(_grid_centers_for_scan(costmap, stride_cells))
+
+    capture = _LAST_TOPDOWN_CAPTURE
+    if capture and save_debug_dir is not None and alignment_actors:
+        cx, cy, cz = capture["cam_xyz"]
+        log_actor_alignment_on_costmap(
+            costmap,
+            alignment_actors,
+            cam_x=cx,
+            cam_y=cy,
+            cam_z=cz,
+            ground_z_cm=capture["ground_z_cm"],
+            width_px=capture["depth"].shape[1],
+            height_px=capture["depth"].shape[0],
+        )
+        cam_png = save_topdown_camera_debug(
+            capture["depth"],
+            costmap,
+            alignment_actors,
+            Path(save_debug_dir),
+            cam_x=cx,
+            cam_y=cy,
+            cam_z=cz,
+            ground_z_cm=capture["ground_z_cm"],
+        )
+        print(f"[Costmap] Saved top-down camera debug: {cam_png}")
 
     detected = obstacle_mask_to_world_pillars(costmap, mask)
     if detected:
