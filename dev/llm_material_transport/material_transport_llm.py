@@ -525,6 +525,12 @@ ROTATE_THR_DEG    = 20.0   # この角度差以上でのみ回転する閾値 [d
 ARRIVE_TOLERANCE  = 120.0  # 目的地到達判定距離 [cm]
 PICKUP_HOVER_Z    = 60.0   # 搬送中のマテリアル高さオフセット [cm]
 
+# ---- 搬送演出: Human への受け渡し [cm] ----
+MATERIAL_DELIVERY_FORWARD_CM = 90.0  # Human 足元のやや前方
+MATERIAL_DELIVERY_SIDE_CM = 0.0
+DELIVERY_ATTACH_STEPS = 10
+DELIVERY_ATTACH_STEP_SLEEP_S = 0.04
+
 # ---- 記録設定 ----
 RECORD_INTERVAL  = 0.3    # データ記録間隔 [s]
 
@@ -783,13 +789,33 @@ def _material_pickup_origin_xyz() -> Tuple[float, float, float]:
     return MATERIAL_SPAWN
 
 
+def remove_ground_material_at_pickup() -> None:
+    """ピックアップ時に地上にあった元の箱をシーンから除去する。"""
+    if actor_exists(MATERIAL_NAME):
+        destroy_actor_if_exists(MATERIAL_NAME)
+        print(f"  [Robot] Removed ground {MATERIAL_NAME} at pickup site.")
+
+
+def get_human_delivery_location(human_name: str) -> Tuple[float, float, float]:
+    """Humanoid 足元付近へ箱を渡す位置 [cm]（同一プラットフォーム高さ）。"""
+    if actor_exists(human_name):
+        hx, hy, hz = get_pos3d(human_name)
+    else:
+        hx, hy, hz = HUMAN_SPAWN
+    return (
+        hx + MATERIAL_DELIVERY_FORWARD_CM,
+        hy + MATERIAL_DELIVERY_SIDE_CM,
+        hz,
+    )
+
+
 def begin_material_carry_visual() -> str:
-    """ピックアップ演出開始: 元の箱を隠し、ロボット追従用 actor を用意する。"""
+    """ピックアップ演出開始: 地上の箱を消し、ロボット追従用 actor だけを表示する。"""
     global _carry_visual_actor
 
     active_ucv, _ = ensure_connection()
     pickup_origin = _material_pickup_origin_xyz()
-    hide_material_actor(MATERIAL_NAME)
+    remove_ground_material_at_pickup()
 
     if USE_MATERIAL_CARRY_PROXY:
         actor = spawn_material_carry_proxy()
@@ -809,9 +835,33 @@ def begin_material_carry_visual() -> str:
     _carry_visual_actor = actor
     print(
         f"  [Robot] Carry visual ready: {actor} at pickup site "
-        f"(original {MATERIAL_NAME} hidden)"
+        f"(ground {MATERIAL_NAME} removed)"
     )
     return actor
+
+
+def animate_material_detach_to_location(
+    delivery_loc: Tuple[float, float, float],
+    stop_event: Optional[threading.Event] = None,
+    steps: int = DELIVERY_ATTACH_STEPS,
+    step_sleep_s: float = DELIVERY_ATTACH_STEP_SLEEP_S,
+) -> None:
+    """ロボット保持位置から受け渡し地点へ箱プロキシを移動する。"""
+    active_ucv, _ = ensure_connection()
+    actor = get_carried_material_actor_name()
+    if not actor_exists(actor):
+        return
+
+    start = get_pos3d(actor)
+    delivery_rot = (0.0, 0.0, 0.0)
+    for step_idx in range(1, steps + 1):
+        if stop_event is not None and stop_event.is_set():
+            break
+        t = step_idx / steps
+        loc = tuple(start[i] + (delivery_loc[i] - start[i]) * t for i in range(3))
+        active_ucv.set_location(loc, actor)
+        active_ucv.set_orientation(delivery_rot, actor)
+        time.sleep(step_sleep_s)
 
 
 def animate_material_attach_to_robot(
@@ -1102,27 +1152,25 @@ def robot_carry_material(stop_event: threading.Event) -> None:
     sync_carried_material_pose()
 
 
-def robot_simulate_drop(home_xy: Tuple[float, float]) -> None:
+def robot_simulate_drop(home_xy: Tuple[float, float], human_name: str) -> None:
     """
-    ロボットがホームベースでマテリアルを降ろすアニメーション。
+    ロボットが Humanoid 足元へマテリアルを渡す演出。
+    追従用 actor を足元へ下ろしたあと、地上に本体箱を再表示する。
     """
     global _carry_visual_actor
 
-    print(f"  [Robot] Dropping {MATERIAL_LABEL} at home base...")
-    time.sleep(0.4)
-    drop_location = (home_xy[0] + 80, home_xy[1], MATERIAL_DROP_Z_CM)
-    carried_actor = get_carried_material_actor_name()
-    if actor_exists(carried_actor):
-        active_ucv, _ = ensure_connection()
-        active_ucv.set_location(drop_location, carried_actor)
-        active_ucv.set_orientation((0.0, 0.0, 0.0), carried_actor)
-        time.sleep(0.2)
-
+    delivery_location = get_human_delivery_location(human_name)
+    print(
+        f"  [Robot] Delivering {MATERIAL_LABEL} to human at "
+        f"{delivery_location[:2]} (z={delivery_location[2]:.1f})..."
+    )
+    time.sleep(0.3)
+    animate_material_detach_to_location(delivery_location)
     destroy_actor_if_exists(MATERIAL_CARRY_PROXY_NAME)
     _carry_visual_actor = None
-    spawn_material_actor(drop_location, enable_physics=True)
+    spawn_material_actor(delivery_location, enable_physics=True)
     time.sleep(0.4)
-    print(f"  [Robot] {MATERIAL_LABEL} dropped.")
+    print(f"  [Robot] {MATERIAL_LABEL} placed at human's feet.")
 
 
 # %%
@@ -1186,7 +1234,7 @@ def execute_transport_task(
 
     state = RobotState.DROPPING
     print(f"\n[Robot] State: {state.name}")
-    robot_simulate_drop(home_loc)
+    robot_simulate_drop(home_loc, human_name)
 
     # Humanoid がロボットの帰還を確認してジェスチャー
     ucv.humanoid_discuss(human_name, 0)
