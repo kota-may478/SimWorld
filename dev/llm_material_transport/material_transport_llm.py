@@ -329,9 +329,19 @@ MATERIAL_HIDDEN_Z_CM = -5000.0
 MATERIAL_HIDDEN_SCALE = (0.01, 0.01, 0.01)
 
 # ---- スポーンレイアウト設定 ----
+# "anchor":   ANCHOR_XYZ 周辺に Human / Robot / Material を配置
 # "boundary": 境界矩形と辺の指定から境界付近の座標を自動生成
 # "manual":   下の MANUAL_* 座標をそのまま使用
-SPAWN_LAYOUT_MODE = "boundary"
+SPAWN_LAYOUT_MODE = "anchor"
+
+# ---- アンカー配置 (/Game/Maps/Level 作業エリア) [cm] ----
+ANCHOR_XYZ = (1725.755, -1011.4, 3812.825)
+ROBOT_LATERAL_OFFSET_CM = 200.0   # Human と Robot の横方向間隔 [cm]（約 2 m）
+MATERIAL_DISTANCE_CM = 2000.0     # Human から Material までの距離 [cm]（約 20 m、右斜め前方）
+
+# 全スポーン位置への共通オフセット [cm]（UE: +X=前方/縦, +Y=右, -Y=左）
+SPAWN_OFFSET_LEFT_CM = 200.0           # 左へ 2 m
+SPAWN_OFFSET_LONGITUDINAL_CM = 100.0   # 縦（前方）へ 1 m
 
 # 境界矩形 (min_x, max_x, min_y, max_y) [cm]
 # NOTE: /Game/Maps/Level の作業領域に合わせて適宜調整してください
@@ -350,6 +360,28 @@ MANUAL_MATERIAL_SPAWN = (1200.0, 600.0, 20.0)
 
 def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
+
+
+def apply_global_spawn_offset(
+    xyz: Tuple[float, float, float],
+    left_cm: float = SPAWN_OFFSET_LEFT_CM,
+    longitudinal_cm: float = SPAWN_OFFSET_LONGITUDINAL_CM,
+) -> Tuple[float, float, float]:
+    """Human / Robot / Material 共通の位置オフセットを適用する。"""
+    x, y, z = (float(xyz[0]), float(xyz[1]), float(xyz[2]))
+    return (x + longitudinal_cm, y - left_cm, z)
+
+
+def apply_global_spawn_offset_to_layout(
+    human_spawn: Tuple[float, float, float],
+    robot_spawn: Tuple[float, float, float],
+    material_spawn: Tuple[float, float, float],
+    home_xy: Tuple[float, float],
+) -> Tuple[Tuple[float, float, float], Tuple[float, float, float], Tuple[float, float, float], Tuple[float, float]]:
+    human_spawn = apply_global_spawn_offset(human_spawn)
+    robot_spawn = apply_global_spawn_offset(robot_spawn)
+    material_spawn = apply_global_spawn_offset(material_spawn)
+    return human_spawn, robot_spawn, material_spawn, human_spawn[:2]
 
 
 def build_boundary_spawn_layout(
@@ -415,7 +447,33 @@ def build_boundary_spawn_layout(
     return human_spawn, robot_spawn, material_spawn, home_xy
 
 
-if SPAWN_LAYOUT_MODE == "boundary":
+def build_anchor_spawn_layout(
+    anchor_xyz: Tuple[float, float, float],
+    robot_lateral_cm: float,
+    material_distance_cm: float,
+) -> Tuple[Tuple[float, float, float], Tuple[float, float, float], Tuple[float, float, float], Tuple[float, float]]:
+    """アンカー座標周辺に Human / Robot / Material を配置する。
+
+    - Human: アンカー位置
+    - Robot: Human と同じ X・Z、+Y 方向へ横並び
+    - Material: Human から右斜め前方（+X, +Y）へ material_distance_cm（45°）
+    """
+    ax, ay, az = (float(anchor_xyz[0]), float(anchor_xyz[1]), float(anchor_xyz[2]))
+    human_spawn = (ax, ay, az)
+    robot_spawn = (ax, ay + robot_lateral_cm, az)
+    diagonal_cm = material_distance_cm / math.sqrt(2.0)
+    material_spawn = (ax + diagonal_cm, ay + diagonal_cm, az)
+    home_xy = (ax, ay)
+    return human_spawn, robot_spawn, material_spawn, home_xy
+
+
+if SPAWN_LAYOUT_MODE == "anchor":
+    HUMAN_SPAWN, ROBOT_SPAWN, MATERIAL_SPAWN, HOME_XY = build_anchor_spawn_layout(
+        anchor_xyz=ANCHOR_XYZ,
+        robot_lateral_cm=ROBOT_LATERAL_OFFSET_CM,
+        material_distance_cm=MATERIAL_DISTANCE_CM,
+    )
+elif SPAWN_LAYOUT_MODE == "boundary":
     HUMAN_SPAWN, ROBOT_SPAWN, MATERIAL_SPAWN, HOME_XY = build_boundary_spawn_layout(
         bounds_xyxy=LEVEL_BOUNDS_XYXY,
         edge=BOUNDARY_EDGE,
@@ -430,8 +488,14 @@ else:
     MATERIAL_SPAWN = MANUAL_MATERIAL_SPAWN
     HOME_XY = HUMAN_SPAWN[:2]
 
+HUMAN_SPAWN, ROBOT_SPAWN, MATERIAL_SPAWN, HOME_XY = apply_global_spawn_offset_to_layout(
+    HUMAN_SPAWN, ROBOT_SPAWN, MATERIAL_SPAWN, HOME_XY,
+)
+
+_spawn_edge = BOUNDARY_EDGE if SPAWN_LAYOUT_MODE == "boundary" else "n/a"
 print(
-    f"[SpawnLayout] mode={SPAWN_LAYOUT_MODE}, edge={BOUNDARY_EDGE}, material={MATERIAL_PRESET}, "
+    f"[SpawnLayout] mode={SPAWN_LAYOUT_MODE}, edge={_spawn_edge}, material={MATERIAL_PRESET}, "
+    f"offset=(left={SPAWN_OFFSET_LEFT_CM}cm, longitudinal={SPAWN_OFFSET_LONGITUDINAL_CM}cm), "
     f"human={HUMAN_SPAWN}, robot={ROBOT_SPAWN}, material_spawn={MATERIAL_SPAWN}"
 )
 
