@@ -8,7 +8,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.19.1
+#       jupytext_version: 1.19.3
 #   kernelspec:
 #     display_name: simworld
 #     language: python
@@ -47,6 +47,8 @@
 
 # %%
 import math
+import socket
+import subprocess
 import sys
 import threading
 import time
@@ -101,20 +103,157 @@ from simworld.utils.vector import Vector
 ucv = None
 communicator = None
 
+UE_PORT = 9000
+
+
+def _is_wsl() -> bool:
+    version_path = Path("/proc/version")
+    if not version_path.exists():
+        return False
+    text = version_path.read_text(encoding="utf-8").lower()
+    return "microsoft" in text or "wsl" in text
+
+
+def _wsl_default_gateway_ip() -> Optional[str]:
+    """WSL2 から Windows ホスト (vEthernet) へのデフォルトゲートウェイ IP。"""
+    try:
+        result = subprocess.run(
+            ["ip", "route", "show", "default"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    parts = result.stdout.split()
+    if len(parts) >= 3 and parts[0] == "default" and parts[1] == "via":
+        return parts[2]
+    return None
+
+
+def _windows_host_ip_from_resolv() -> Optional[str]:
+    """/etc/resolv.conf の nameserver（WSL では DNS プロキシで TCP には使えないことが多い）。"""
+    resolv_path = Path("/etc/resolv.conf")
+    if not resolv_path.exists():
+        return None
+    for line in resolv_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line.startswith("nameserver"):
+            parts = line.split()
+            if len(parts) >= 2:
+                return parts[1]
+    return None
+
+
+def _ue_host_candidates() -> List[str]:
+    hosts: List[str] = []
+    if _is_wsl():
+        for candidate in (_wsl_default_gateway_ip(), _windows_host_ip_from_resolv()):
+            if candidate and candidate not in hosts:
+                hosts.append(candidate)
+        if "127.0.0.1" not in hosts:
+            hosts.append("127.0.0.1")
+        return hosts
+    hosts.append("127.0.0.1")
+    resolv_ip = _windows_host_ip_from_resolv()
+    if resolv_ip and resolv_ip not in hosts:
+        hosts.append(resolv_ip)
+    return hosts
+
+
+def _probe_unrealcv_endpoint(host: str, port: int = UE_PORT, timeout: float = 2.0) -> bool:
+    """TCP 接続先が UnrealCV サーバかどうかをバナーで確認する。"""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        sock.connect((host, port))
+        banner = sock.recv(64)
+        return b"connected" in banner
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
+def _port_listener_hint(port: int = UE_PORT) -> str:
+    """127.0.0.1:port を LISTEN しているプロセスの ss 行を返す（診断用）。"""
+    try:
+        result = subprocess.run(
+            ["ss", "-tlnp"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    needle = f":{port}"
+    lines = [line for line in result.stdout.splitlines() if needle in line and "LISTEN" in line]
+    return "; ".join(lines[:2])
+
 
 def ensure_connection() -> Tuple[UnrealCV, Communicator]:
     """UnrealCV/Communicator を必要時に初期化して返す。"""
     global ucv, communicator
 
-    if ucv is None:
-        ucv = UnrealCV()
-    else:
-        ucv.check_connection()
+    if ucv is not None and ucv.client.isconnected():
+        if communicator is None or communicator.unrealcv is not ucv:
+            communicator = Communicator(ucv)
+        return ucv, communicator
 
-    if communicator is None or communicator.unrealcv is not ucv:
-        communicator = Communicator(ucv)
+    if ucv is not None:
+        try:
+            ucv.disconnect()
+        except Exception:
+            pass
+        ucv = None
+        communicator = None
 
-    return ucv, communicator
+    errors: List[str] = []
+    for host in _ue_host_candidates():
+        if not _probe_unrealcv_endpoint(host, UE_PORT):
+            extra = ""
+            if host == "127.0.0.1":
+                hint = _port_listener_hint(UE_PORT)
+                if hint:
+                    extra = f" (listener: {hint})"
+            errors.append(f"{host}:{UE_PORT} — not UnrealCV{extra}")
+            continue
+        try:
+            ucv = UnrealCV(port=UE_PORT, ip=host)
+            communicator = Communicator(ucv)
+            print(f"[UE] Connected via UnrealCV at {host}:{UE_PORT}")
+            return ucv, communicator
+        except Exception as exc:
+            errors.append(f"{host}:{UE_PORT} — {exc}")
+            if ucv is not None:
+                try:
+                    ucv.disconnect()
+                except Exception:
+                    pass
+            ucv = None
+            communicator = None
+
+    shadow_hint = _port_listener_hint(UE_PORT)
+    shadow_note = ""
+    if shadow_hint and "python" in shadow_hint.lower():
+        shadow_note = (
+            "\n\n[WSL] 127.0.0.1:9000 が WSL 内の Python に占有されています。"
+            " Notebook カーネルを Restart し、Windows で SimWorld.exe を起動してから"
+            " 初期設定セル → UE 接続セルの順で再実行してください。"
+        )
+
+    raise ConnectionError(
+        "Unreal Engine (UnrealCV) に接続できませんでした。\n"
+        "1. Windows PowerShell で UE サーバを起動:\n"
+        "     cd C:\\SimWorldServer\n"
+        "     .\\SimWorld.exe -windowed -log /Game/Maps/Level\n"
+        "2. ログに `Start listening on port 9000` があるか確認\n"
+        "3. この Notebook で Kernel → Restart 後、初期設定セルを実行してから UE 接続セルを実行\n"
+        "試行結果:\n  - " + "\n  - ".join(errors)
+        + shadow_note
+    )
 
 
 plt.style.use("seaborn-v0_8-whitegrid")
