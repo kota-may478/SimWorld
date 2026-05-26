@@ -12,6 +12,7 @@ from __future__ import annotations
 import heapq
 import math
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -577,19 +578,23 @@ class LiveCostmapVisualizer:
     _last_update_ts: float = field(default_factory=time.time, init=False, repr=False)
     _fig: Optional[plt.Figure] = field(default=None, init=False, repr=False)
     _ax: Optional[plt.Axes] = field(default=None, init=False, repr=False)
+    _draw_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.output_dir = Path(self.output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         clear_intermediate_frame_pngs(self.output_dir)
         self.live_window = self.live_window and _matplotlib_show_enabled()
-        if self.live_window:
-            plt.ion()
-        else:
+        if not self.live_window:
             matplotlib.use("Agg")
+        elif self.live_window:
+            plt.ion()
         self._fig, self._ax = plt.subplots(figsize=LIVE_COSTMAP_FIGSIZE, facecolor="white")
+        if self._fig is not None:
+            self._fig.set_dpi(LIVE_COSTMAP_DPI)
         self._apply_figure_layout()
-        self._draw_frame(save=False)
+        with self._draw_lock:
+            self._draw_frame(save=False)
 
     def set_planned_legs(self, legs: Sequence[PathLegVisualization]) -> None:
         self.planned_legs = list(legs)
@@ -603,7 +608,8 @@ class LiveCostmapVisualizer:
 
     def redraw_current(self, *, save: bool = False) -> None:
         """軌跡を増やさず現在状態で再描画（計画 WP 追加直後など）。"""
-        self._draw_frame(save=save)
+        with self._draw_lock:
+            self._draw_frame(save=save)
 
     def maybe_update(
         self,
@@ -620,14 +626,16 @@ class LiveCostmapVisualizer:
         if not force and (now - self._last_update_ts) < self.update_interval_s:
             return
         self._last_update_ts = now
-        self._draw_frame(save=True)
+        with self._draw_lock:
+            self._draw_frame(save=True)
 
     def finalize(self) -> dict:
         """最終フレームを保存し、MP4/GIF を生成。必要なら PNG を削除。"""
-        if self.traveled_xy:
-            self.maybe_update(self.traveled_xy[-1], force=True)
-        elif self._ax is not None:
-            self._draw_frame(save=True)
+        with self._draw_lock:
+            if self.traveled_xy:
+                self._draw_frame(save=True)
+            elif self._ax is not None:
+                self._draw_frame(save=True)
 
         mp4_path = self.output_dir / "costmap_live.mp4"
         gif_path = self.output_dir / "costmap_live.gif"
@@ -657,6 +665,11 @@ class LiveCostmapVisualizer:
     def _draw_frame(self, *, save: bool) -> None:
         if self._ax is None or self._fig is None:
             return
+        try:
+            if self._fig.canvas is None:
+                return
+        except (AttributeError, RuntimeError):
+            return
         draw_costmap_visualization(
             self._ax,
             self.costmap,
@@ -671,19 +684,32 @@ class LiveCostmapVisualizer:
 
         if save:
             frame_path = self.output_dir / f"frame_{len(self._frame_paths) + 1:05d}.png"
-            self._fig.canvas.draw()
-            self._fig.savefig(
-                frame_path,
-                dpi=LIVE_COSTMAP_DPI,
-                facecolor="white",
-                bbox_inches=None,
-                pad_inches=0.05,
-            )
+            backend = matplotlib.get_backend().lower()
+            if backend != "agg":
+                try:
+                    self._fig.canvas.draw()
+                except (AttributeError, RuntimeError) as exc:
+                    print(f"[LiveCostmap] canvas draw skipped: {exc}")
+                    return
+            try:
+                self._fig.savefig(
+                    frame_path,
+                    dpi=LIVE_COSTMAP_DPI,
+                    facecolor="white",
+                    bbox_inches=None,
+                    pad_inches=0.05,
+                )
+            except (AttributeError, RuntimeError) as exc:
+                print(f"[LiveCostmap] savefig skipped: {exc}")
+                return
             self._frame_paths.append(frame_path)
 
-        if self.live_window:
-            self._fig.canvas.draw_idle()
-            self._fig.canvas.flush_events()
+        if self.live_window and self._fig.canvas is not None:
+            try:
+                self._fig.canvas.draw_idle()
+                self._fig.canvas.flush_events()
+            except (AttributeError, RuntimeError):
+                pass
             plt.pause(0.001)
 
 

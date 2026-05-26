@@ -586,7 +586,7 @@ COSTMAP_OBSTACLE_SCAN_ENABLE = True
 # ---- ライブコストマップ可視化（フレーム → MP4/GIF） ----
 LIVE_COSTMAP_ENABLE = True
 LIVE_COSTMAP_DELETE_FRAMES_AFTER = True
-LIVE_COSTMAP_LIVE_WINDOW = True
+LIVE_COSTMAP_LIVE_WINDOW = False  # 記録スレッドと競合しないよう Agg 保存のみ
 
 # %%
 # ==============================================================
@@ -1296,8 +1296,12 @@ def record_live_costmap_robot_pose(
     robot_xy: Tuple[float, float],
     human_xy: Optional[Tuple[float, float]] = None,
 ) -> None:
-    if _live_costmap_viz is not None:
+    if _live_costmap_viz is None:
+        return
+    try:
         _live_costmap_viz.maybe_update(robot_xy, human_xy=human_xy)
+    except Exception as exc:
+        print(f"[LiveCostmap] pose update skipped: {exc}")
 
 
 def finalize_live_costmap_visualization() -> Optional[dict]:
@@ -1323,11 +1327,27 @@ def set_transport_costmap(costmap: Costmap2D) -> None:
     )
 
 
+def obstacle_scan_exclude_actor_xy(
+    human_name: Optional[str] = None,
+) -> List[Tuple[float, float]]:
+    """depth スキャン時に除外する動的 actor（影・本体）の XY [cm]。"""
+    excluded: List[Tuple[float, float]] = []
+    if human_name and actor_exists(human_name):
+        excluded.append(get_pos2d(human_name))
+    if actor_exists(ROBOT_NAME):
+        excluded.append(get_pos2d(ROBOT_NAME))
+    if actor_exists(MATERIAL_NAME):
+        excluded.append(get_pos2d(MATERIAL_NAME))
+    return excluded
+
+
 def ensure_transport_costmap(
     origin_xy: Optional[Tuple[float, float]] = None,
     *,
     ground_z_cm: Optional[float] = None,
     scan_obstacles: bool = True,
+    human_name: Optional[str] = None,
+    exclude_actor_xy: Optional[List[Tuple[float, float]]] = None,
 ) -> Costmap2D:
     """
     Humanoid 位置をマップ左下隅（origin）とした 30 m 四方コストマップを用意する。
@@ -1348,15 +1368,27 @@ def ensure_transport_costmap(
         if scan_obstacles and COSTMAP_OBSTACLE_SCAN_ENABLE:
             active_ucv, _ = ensure_connection()
             gz = float(ground_z_cm if ground_z_cm is not None else HUMAN_SPAWN[2])
+            excluded = (
+                exclude_actor_xy
+                if exclude_actor_xy is not None
+                else obstacle_scan_exclude_actor_xy(human_name)
+            )
+            print(
+                f"[Costmap] Top-down scan after spawn "
+                f"(excluding {len(excluded)} actor region(s))..."
+            )
             scan_result = enrich_costmap_with_obstacles(
                 active_ucv,
                 _transport_costmap,
                 ground_z_cm=gz,
+                exclude_actor_xy=excluded,
+                save_debug_dir=_output_dir,
             )
             print(
                 "[Costmap] Obstacle scan "
                 f"({scan_result.scan_method}): "
-                f"sampled={scan_result.sampled_cells}, "
+                f"camera_h={scan_result.camera_height_cm:.0f} cm, "
+                f"pillars={scan_result.pillar_count}, "
                 f"hit_cells={scan_result.hit_cells}, "
                 f"manual_pillars={scan_result.manual_pillars}"
             )
@@ -1707,6 +1739,7 @@ def execute_transport_task(
         human_corner_xy,
         ground_z_cm=human_z,
         scan_obstacles=True,
+        human_name=human_name,
     )
     start_live_costmap_visualization()
     if _live_costmap_viz is not None:

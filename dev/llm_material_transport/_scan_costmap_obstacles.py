@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from path_planning_costmap import build_uniform_costmap, plot_costmap_with_paths
-from costmap_obstacle_scan import enrich_costmap_with_obstacles, obstacle_mask_to_world_pillars
+from costmap_obstacle_scan import enrich_costmap_with_obstacles
 
 from simworld.communicator.unrealcv import UnrealCV
 
@@ -28,15 +28,7 @@ def main() -> int:
   # re-scan mask for pillar list (lightweight re-run not stored; print high-cost cells count)
     high = int((costmap.costs > 10).sum())
     print(f"high_cost_cells={high}")
-    out = Path(__file__).resolve().parent / "costmap_obstacles.png"
-    plot_costmap_with_paths(
-        costmap,
-        [],
-        title="Costmap + obstacle scan",
-        save_path=str(out),
-        show=False,
-    )
-    print(f"saved {out}")
+    print(f"debug PNG: {Path(__file__).resolve().parent / 'costmap_obstacles.png'}")
     ucv.disconnect()
     return 0
 
