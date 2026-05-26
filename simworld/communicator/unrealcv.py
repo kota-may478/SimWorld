@@ -66,11 +66,19 @@ class UnrealCV(object):
         self.client.request('vrun Editor.AsyncSkinnedAssetCompilation 2', -1)  # To correctly load the character
         time.sleep(1)
 
-    def check_connection(self):
+    def check_connection(self, max_attempts=30, retry_interval=1.0):
         """Check connection status, attempt to reconnect if not connected."""
+        attempts = 0
+        endpoint = getattr(self.client, 'endpoint', (self.ip, 9000))
         while self.client.isconnected() is False:
+            attempts += 1
+            if attempts > max_attempts:
+                raise ConnectionError(
+                    f'UnrealCV server is not running at {endpoint[0]}:{endpoint[1]}. '
+                    'Start SimWorld.exe (or UE Play) on Windows before running Python.'
+                )
             self.logger.error('UnrealCV server is not running. Please try again')
-            time.sleep(1)
+            time.sleep(retry_interval)
             self.client.connect()
 
     # Deprecated
