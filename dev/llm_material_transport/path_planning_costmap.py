@@ -91,18 +91,31 @@ def draw_costmap_visualization(
         interpolation="nearest",
     )
 
-    waypoint_labeled = False
-    for waypoint_xy in collect_planned_waypoints(planned_legs):
-        plot_xy = world_xy_to_plot_xy(waypoint_xy)
+    for leg in planned_legs:
+        if len(leg.plan.waypoints_xy) < 2:
+            continue
+        leg_plot = [world_xy_to_plot_xy(point) for point in leg.plan.waypoints_xy]
+        ax.plot(
+            [point[0] for point in leg_plot],
+            [point[1] for point in leg_plot],
+            "--",
+            color=leg.color,
+            lw=1.2,
+            alpha=0.55,
+            zorder=4,
+        )
+
+    planned_waypoints = collect_planned_waypoints(planned_legs)
+    if planned_waypoints:
+        waypoint_plot = [world_xy_to_plot_xy(point) for point in planned_waypoints]
         ax.scatter(
-            plot_xy[0],
-            plot_xy[1],
+            [point[0] for point in waypoint_plot],
+            [point[1] for point in waypoint_plot],
             c=COSTMAP_WAYPOINT_COLOR,
             s=COSTMAP_WAYPOINT_SIZE,
             zorder=5,
-            label="Waypoint" if not waypoint_labeled else None,
+            label="Waypoint",
         )
-        waypoint_labeled = True
 
     if traveled_xy:
         traveled_plot = [world_xy_to_plot_xy(point) for point in traveled_xy]
@@ -140,6 +153,8 @@ def draw_costmap_visualization(
             zorder=7,
             label="Humanoid",
         )
+
+    apply_fixed_costmap_axes(ax, costmap)
 
     ax.set_xlabel("Y [cm]")
     ax.set_ylabel("X [cm]")
@@ -240,6 +255,14 @@ class Costmap2D:
 def world_xy_to_plot_xy(world_xy: WorldXY) -> Tuple[float, float]:
     """Matplotlib 座標: 横軸=Y [cm], 縦軸=X [cm]（UE 水平面）。"""
     return (world_xy[1], world_xy[0])
+
+
+def apply_fixed_costmap_axes(ax: plt.Axes, costmap: Costmap2D) -> None:
+    """全フレームで同一の表示範囲・アスペクト比を維持する。"""
+    y_min, y_max, x_min, x_max = costmap.plot_extent_y_horizontal()
+    ax.set_xlim(y_min, y_max)
+    ax.set_ylim(x_min, x_max)
+    ax.set_aspect("equal", adjustable="box")
 
 
 def costmap_cell_count(size_m: float, resolution_cm: float) -> int:
@@ -524,6 +547,16 @@ def plot_costmap_with_paths(
     return fig
 
 
+LIVE_COSTMAP_FIGSIZE = (9.0, 8.0)
+LIVE_COSTMAP_DPI = 120
+LIVE_COSTMAP_SUBPLOTS = {
+    "left": 0.10,
+    "right": 0.98,
+    "top": 0.94,
+    "bottom": 0.08,
+}
+
+
 @dataclass
 class LiveCostmapVisualizer:
     """
@@ -554,7 +587,8 @@ class LiveCostmapVisualizer:
             plt.ion()
         else:
             matplotlib.use("Agg")
-        self._fig, self._ax = plt.subplots(figsize=(9, 8), facecolor="white")
+        self._fig, self._ax = plt.subplots(figsize=LIVE_COSTMAP_FIGSIZE, facecolor="white")
+        self._apply_figure_layout()
         self._draw_frame(save=False)
 
     def set_planned_legs(self, legs: Sequence[PathLegVisualization]) -> None:
@@ -562,6 +596,14 @@ class LiveCostmapVisualizer:
 
     def set_human_xy(self, human_xy: Optional[WorldXY]) -> None:
         self.human_xy = human_xy
+
+    def _apply_figure_layout(self) -> None:
+        if self._fig is not None:
+            self._fig.subplots_adjust(**LIVE_COSTMAP_SUBPLOTS)
+
+    def redraw_current(self, *, save: bool = False) -> None:
+        """軌跡を増やさず現在状態で再描画（計画 WP 追加直後など）。"""
+        self._draw_frame(save=save)
 
     def maybe_update(
         self,
@@ -625,10 +667,18 @@ class LiveCostmapVisualizer:
             show_colorbar=False,
         )
 
+        self._apply_figure_layout()
+
         if save:
             frame_path = self.output_dir / f"frame_{len(self._frame_paths) + 1:05d}.png"
-            self._fig.tight_layout()
-            self._fig.savefig(frame_path, dpi=120, facecolor="white")
+            self._fig.canvas.draw()
+            self._fig.savefig(
+                frame_path,
+                dpi=LIVE_COSTMAP_DPI,
+                facecolor="white",
+                bbox_inches=None,
+                pad_inches=0.05,
+            )
             self._frame_paths.append(frame_path)
 
         if self.live_window:

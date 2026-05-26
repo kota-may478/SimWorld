@@ -20,6 +20,8 @@ from path_planning_costmap import (
     Costmap2D,
     LiveCostmapVisualizer,
     PathLegVisualization,
+    apply_fixed_costmap_axes,
+    draw_costmap_visualization,
     plot_costmap_with_paths,
 )
 
@@ -49,6 +51,26 @@ traveled = [
     (origin[0] + 900, origin[1] + 600),
 ]
 
+def test_fixed_axes_across_frames() -> None:
+    origin = (100.0, 200.0)
+    costs = np.ones((300, 300), dtype=np.float64)
+    costmap = Costmap2D(costs=costs, origin_xy=origin)
+    fig, ax = plt.subplots(figsize=(9, 8), facecolor="white")
+    draw_costmap_visualization(ax, costmap, traveled_xy=[])
+    lim_empty = (ax.get_xlim(), ax.get_ylim())
+    ax.clear()
+    traveled = [
+        (origin[0] + 500, origin[1] + 300),
+        (origin[0] + 2500, origin[1] + 2500),
+    ]
+    draw_costmap_visualization(ax, costmap, traveled_xy=traveled)
+    lim_full = (ax.get_xlim(), ax.get_ylim())
+    plt.close(fig)
+    assert lim_empty == lim_full, f"axis limits changed: {lim_empty} vs {lim_full}"
+
+
+test_fixed_axes_across_frames()
+
 static_png = OUT / "costmap_static.png"
 plot_costmap_with_paths(
     costmap,
@@ -67,6 +89,7 @@ viz = LiveCostmapVisualizer(
     delete_frames_after_video=True,
 )
 viz.set_planned_legs([leg])
+viz.redraw_current(save=True)
 viz.set_human_xy(origin)
 for pose in traveled:
     viz.maybe_update(pose, human_xy=origin, force=True)

@@ -1341,12 +1341,15 @@ def ensure_transport_costmap(origin_xy: Optional[Tuple[float, float]] = None) ->
 
 def record_astar_leg_plan(label: str, plan: AStarPlanResult) -> None:
     """可視化用にレッグ計画を保存（同一ラベルは上書き）。"""
-    global _path_plan_history
+    global _path_plan_history, _live_costmap_viz
     color = PATH_LEG_COLORS.get(label, "#2ca02c")
     _path_plan_history = [
         entry for entry in _path_plan_history if entry.label != label
     ]
     _path_plan_history.append(PathLegVisualization(label=label, plan=plan, color=color))
+    if _live_costmap_viz is not None:
+        _live_costmap_viz.set_planned_legs(_path_plan_history)
+        _live_costmap_viz.redraw_current(save=True)
 
 
 def plan_global_path(
