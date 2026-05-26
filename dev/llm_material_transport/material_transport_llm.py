@@ -339,9 +339,10 @@ ANCHOR_XYZ = (1725.755, -1011.4, 3812.825)
 ROBOT_LATERAL_OFFSET_CM = 200.0   # Human と Robot の横方向間隔 [cm]（約 2 m）
 MATERIAL_DISTANCE_CM = 2000.0     # Human から Material までの距離 [cm]（約 20 m、右斜め前方）
 
-# 全スポーン位置への共通オフセット [cm]（UE: +X=前方/縦, +Y=右, -Y=左）
-SPAWN_OFFSET_LEFT_CM = 200.0           # 左へ 2 m
-SPAWN_OFFSET_LONGITUDINAL_CM = 100.0   # 縦（前方）へ 1 m
+# 全スポーン位置への共通オフセット [cm]（UE: +X=前方, +Y=右, +Z=高さ）
+SPAWN_OFFSET_LEFT_CM = 700.0    # 左へ 7 m（当初 2 m + さらに 5 m）
+SPAWN_OFFSET_BACK_CM = 300.0    # 後ろへ 3 m（-X）
+SPAWN_OFFSET_HEIGHT_CM = 100.0  # 高さ +1 m（+Z）
 
 # 境界矩形 (min_x, max_x, min_y, max_y) [cm]
 # NOTE: /Game/Maps/Level の作業領域に合わせて適宜調整してください
@@ -365,11 +366,12 @@ def _clamp(value: float, lower: float, upper: float) -> float:
 def apply_global_spawn_offset(
     xyz: Tuple[float, float, float],
     left_cm: float = SPAWN_OFFSET_LEFT_CM,
-    longitudinal_cm: float = SPAWN_OFFSET_LONGITUDINAL_CM,
+    back_cm: float = SPAWN_OFFSET_BACK_CM,
+    height_cm: float = SPAWN_OFFSET_HEIGHT_CM,
 ) -> Tuple[float, float, float]:
     """Human / Robot / Material 共通の位置オフセットを適用する。"""
     x, y, z = (float(xyz[0]), float(xyz[1]), float(xyz[2]))
-    return (x + longitudinal_cm, y - left_cm, z)
+    return (x - back_cm, y - left_cm, z + height_cm)
 
 
 def apply_global_spawn_offset_to_layout(
@@ -495,7 +497,8 @@ HUMAN_SPAWN, ROBOT_SPAWN, MATERIAL_SPAWN, HOME_XY = apply_global_spawn_offset_to
 _spawn_edge = BOUNDARY_EDGE if SPAWN_LAYOUT_MODE == "boundary" else "n/a"
 print(
     f"[SpawnLayout] mode={SPAWN_LAYOUT_MODE}, edge={_spawn_edge}, material={MATERIAL_PRESET}, "
-    f"offset=(left={SPAWN_OFFSET_LEFT_CM}cm, longitudinal={SPAWN_OFFSET_LONGITUDINAL_CM}cm), "
+    f"offset=(left={SPAWN_OFFSET_LEFT_CM}cm, back={SPAWN_OFFSET_BACK_CM}cm, "
+    f"height={SPAWN_OFFSET_HEIGHT_CM}cm), "
     f"human={HUMAN_SPAWN}, robot={ROBOT_SPAWN}, material_spawn={MATERIAL_SPAWN}"
 )
 
