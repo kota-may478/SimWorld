@@ -47,6 +47,7 @@
 
 # %%
 import math
+import os
 import socket
 import subprocess
 import sys
@@ -56,6 +57,11 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import List, Optional, Tuple
+
+import matplotlib
+
+if os.environ.get("MPLBACKEND"):
+    matplotlib.use(os.environ["MPLBACKEND"])
 
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
@@ -275,6 +281,11 @@ def ensure_connection() -> Tuple[UnrealCV, Communicator]:
 
 
 plt.style.use("seaborn-v0_8-whitegrid")
+
+
+def _matplotlib_show_enabled() -> bool:
+    backend = plt.get_backend().lower()
+    return backend not in {"agg", "svg", "pdf", "ps", "cairo"}
 
 # %%
 # ==============================================================
@@ -551,6 +562,7 @@ PATH_WP_REACH_TOLERANCE_CM = 80.0   # 中間 WP 到達判定 [cm]
 PATH_MAX_OPEN_LOOP_MOVE_CM = 400.0  # 1 コマンドあたりの最大前進 [cm]
 PATH_MAX_STEPS_PER_WP = 40          # WP あたりの最大制御ステップ
 PATH_REPLAN_STUCK_STEPS = 14        # これ以上進まなければ現在地から WP 列を再生成
+PATH_MAX_TOTAL_STEPS = 600          # レッグ全体の安全上限（無限ループ防止）
 
 # ---- Human 手前での停止・受け渡し [cm] ----
 HUMAN_APPROACH_STANDOFF_CM = 100.0  # Human から 1 m 手前で停止して箱を置く
@@ -1361,6 +1373,7 @@ def robot_navigate_planned_leg(
     )
     wp_index = 0
     steps_on_wp = 0
+    total_steps = 0
 
     print(
         f"  [Planner] {planner}: {len(waypoints)} WP(s) to {goal_xy} {label}"
@@ -1369,6 +1382,11 @@ def robot_navigate_planned_leg(
         print(f"    WP{index + 1}: ({waypoint[0]:.1f}, {waypoint[1]:.1f})")
 
     while not stop_event.is_set():
+        total_steps += 1
+        if total_steps > PATH_MAX_TOTAL_STEPS:
+            print(f"  [Planner] ERROR: exceeded PATH_MAX_TOTAL_STEPS={PATH_MAX_TOTAL_STEPS}")
+            return False
+
         pos_xy = get_pos2d(ROBOT_NAME)
         if dist2d(pos_xy, goal_xy) <= tolerance_cm:
             print(f"  [Planner] Arrived at goal (dist={dist2d(pos_xy, goal_xy):.1f} cm)")
@@ -1760,7 +1778,10 @@ else:
     plt.tight_layout()
     output_path = _output_dir / "result.png"
     plt.savefig(output_path, dpi=150)
-    plt.show()
+    if _matplotlib_show_enabled():
+        plt.show()
+    else:
+        plt.close(fig)
     print(f"Figure saved: {output_path}")
 
 if _transport_costmap is not None and _path_plan_history:

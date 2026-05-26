@@ -14,8 +14,14 @@ import math
 from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
 
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
+
+
+def _matplotlib_show_enabled() -> bool:
+    backend = matplotlib.get_backend().lower()
+    return backend not in {"agg", "svg", "pdf", "ps", "cairo"}
 
 GridCell = Tuple[int, int]
 WorldXY = Tuple[float, float]
@@ -420,6 +426,8 @@ def plot_costmap_with_paths(
     plt.tight_layout()
     if save_path:
         fig.savefig(save_path, dpi=150)
-    if show:
+    if show and _matplotlib_show_enabled():
         plt.show()
+    else:
+        plt.close(fig)
     return fig
