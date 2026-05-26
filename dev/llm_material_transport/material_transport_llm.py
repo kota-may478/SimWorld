@@ -56,7 +56,7 @@ import time
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import matplotlib
 
@@ -639,6 +639,12 @@ COSTMAP_OBSTACLE_SCAN_ENABLE = True
 LIVE_COSTMAP_ENABLE = True
 LIVE_COSTMAP_DELETE_FRAMES_AFTER = True
 LIVE_COSTMAP_LIVE_WINDOW = False  # 記録スレッドと競合しないよう Agg 保存のみ
+
+# ---- UE 内カメラ静止画（ロボットが動き出す直前） ----
+UE_PRE_NAV_SCREENSHOT_ENABLE = True
+UE_PRE_NAV_SCREENSHOT_CAMERA_NAME = "ThirdPersonCamera"  # ロボット追従視点（FusionCamSensor 等も可）
+UE_PRE_NAV_SCREENSHOT_VIEWMODE = "lit"
+UE_PRE_NAV_SCREENSHOT_FILENAME = "ue_before_robot_move.png"
 
 # %%
 # ==============================================================
@@ -1279,7 +1285,10 @@ def generate_task_instruction(
     print(f"[Humanoid LLM] Response (in {call_time:.2f}s):\n{response}")
 
     if response is None:
-        print("[Humanoid LLM] ERROR: LLM returned None. Falling back to default instruction.")
+        print(
+            "[Humanoid LLM] WARNING: LLM returned None (rate limit or API error). "
+            "Using fallback instruction."
+        )
         return RobotTaskInstruction(
             material_location=[mx, my],
             return_location=[hx, hy],
@@ -1374,6 +1383,45 @@ def finalize_live_costmap_visualization() -> Optional[dict]:
     result = _live_costmap_viz.finalize()
     _live_costmap_viz = None
     return result
+
+
+def resolve_ue_camera_id(camera_name: str) -> int:
+    """`vget /cameras` の名前一覧からカメラ ID を解決。"""
+    raw = (ucv.get_cameras() or "").strip()
+    names = raw.split() if raw else []
+    for camera_id, name in enumerate(names):
+        if name == camera_name:
+            return camera_id
+    if names:
+        print(
+            f"[UE screenshot] Camera '{camera_name}' not in {names}; using id=0 ({names[0]})"
+        )
+    return 0
+
+
+def save_ue_game_camera_png(
+    output_path: Path,
+    camera_name: str = UE_PRE_NAV_SCREENSHOT_CAMERA_NAME,
+    viewmode: str = UE_PRE_NAV_SCREENSHOT_VIEWMODE,
+) -> Optional[Path]:
+    """UnrealCV 経由で UE 内カメラ画像を PNG 保存（エディタのゲームビュー相当）。"""
+    if ucv is None:
+        print("[UE screenshot] skipped: UE not connected")
+        return None
+    cam_id = resolve_ue_camera_id(camera_name)
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    abs_path = str(path.resolve())
+    try:
+        ucv.get_image(cam_id, viewmode, mode="file_path", img_path=abs_path)
+    except Exception as exc:
+        print(f"[UE screenshot] capture failed: {exc}")
+        return None
+    if path.exists() and path.stat().st_size > 0:
+        print(f"[UE screenshot] Saved: {path} (camera={camera_name!r}, id={cam_id})")
+        return path
+    print(f"[UE screenshot] file missing or empty: {path}")
+    return None
 
 
 def set_transport_costmap(costmap: Costmap2D) -> None:
@@ -1642,6 +1690,25 @@ def handoff_approach_complete(
     return False
 
 
+def _nearest_waypoint_index_ahead(
+    pos_xy: Tuple[float, float],
+    waypoints: Sequence[Tuple[float, float]],
+    current_index: int,
+) -> int:
+    """現在位置に最も近い未通過 WP インデックス（後方には戻らない）。"""
+    if not waypoints:
+        return 0
+    start = min(max(current_index, 0), len(waypoints) - 1)
+    best_index = start
+    best_dist = dist2d(pos_xy, waypoints[start])
+    for index in range(start, len(waypoints)):
+        dist = dist2d(pos_xy, waypoints[index])
+        if dist < best_dist:
+            best_dist = dist
+            best_index = index
+    return best_index
+
+
 def robot_navigate_planned_leg(
     goal_xy: Tuple[float, float],
     stop_event: threading.Event,
@@ -1689,30 +1756,24 @@ def robot_navigate_planned_leg(
         if dist2d(pos_xy, goal_xy) <= tolerance_cm:
             print(f"  [Planner] Arrived at goal (dist={dist2d(pos_xy, goal_xy):.1f} cm)")
             return True
-
-        if wp_index >= len(waypoints):
-            if handoff_leg and human_xy is not None:
-                if handoff_approach_complete(pos_xy, goal_xy, human_xy, tolerance_cm):
-                    print(
-                        f"  [Planner] Handoff approach complete "
-                        f"(goal={dist2d(pos_xy, goal_xy):.1f} cm, "
-                        f"human={dist2d(pos_xy, human_xy):.1f} cm)"
-                    )
-                    return True
-            elif dist2d(pos_xy, goal_xy) <= max(tolerance_cm, ARRIVE_TOLERANCE):
+        if handoff_leg and human_xy is not None:
+            if handoff_approach_complete(pos_xy, goal_xy, human_xy, tolerance_cm):
                 print(
-                    f"  [Planner] Arrived at goal after WPs "
-                    f"(dist={dist2d(pos_xy, goal_xy):.1f} cm)"
+                    f"  [Planner] Handoff approach complete "
+                    f"(goal={dist2d(pos_xy, goal_xy):.1f} cm, "
+                    f"human={dist2d(pos_xy, human_xy):.1f} cm)"
                 )
                 return True
-            wp_index = max(0, len(waypoints) - 1)
 
-        waypoint_xy = waypoints[wp_index]
-        if dist2d(pos_xy, waypoint_xy) <= PATH_WP_REACH_TOLERANCE_CM:
-            print(f"  [Planner] WP{wp_index + 1}/{len(waypoints)} reached")
-            wp_index += 1
-            steps_on_wp = 0
-            continue
+        if wp_index >= len(waypoints):
+            waypoint_xy = goal_xy
+        else:
+            waypoint_xy = waypoints[wp_index]
+            if dist2d(pos_xy, waypoint_xy) <= PATH_WP_REACH_TOLERANCE_CM:
+                print(f"  [Planner] WP{wp_index + 1}/{len(waypoints)} reached")
+                wp_index += 1
+                steps_on_wp = 0
+                continue
 
         command = segment_command_toward_waypoint(
             pos_xy,
@@ -1720,7 +1781,15 @@ def robot_navigate_planned_leg(
             waypoint_xy,
         )
         if command is None:
-            wp_index += 1
+            if wp_index >= len(waypoints):
+                if dist2d(pos_xy, goal_xy) <= max(tolerance_cm, ARRIVE_TOLERANCE):
+                    print(
+                        f"  [Planner] Arrived at goal after final approach "
+                        f"(dist={dist2d(pos_xy, goal_xy):.1f} cm)"
+                    )
+                    return True
+            else:
+                wp_index += 1
             steps_on_wp = 0
             continue
 
@@ -1729,17 +1798,28 @@ def robot_navigate_planned_leg(
 
         if steps_on_wp >= PATH_REPLAN_STUCK_STEPS:
             pos_xy = get_pos2d(ROBOT_NAME)
-            waypoints, _ = plan_global_path(
+            if dist2d(pos_xy, goal_xy) <= max(tolerance_cm, ARRIVE_TOLERANCE):
+                print(
+                    f"  [Planner] Arrived at goal during replan check "
+                    f"(dist={dist2d(pos_xy, goal_xy):.1f} cm)"
+                )
+                return True
+            if wp_index >= len(waypoints):
+                steps_on_wp = 0
+                continue
+            new_waypoints, _ = plan_global_path(
                 pos_xy, goal_xy, planner=planner, leg_label=leg_label
             )
-            wp_index = 0
+            if new_waypoints:
+                waypoints = new_waypoints
+                wp_index = _nearest_waypoint_index_ahead(pos_xy, waypoints, wp_index)
+                print(
+                    f"  [Planner] Replan from ({pos_xy[0]:.1f}, {pos_xy[1]:.1f}): "
+                    f"{len(waypoints)} WP(s), resume at WP{wp_index + 1}"
+                )
             steps_on_wp = 0
-            print(
-                f"  [Planner] Replan from ({pos_xy[0]:.1f}, {pos_xy[1]:.1f}): "
-                f"{len(waypoints)} WP(s)"
-            )
 
-        if steps_on_wp >= PATH_MAX_STEPS_PER_WP:
+        if steps_on_wp >= PATH_MAX_STEPS_PER_WP and wp_index < len(waypoints):
             print(f"  [Planner] WP{wp_index + 1} step limit; skip to next WP")
             wp_index += 1
             steps_on_wp = 0
@@ -1885,6 +1965,9 @@ def execute_transport_task(
     ucv.humanoid_wave_to_dog(human_name)
     time.sleep(1.0)
 
+    if UE_PRE_NAV_SCREENSHOT_ENABLE:
+        save_ue_game_camera_png(_output_dir / UE_PRE_NAV_SCREENSHOT_FILENAME)
+
     # --- Phase 1: マテリアル置き場へ移動 ---
     state = RobotState.NAVIGATING_TO_MATERIAL
     print(f"\n[Robot] State: {state.name}")
@@ -1930,7 +2013,10 @@ def execute_transport_task(
     time.sleep(CARRY_PROXY_DESTROY_SETTLE_S)
 
     if not arrived:
-        return state
+        print(
+            "  [Robot] WARNING: handoff navigation incomplete; "
+            "attempting drop at Humanoid feet anyway."
+        )
 
     # --- Phase 4: 降ろす ---
     state = RobotState.NAVIGATING_HOME
