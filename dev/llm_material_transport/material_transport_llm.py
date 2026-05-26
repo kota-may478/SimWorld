@@ -566,12 +566,15 @@ PATH_REPLAN_STUCK_STEPS = 14        # これ以上進まなければ現在地か
 PATH_MAX_TOTAL_STEPS = 600          # レッグ全体の安全上限（無限ループ防止）
 
 # ---- Human 手前での停止・受け渡し [cm] ----
-HUMAN_APPROACH_STANDOFF_CM = 100.0  # Human から 1 m 手前で停止して箱を置く
-ROBOT_APPROACH_TOLERANCE_CM = 50.0  # 手前停止点への到達判定（ARRIVE_TOLERANCE より厳しめ）
-MATERIAL_DELIVERY_FORWARD_CM = 0.0  # 停止位置がそのまま置き場（ロボット前方オフセット不要）
-MATERIAL_DELIVERY_SIDE_CM = 0.0
+HUMAN_APPROACH_STANDOFF_CM = 100.0  # Human から 1 m 手前の受け渡し点（ナビゴール＝箱の設置 XY）
+ROBOT_APPROACH_TOLERANCE_CM = 50.0  # 受け渡し点への到達判定 [cm]
 DELIVERY_ATTACH_STEPS = 10
 DELIVERY_ATTACH_STEP_SLEEP_S = 0.04
+# ドロップ時: 先に kinematic 配置してから物理を有効化（即 physics+spawn は UE Fatal の原因になりやすい）
+MATERIAL_DELIVERY_ENABLE_PHYSICS = True
+MATERIAL_DELIVERY_PHYSICS_DELAY_S = 0.25
+CARRY_PROXY_DESTROY_SETTLE_S = 0.2
+MATERIAL_RESPAWN_SETTLE_S = 0.15
 
 # ---- 記録設定 ----
 RECORD_INTERVAL  = 0.3    # データ記録間隔 [s]
@@ -795,6 +798,38 @@ def destroy_actor_if_exists(actor_name: Optional[str]) -> None:
         active_ucv.destroy(actor_name)
 
 
+def _disable_actor_physics_and_collision(actor_name: str) -> None:
+    """破棄・再配置前に物理とコリジョンを切る（貫通スポーン防止）。"""
+    active_ucv, _ = ensure_connection()
+    active_ucv.set_physics(actor_name, False)
+    active_ucv.set_collision(actor_name, False)
+
+
+def tear_down_carry_visual_actors() -> None:
+    """搬送プロキシを安全に破棄し、再スポーン前に UE 側を落ち着かせる。"""
+    global _carry_visual_actor
+
+    active_ucv, _ = ensure_connection()
+    names_to_remove: List[str] = []
+    if _carry_visual_actor:
+        names_to_remove.append(_carry_visual_actor)
+    if USE_MATERIAL_CARRY_PROXY:
+        names_to_remove.append(MATERIAL_CARRY_PROXY_NAME)
+
+    for actor_name in dict.fromkeys(names_to_remove):
+        if not actor_exists(actor_name):
+            continue
+        _disable_actor_physics_and_collision(actor_name)
+        destroy_actor_if_exists(actor_name)
+
+    _carry_visual_actor = None
+    try:
+        active_ucv.clean_garbage()
+    except Exception:
+        pass
+    time.sleep(CARRY_PROXY_DESTROY_SETTLE_S)
+
+
 def get_material_tracking_name() -> str:
     """現在シーン上で可視な搬送対象 actor 名を返す。"""
     if _carry_visual_actor and actor_exists(_carry_visual_actor):
@@ -863,29 +898,40 @@ def get_human_approach_xy(
     approach_from_xy: Tuple[float, float],
     standoff_cm: float = HUMAN_APPROACH_STANDOFF_CM,
 ) -> Tuple[float, float]:
-    """Human から standoff_cm 手前の停止 XY（from 側から接近する想定）。"""
+    """Human から standoff_cm 手前の受け渡し XY（approach_from 方向、Human に近い側）。"""
     return xy_standoff_from_target(human_xy, approach_from_xy, standoff_cm)
 
 
-def get_delivery_location_at_approach(
-    approach_xy: Tuple[float, float],
+def get_human_handoff_delivery_xy(
     human_name: str,
+    *,
+    human_xy: Optional[Tuple[float, float]] = None,
+    approach_from_xy: Optional[Tuple[float, float]] = None,
+    standoff_cm: float = HUMAN_APPROACH_STANDOFF_CM,
+) -> Tuple[float, float]:
+    """
+    Human から standoff_cm の地点（ナビゴール／箱設置の XY）。
+
+    approach_from_xy は「どちらから来たか」（通常はロボット位置）。
+    Human–ロボット間の直線上に置き、Human 足元やロボット中心と重ねない。
+    """
+    if human_xy is None:
+        human_xy = get_pos2d(human_name) if actor_exists(human_name) else HUMAN_SPAWN[:2]
+    if approach_from_xy is None:
+        approach_from_xy = get_pos2d(ROBOT_NAME)
+    return get_human_approach_xy(human_xy, approach_from_xy, standoff_cm)
+
+
+def get_delivery_location_for_handoff(
+    human_name: str,
+    *,
+    delivery_xy: Optional[Tuple[float, float]] = None,
 ) -> Tuple[float, float, float]:
-    """停止点（Human 手前）の床面に箱を置く位置 [cm]。"""
-    if actor_exists(human_name):
-        _, _, hz = get_pos3d(human_name)
-    else:
-        _, _, hz = HUMAN_SPAWN
-    yaw_rad = math.radians(get_yaw(ROBOT_NAME))
-    forward_x = math.cos(yaw_rad)
-    forward_y = math.sin(yaw_rad)
-    side_x = -math.sin(yaw_rad)
-    side_y = math.cos(yaw_rad)
-    return (
-        approach_xy[0] + MATERIAL_DELIVERY_FORWARD_CM * forward_x + MATERIAL_DELIVERY_SIDE_CM * side_x,
-        approach_xy[1] + MATERIAL_DELIVERY_FORWARD_CM * forward_y + MATERIAL_DELIVERY_SIDE_CM * side_y,
-        hz,
-    )
+    """Human 手前 standoff の受け渡し点に箱を置く [x, y, z]（Z はロボット床面基準）。"""
+    if delivery_xy is None:
+        delivery_xy = get_human_handoff_delivery_xy(human_name)
+    _, _, robot_z = get_pos3d(ROBOT_NAME)
+    return (delivery_xy[0], delivery_xy[1], robot_z + MATERIAL_DROP_Z_CM)
 
 
 def begin_material_carry_visual() -> str:
@@ -968,17 +1014,47 @@ def animate_material_attach_to_robot(
     sync_carried_material_pose()
 
 
-def spawn_material_actor(location: Tuple[float, float, float], enable_physics: bool = True) -> str:
-    """マテリアル本体 actor を指定位置へ生成する。"""
+def spawn_material_actor(
+    location: Tuple[float, float, float],
+    enable_physics: bool = True,
+    *,
+    replace_existing: bool = True,
+) -> str:
+    """
+    マテリアル本体 actor を指定位置へ生成する。
+
+    replace_existing=True のとき既存を破棄してから再スポーンし、
+    物理 OFF → 配置 → コリジョン ON →（待機）→ 物理 ON の順で設定する。
+    """
     active_ucv, _ = ensure_connection()
+
+    if replace_existing and actor_exists(MATERIAL_NAME):
+        _disable_actor_physics_and_collision(MATERIAL_NAME)
+        destroy_actor_if_exists(MATERIAL_NAME)
+        try:
+            active_ucv.clean_garbage()
+        except Exception:
+            pass
+        time.sleep(MATERIAL_RESPAWN_SETTLE_S)
+
     if not actor_exists(MATERIAL_NAME):
         active_ucv.spawn_bp_asset(MATERIAL_BP_PATH, MATERIAL_NAME)
+        time.sleep(MATERIAL_RESPAWN_SETTLE_S)
+
+    active_ucv.set_physics(MATERIAL_NAME, False)
+    active_ucv.set_collision(MATERIAL_NAME, False)
+    active_ucv.set_movable(MATERIAL_NAME, True)
     active_ucv.set_location(location, MATERIAL_NAME)
     active_ucv.set_orientation((0.0, 0.0, 0.0), MATERIAL_NAME)
     active_ucv.set_scale(MATERIAL_SCALE, MATERIAL_NAME)
+    time.sleep(MATERIAL_RESPAWN_SETTLE_S)
     active_ucv.set_collision(MATERIAL_NAME, True)
-    active_ucv.set_movable(MATERIAL_NAME, True)
-    active_ucv.set_physics(MATERIAL_NAME, enable_physics)
+    time.sleep(0.05)
+
+    if enable_physics:
+        time.sleep(MATERIAL_DELIVERY_PHYSICS_DELAY_S)
+        active_ucv.set_physics(MATERIAL_NAME, True)
+
     return MATERIAL_NAME
 
 
@@ -1524,24 +1600,48 @@ def robot_carry_material(stop_event: threading.Event) -> None:
     sync_carried_material_pose()
 
 
-def robot_simulate_drop(approach_xy: Tuple[float, float], human_name: str) -> None:
+def robot_simulate_drop(
+    delivery_xy: Tuple[float, float],
+    human_name: str,
+) -> None:
     """
-    ロボットが Human 手前の停止点へマテリアルを渡す演出。
-    追従用 actor を下ろしたあと、地上に本体箱を再表示する。
+    ロボットが Human 手前 standoff 地点へマテリアルを渡す演出。
+    箱は Human から約 1 m の受け渡し点（delivery_xy）に置き、ロボット中心とは分離する。
     """
-    global _carry_visual_actor
-
-    delivery_location = get_delivery_location_at_approach(approach_xy, human_name)
+    human_xy = get_pos2d(human_name) if actor_exists(human_name) else delivery_xy
+    robot_xy = get_pos2d(ROBOT_NAME)
+    delivery_xy = get_human_handoff_delivery_xy(
+        human_name,
+        human_xy=human_xy,
+        approach_from_xy=robot_xy,
+    )
+    delivery_location = get_delivery_location_for_handoff(
+        human_name,
+        delivery_xy=delivery_xy,
+    )
+    dist_human_delivery = dist2d(human_xy, delivery_xy)
+    dist_human_robot = dist2d(human_xy, robot_xy)
+    dist_robot_delivery = dist2d(robot_xy, delivery_xy)
     print(
-        f"  [Robot] Delivering {MATERIAL_LABEL} at approach point "
-        f"{delivery_location[:2]} ({HUMAN_APPROACH_STANDOFF_CM:.0f} cm before human, "
-        f"z={delivery_location[2]:.1f})..."
+        f"  [Robot] Delivering {MATERIAL_LABEL} at handoff point {delivery_xy} "
+        f"(human↔delivery={dist_human_delivery:.1f} cm, "
+        f"human↔robot={dist_human_robot:.1f} cm, "
+        f"robot↔delivery={dist_robot_delivery:.1f} cm, z={delivery_location[2]:.1f})..."
     )
     time.sleep(0.3)
-    animate_material_detach_to_location(delivery_location)
-    destroy_actor_if_exists(MATERIAL_CARRY_PROXY_NAME)
-    _carry_visual_actor = None
-    spawn_material_actor(delivery_location, enable_physics=True)
+
+    carried_actor = get_carried_material_actor_name()
+    if actor_exists(carried_actor):
+        animate_material_detach_to_location(delivery_location)
+    else:
+        print(f"  [Robot] Carry visual {carried_actor} missing; skip detach animation.")
+
+    tear_down_carry_visual_actors()
+    spawn_material_actor(
+        delivery_location,
+        enable_physics=MATERIAL_DELIVERY_ENABLE_PHYSICS,
+        replace_existing=True,
+    )
     time.sleep(0.4)
     print(f"  [Robot] {MATERIAL_LABEL} placed {HUMAN_APPROACH_STANDOFF_CM:.0f} cm before human.")
 
@@ -1601,20 +1701,27 @@ def execute_transport_task(
     t_carry    = threading.Thread(target=robot_carry_material, args=(carry_stop,), daemon=True)
     t_carry.start()
 
+    human_xy = get_pos2d(human_name) if actor_exists(human_name) else home_loc
     approach_from = get_pos2d(ROBOT_NAME)
-    approach_xy = get_human_approach_xy(home_loc, approach_from)
+    delivery_xy = get_human_handoff_delivery_xy(
+        human_name,
+        human_xy=human_xy,
+        approach_from_xy=approach_from,
+    )
     print(
-        f"  [Robot] Home={home_loc}, approach stop={approach_xy} "
-        f"({HUMAN_APPROACH_STANDOFF_CM:.0f} cm before human)"
+        f"  [Robot] Human at {human_xy}, handoff goal={delivery_xy} "
+        f"({HUMAN_APPROACH_STANDOFF_CM:.0f} cm before human, "
+        f"dist={dist2d(human_xy, delivery_xy):.1f} cm)"
     )
     arrived = robot_navigate_to(
-        approach_xy,
+        delivery_xy,
         stop_event,
         tolerance_cm=ROBOT_APPROACH_TOLERANCE_CM,
         label="(1 m before human)",
     )
     carry_stop.set()
-    t_carry.join(timeout=2)
+    t_carry.join(timeout=5.0)
+    time.sleep(CARRY_PROXY_DESTROY_SETTLE_S)
 
     if not arrived:
         return state
@@ -1625,7 +1732,7 @@ def execute_transport_task(
 
     state = RobotState.DROPPING
     print(f"\n[Robot] State: {state.name}")
-    robot_simulate_drop(approach_xy, human_name)
+    robot_simulate_drop(delivery_xy, human_name)
 
     # Humanoid がロボットの帰還を確認してジェスチャー
     ucv.humanoid_discuss(human_name, 0)
