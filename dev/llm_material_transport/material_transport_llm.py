@@ -52,6 +52,7 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -83,8 +84,21 @@ def _find_project_root() -> Path:
 _root = _find_project_root()
 sys.path.append(str(_root))
 _output_dir = Path(__file__).resolve().parent if "__file__" in globals() else (_root / "dev" / "llm_material_transport")
+if str(_output_dir) not in sys.path:
+    sys.path.insert(0, str(_output_dir))
 
 from dotenv import load_dotenv
+from path_planning_costmap import (
+    COSTMAP_RESOLUTION_CM,
+    COSTMAP_SIZE_M,
+    AStarPlanResult,
+    Costmap2D,
+    PathLegVisualization,
+    build_uniform_costmap,
+    costmap_from_array,
+    plan_waypoints_grid_astar,
+    plot_costmap_with_paths,
+)
 
 # プロジェクトルートの .env を読み込む (OPENROUTER_API_KEY などを環境変数に設定)
 _env_path = _root / ".env"
@@ -524,6 +538,19 @@ ROBOT_TURN_DUR    = 1.0    # 回頭 1 回の時間 [s]
 ROTATE_THR_DEG    = 20.0   # この角度差以上でのみ回転する閾値 [deg]
 ARRIVE_TOLERANCE  = 120.0  # 目的地到達判定距離 [cm]
 PICKUP_HOVER_Z    = 60.0   # 搬送中のマテリアル高さオフセット [cm]
+
+# ---- 経路計画: 直線 + 中間 WP + (回転角, 前進距離) オープンループ + 軽量 FB ----
+# 障害物なし・正確な位置が分かる前提では straight_subdivided を推奨。
+PATH_PLANNER = "grid_astar"
+PATH_LEG_COLORS = {
+    "to material": "#1f77b4",
+    "to approach": "#ff7f0e",
+}
+PATH_WP_SPACING_CM = 500.0          # 長距離レッグを分割する最大辺長 [cm]
+PATH_WP_REACH_TOLERANCE_CM = 80.0   # 中間 WP 到達判定 [cm]
+PATH_MAX_OPEN_LOOP_MOVE_CM = 400.0  # 1 コマンドあたりの最大前進 [cm]
+PATH_MAX_STEPS_PER_WP = 40          # WP あたりの最大制御ステップ
+PATH_REPLAN_STUCK_STEPS = 14        # これ以上進まなければ現在地から WP 列を再生成
 
 # ---- Human 手前での停止・受け渡し [cm] ----
 HUMAN_APPROACH_STANDOFF_CM = 100.0  # Human から 1 m 手前で停止して箱を置く
@@ -1122,8 +1149,275 @@ def generate_task_instruction(
 
 # %%
 # ==============================================================
-# ロボット自律ナビゲーション
+# 経路計画・ロボット自律ナビゲーション
 # ==============================================================
+#
+# プランナー候補（障害物なし / 正確な位置が分かる場合）:
+#   - straight_subdivided … 直線 + 長辺分割（本実装・推奨）
+#   - straight_single_wp … ゴール 1 点のみ（短距離向け）
+#   - grid_astar … コスト付き格子 A*（path_planning_costmap.py）
+#   - theta_star / any_angle … 格子 + 任意角ショートカット
+#   - rrt_connect … 連続空間サンプリング（過剰だが汎用）
+#
+# 実行: 各 WP について現在地から (回転角, 前進距離) を算出 → dog_* で OL 実行
+#       → pose 取得 → 次 WP / 必要なら現在地→ゴールの WP 列だけ再生成
+
+
+_transport_costmap: Optional[Costmap2D] = None
+_path_plan_history: List[PathLegVisualization] = []
+
+
+def reset_path_planning_state() -> None:
+    """コストマップと計画履歴をクリア（タスク開始時）。"""
+    global _transport_costmap, _path_plan_history
+    _transport_costmap = None
+    _path_plan_history = []
+
+
+def set_transport_costmap(costmap: Costmap2D) -> None:
+    """外部 2D コスト配列から構築した Costmap2D を登録する。"""
+    global _transport_costmap
+    _transport_costmap = costmap
+    print(
+        f"[Costmap] custom map loaded: origin={costmap.origin_xy}, "
+        f"grid={costmap.costs.shape}, res={costmap.resolution_cm} cm"
+    )
+
+
+def ensure_transport_costmap(origin_xy: Optional[Tuple[float, float]] = None) -> Costmap2D:
+    """
+    Humanoid 位置をマップ左下隅（origin）とした 30 m 四方コストマップを用意する。
+    セル解像度 10 cm → 300×300。
+    """
+    global _transport_costmap
+    if _transport_costmap is None:
+        corner_xy = origin_xy or HUMAN_SPAWN[:2]
+        _transport_costmap = build_uniform_costmap(
+            origin_xy=corner_xy,
+            size_m=COSTMAP_SIZE_M,
+            resolution_cm=COSTMAP_RESOLUTION_CM,
+        )
+        print(
+            f"[Costmap] {COSTMAP_SIZE_M:.0f} m square, cell={COSTMAP_RESOLUTION_CM:.0f} cm, "
+            f"origin={corner_xy}, grid={_transport_costmap.costs.shape}"
+        )
+    return _transport_costmap
+
+
+def record_astar_leg_plan(label: str, plan: AStarPlanResult) -> None:
+    """可視化用にレッグ計画を保存（同一ラベルは上書き）。"""
+    global _path_plan_history
+    color = PATH_LEG_COLORS.get(label, "#2ca02c")
+    _path_plan_history = [
+        entry for entry in _path_plan_history if entry.label != label
+    ]
+    _path_plan_history.append(PathLegVisualization(label=label, plan=plan, color=color))
+
+
+def plan_global_path(
+    start_xy: Tuple[float, float],
+    goal_xy: Tuple[float, float],
+    planner: str = PATH_PLANNER,
+    leg_label: str = "",
+) -> Tuple[List[Tuple[float, float]], Optional[AStarPlanResult]]:
+    """グローバル経路計画。grid_astar 時は AStarPlanResult も返す。"""
+    if planner in ("straight_subdivided", "straight_single_wp"):
+        spacing = PATH_WP_SPACING_CM if planner == "straight_subdivided" else 1e9
+        waypoints = plan_waypoints_straight_subdivided(
+            start_xy, goal_xy, max_segment_cm=spacing
+        )
+        return waypoints, None
+
+    if planner == "grid_astar":
+        costmap = ensure_transport_costmap()
+        if not costmap.contains_world_xy(start_xy):
+            print(f"[Planner] Warning: start {start_xy} outside costmap (clamped in A*).")
+        if not costmap.contains_world_xy(goal_xy):
+            print(f"[Planner] Warning: goal {goal_xy} outside costmap (clamped in A*).")
+        astar_result = plan_waypoints_grid_astar(
+            costmap,
+            start_xy,
+            goal_xy,
+            max_segment_cm=PATH_WP_SPACING_CM,
+        )
+        print(
+            f"  [Planner] A* cost={astar_result.total_cost:.2f}, "
+            f"grid_cells={len(astar_result.grid_path)}, "
+            f"waypoints={len(astar_result.waypoints_xy)}"
+        )
+        if leg_label:
+            record_astar_leg_plan(leg_label, astar_result)
+        return astar_result.waypoints_xy, astar_result
+
+    raise ValueError(f"Unknown PATH_PLANNER: {planner}")
+
+
+@dataclass(frozen=True)
+class SegmentCommand:
+    """1 制御ステップ: 先に回転（任意）、続けて前進（任意）。"""
+
+    turn_deg: float
+    turn_clockwise: int
+    move_cm: float
+
+
+def plan_waypoints_straight_subdivided(
+    start_xy: Tuple[float, float],
+    goal_xy: Tuple[float, float],
+    max_segment_cm: float = PATH_WP_SPACING_CM,
+) -> List[Tuple[float, float]]:
+    """グローバル計画: start→goal 直線上に中間 WP を等間隔配置。"""
+    total = dist2d(start_xy, goal_xy)
+    if total <= max_segment_cm:
+        return [goal_xy]
+
+    segment_count = max(1, int(math.ceil(total / max_segment_cm)))
+    waypoints: List[Tuple[float, float]] = []
+    for index in range(1, segment_count + 1):
+        t = index / segment_count
+        waypoints.append(
+            (
+                start_xy[0] + t * (goal_xy[0] - start_xy[0]),
+                start_xy[1] + t * (goal_xy[1] - start_xy[1]),
+            )
+        )
+    waypoints[-1] = goal_xy
+    return waypoints
+
+
+def plan_waypoints_global(
+    start_xy: Tuple[float, float],
+    goal_xy: Tuple[float, float],
+    planner: str = PATH_PLANNER,
+    leg_label: str = "",
+) -> List[Tuple[float, float]]:
+    waypoints, _ = plan_global_path(start_xy, goal_xy, planner=planner, leg_label=leg_label)
+    return waypoints
+
+
+def segment_command_toward_waypoint(
+    pos_xy: Tuple[float, float],
+    yaw_deg: float,
+    waypoint_xy: Tuple[float, float],
+    max_move_cm: float = PATH_MAX_OPEN_LOOP_MOVE_CM,
+) -> Optional[SegmentCommand]:
+    """現在地・姿勢から次 WP への 1 ステップ (回転 or 前進) を返す。"""
+    distance_cm = dist2d(pos_xy, waypoint_xy)
+    if distance_cm < 1e-3:
+        return None
+
+    target_yaw = yaw_to_target(pos_xy, waypoint_xy)
+    angle_diff = normalize_angle(target_yaw - yaw_deg)
+
+    if abs(angle_diff) > ROTATE_THR_DEG:
+        clockwise = 1 if angle_diff < 0 else -1
+        return SegmentCommand(
+            turn_deg=abs(angle_diff),
+            turn_clockwise=clockwise,
+            move_cm=0.0,
+        )
+
+    move_cm = min(distance_cm, max_move_cm)
+    return SegmentCommand(turn_deg=0.0, turn_clockwise=1, move_cm=move_cm)
+
+
+def execute_segment_command(command: SegmentCommand) -> None:
+    """プランナー出力を UnrealCV へ送る（オープンループ）。"""
+    if command.turn_deg > ROTATE_THR_DEG:
+        turn_duration_s = max(0.15, ROBOT_TURN_DUR * command.turn_deg / 90.0)
+        ucv.dog_rotate(
+            ROBOT_NAME,
+            [turn_duration_s, command.turn_deg, command.turn_clockwise],
+        )
+
+    if command.move_cm > 1e-3:
+        move_duration_s = max(ROBOT_MOVE_SLICE, command.move_cm / ROBOT_SPEED)
+        ucv.dog_move(ROBOT_NAME, [ROBOT_SPEED, move_duration_s, 0])
+
+
+def robot_navigate_planned_leg(
+    goal_xy: Tuple[float, float],
+    stop_event: threading.Event,
+    tolerance_cm: float = ARRIVE_TOLERANCE,
+    label: str = "",
+    planner: str = PATH_PLANNER,
+) -> bool:
+    """
+    グローバル WP 列 + 各 WP への (回転, 前進) オープンループ + 軽量フィードバック。
+
+    Returns:
+        True if arrived at goal within tolerance_cm, False if interrupted.
+    """
+    start_xy = get_pos2d(ROBOT_NAME)
+    leg_key = label.strip("() ").lower()
+    if "material" in leg_key:
+        leg_label = "to material"
+    elif "human" in leg_key or "approach" in leg_key or "home" in leg_key:
+        leg_label = "to approach"
+    else:
+        leg_label = leg_key or "leg"
+    waypoints, _ = plan_global_path(
+        start_xy, goal_xy, planner=planner, leg_label=leg_label
+    )
+    wp_index = 0
+    steps_on_wp = 0
+
+    print(
+        f"  [Planner] {planner}: {len(waypoints)} WP(s) to {goal_xy} {label}"
+    )
+    for index, waypoint in enumerate(waypoints):
+        print(f"    WP{index + 1}: ({waypoint[0]:.1f}, {waypoint[1]:.1f})")
+
+    while not stop_event.is_set():
+        pos_xy = get_pos2d(ROBOT_NAME)
+        if dist2d(pos_xy, goal_xy) <= tolerance_cm:
+            print(f"  [Planner] Arrived at goal (dist={dist2d(pos_xy, goal_xy):.1f} cm)")
+            return True
+
+        if wp_index >= len(waypoints):
+            if dist2d(pos_xy, goal_xy) <= tolerance_cm:
+                return True
+            wp_index = max(0, len(waypoints) - 1)
+
+        waypoint_xy = waypoints[wp_index]
+        if dist2d(pos_xy, waypoint_xy) <= PATH_WP_REACH_TOLERANCE_CM:
+            print(f"  [Planner] WP{wp_index + 1}/{len(waypoints)} reached")
+            wp_index += 1
+            steps_on_wp = 0
+            continue
+
+        command = segment_command_toward_waypoint(
+            pos_xy,
+            get_yaw(ROBOT_NAME),
+            waypoint_xy,
+        )
+        if command is None:
+            wp_index += 1
+            steps_on_wp = 0
+            continue
+
+        execute_segment_command(command)
+        steps_on_wp += 1
+
+        if steps_on_wp >= PATH_REPLAN_STUCK_STEPS:
+            pos_xy = get_pos2d(ROBOT_NAME)
+            waypoints, _ = plan_global_path(
+                pos_xy, goal_xy, planner=planner, leg_label=leg_label
+            )
+            wp_index = 0
+            steps_on_wp = 0
+            print(
+                f"  [Planner] Replan from ({pos_xy[0]:.1f}, {pos_xy[1]:.1f}): "
+                f"{len(waypoints)} WP(s)"
+            )
+
+        if steps_on_wp >= PATH_MAX_STEPS_PER_WP:
+            print(f"  [Planner] WP{wp_index + 1} step limit; skip to next WP")
+            wp_index += 1
+            steps_on_wp = 0
+
+    return False
+
 
 def robot_navigate_to(
     target_xy: Tuple[float, float],
@@ -1131,34 +1425,13 @@ def robot_navigate_to(
     tolerance_cm: float = ARRIVE_TOLERANCE,
     label: str = "",
 ) -> bool:
-    """
-    ルールベースでロボットを target_xy まで移動させる。
-    障害物回避なし（シンプル直進 + 回転）。
-
-    Returns:
-        True if arrived, False if interrupted by stop_event.
-    """
-    print(f"  [Robot] Navigating to {target_xy} {label}")
-    while not stop_event.is_set():
-        pos = get_pos2d(ROBOT_NAME)
-        d   = dist2d(pos, target_xy)
-        if d <= tolerance_cm:
-            print(f"  [Robot] Arrived at {target_xy} (dist={d:.1f} cm)")
-            return True
-
-        yaw        = get_yaw(ROBOT_NAME)
-        target_yaw = yaw_to_target(pos, target_xy)
-        angle_diff = normalize_angle(target_yaw - yaw)
-
-        if abs(angle_diff) > ROTATE_THR_DEG:
-            # 目標方向へ回頭
-            clockwise = 1 if angle_diff < 0 else -1
-            ucv.dog_rotate(ROBOT_NAME, [ROBOT_TURN_DUR, abs(angle_diff), clockwise])
-        else:
-            # 前進
-            ucv.dog_move(ROBOT_NAME, [ROBOT_SPEED, ROBOT_MOVE_SLICE, 0])
-
-    return False  # interrupted
+    """計画付きナビゲーション（PATH_PLANNER）へ委譲。"""
+    return robot_navigate_planned_leg(
+        target_xy,
+        stop_event,
+        tolerance_cm=tolerance_cm,
+        label=label,
+    )
 
 
 def robot_simulate_pickup(stop_event: threading.Event) -> None:
@@ -1231,6 +1504,10 @@ def execute_transport_task(
 
     print(f"\n[Robot] Task received: {instruction.task_description}")
     print(f"  material={mat_loc}, home={home_loc}, priority={instruction.priority}")
+
+    reset_path_planning_state()
+    human_corner_xy = get_pos2d(human_name) if actor_exists(human_name) else HUMAN_SPAWN[:2]
+    ensure_transport_costmap(human_corner_xy)
 
     # Humanoid がロボットに手を振る
     ucv.humanoid_wave_to_dog(human_name)
@@ -1485,3 +1762,24 @@ else:
     plt.savefig(output_path, dpi=150)
     plt.show()
     print(f"Figure saved: {output_path}")
+
+if _transport_costmap is not None and _path_plan_history:
+    total_planned_cost = sum(leg.plan.total_cost for leg in _path_plan_history)
+    print(
+        "\n=== Planned path cost (A*, grid traversal sum) ===\n"
+        + "\n".join(
+            f"  {leg.label}: {leg.plan.total_cost:.2f}" for leg in _path_plan_history
+        )
+        + f"\n  TOTAL: {total_planned_cost:.2f}"
+    )
+    costmap_fig_path = _output_dir / "costmap_path.png"
+    plot_costmap_with_paths(
+        _transport_costmap,
+        _path_plan_history,
+        title="Costmap + A* Planned Paths",
+        save_path=str(costmap_fig_path),
+        show=True,
+    )
+    print(f"Costmap figure saved: {costmap_fig_path}")
+elif PATH_PLANNER == "grid_astar":
+    print("No A* path plans recorded for costmap visualization.")
