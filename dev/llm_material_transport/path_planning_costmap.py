@@ -11,12 +11,16 @@ from __future__ import annotations
 
 import heapq
 import math
-from dataclasses import dataclass
+import subprocess
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.colors import LinearSegmentedColormap
 
 
 def _matplotlib_show_enabled() -> bool:
@@ -30,6 +34,122 @@ COSTMAP_SIZE_M = 30.0
 COSTMAP_RESOLUTION_CM = 10.0
 COSTMAP_DEFAULT_CELL_COST = 1.0
 COSTMAP_LETHAL_COST = 1.0e9
+
+COSTMAP_ROBOT_COLOR = "lime"
+COSTMAP_HUMANOID_COLOR = "forestgreen"
+COSTMAP_WAYPOINT_COLOR = "black"
+COSTMAP_WAYPOINT_SIZE = 14
+COSTMAP_ROBOT_LINE_WIDTH = 2.2
+COSTMAP_ROBOT_MARKER_SIZE = 72
+COSTMAP_HUMANOID_MARKER_SIZE = 88
+
+
+def _costmap_display_cmap() -> LinearSegmentedColormap:
+    """低コストを白、高コストを赤系にするカラーマップ。"""
+    return LinearSegmentedColormap.from_list(
+        "costmap_white_red",
+        ["#ffffff", "#fff5f0", "#fcbba1", "#fb6a4a", "#cb181d"],
+    )
+
+
+def collect_planned_waypoints(legs: Sequence[PathLegVisualization]) -> List[WorldXY]:
+    waypoints: List[WorldXY] = []
+    for leg in legs:
+        waypoints.extend(leg.plan.waypoints_xy)
+    return waypoints
+
+
+def draw_costmap_visualization(
+    ax: plt.Axes,
+    costmap: Costmap2D,
+    *,
+    planned_legs: Sequence[PathLegVisualization] = (),
+    traveled_xy: Sequence[WorldXY] = (),
+    human_xy: Optional[WorldXY] = None,
+    title: str = "Costmap (Y horizontal, X vertical)",
+    show_colorbar: bool = False,
+) -> None:
+    """白背景・ライム実線軌跡・黒WP・Humanoid 凡例付きでコストマップを描画。"""
+    ax.clear()
+    ax.set_facecolor("white")
+
+    extent = costmap.plot_extent_y_horizontal()
+    cost_display = costmap.costs_for_plot_y_horizontal()
+    cost_min = float(np.min(cost_display)) if cost_display.size else 0.0
+    cost_max = float(np.max(cost_display)) if cost_display.size else 1.0
+    if cost_max <= cost_min:
+        cost_max = cost_min + 1.0
+
+    image = ax.imshow(
+        cost_display,
+        origin="lower",
+        extent=extent,
+        cmap=_costmap_display_cmap(),
+        vmin=cost_min,
+        vmax=cost_max,
+        aspect="equal",
+        interpolation="nearest",
+    )
+
+    waypoint_labeled = False
+    for waypoint_xy in collect_planned_waypoints(planned_legs):
+        plot_xy = world_xy_to_plot_xy(waypoint_xy)
+        ax.scatter(
+            plot_xy[0],
+            plot_xy[1],
+            c=COSTMAP_WAYPOINT_COLOR,
+            s=COSTMAP_WAYPOINT_SIZE,
+            zorder=5,
+            label="Waypoint" if not waypoint_labeled else None,
+        )
+        waypoint_labeled = True
+
+    if traveled_xy:
+        traveled_plot = [world_xy_to_plot_xy(point) for point in traveled_xy]
+        ax.plot(
+            [point[0] for point in traveled_plot],
+            [point[1] for point in traveled_plot],
+            "-",
+            color=COSTMAP_ROBOT_COLOR,
+            lw=COSTMAP_ROBOT_LINE_WIDTH,
+            zorder=6,
+            label="Traveled",
+        )
+        current_plot = traveled_plot[-1]
+        ax.scatter(
+            current_plot[0],
+            current_plot[1],
+            c=COSTMAP_ROBOT_COLOR,
+            s=COSTMAP_ROBOT_MARKER_SIZE,
+            edgecolors="black",
+            linewidths=0.5,
+            zorder=8,
+            label="Robot",
+        )
+
+    if human_xy is not None:
+        human_plot = world_xy_to_plot_xy(human_xy)
+        ax.scatter(
+            human_plot[0],
+            human_plot[1],
+            c=COSTMAP_HUMANOID_COLOR,
+            marker="s",
+            s=COSTMAP_HUMANOID_MARKER_SIZE,
+            edgecolors="black",
+            linewidths=0.5,
+            zorder=7,
+            label="Humanoid",
+        )
+
+    ax.set_xlabel("Y [cm]")
+    ax.set_ylabel("X [cm]")
+    ax.set_title(title)
+    if show_colorbar:
+        ax.figure.colorbar(image, ax=ax, fraction=0.046, pad=0.04, label="Cell cost")
+
+    handles, labels = ax.get_legend_handles_labels()
+    if handles:
+        ax.legend(loc="upper right", fontsize=8)
 
 _NEIGHBOR_OFFSETS: Tuple[Tuple[int, int, float], ...] = (
     (1, 0, 1.0),
@@ -106,6 +226,20 @@ class Costmap2D:
         x0 = self.origin_xy[0]
         y0 = self.origin_xy[1]
         return (x0, x0 + self.size_x_cm, y0, y0 + self.size_y_cm)
+
+    def plot_extent_y_horizontal(self) -> Tuple[float, float, float, float]:
+        """imshow extent when horizontal axis=Y and vertical axis=X: [y0, y1, x0, x1]."""
+        x0, x1, y0, y1 = self.matplotlib_extent()
+        return (y0, y1, x0, x1)
+
+    def costs_for_plot_y_horizontal(self) -> np.ndarray:
+        """Display array for Y-horizontal / X-vertical plot (transpose of costs)."""
+        return self.costs.T
+
+
+def world_xy_to_plot_xy(world_xy: WorldXY) -> Tuple[float, float]:
+    """Matplotlib 座標: 横軸=Y [cm], 縦軸=X [cm]（UE 水平面）。"""
+    return (world_xy[1], world_xy[0])
 
 
 def costmap_cell_count(size_m: float, resolution_cm: float) -> int:
@@ -367,67 +501,262 @@ def plot_costmap_with_paths(
     title: str = "Costmap + Planned Paths",
     save_path: Optional[str] = None,
     show: bool = True,
+    traveled_xy: Optional[Sequence[WorldXY]] = None,
 ) -> plt.Figure:
-    """コストマップ上に経路と総コストを表示。"""
-    fig, ax = plt.subplots(figsize=(9, 8))
-    extent = costmap.matplotlib_extent()
-    image = ax.imshow(
-        costmap.costs,
-        origin="lower",
-        extent=extent,
-        cmap="YlOrRd",
-        aspect="equal",
-        interpolation="nearest",
+    """コストマップ上に経路と総コストを表示（横軸=Y, 縦軸=X）。"""
+    fig, ax = plt.subplots(figsize=(9, 8), facecolor="white")
+    draw_costmap_visualization(
+        ax,
+        costmap,
+        planned_legs=legs,
+        traveled_xy=traveled_xy or [],
+        human_xy=costmap.origin_xy,
+        title=title,
+        show_colorbar=True,
     )
-    fig.colorbar(image, ax=ax, fraction=0.046, pad=0.04, label="Cell cost")
-
-    for leg in legs:
-        xs = [point[0] for point in leg.plan.waypoints_xy]
-        ys = [point[1] for point in leg.plan.waypoints_xy]
-        ax.plot(xs, ys, "-o", color=leg.color, lw=2, ms=4, label=leg.label)
-        ax.scatter(
-            leg.plan.start_xy[0],
-            leg.plan.start_xy[1],
-            color=leg.color,
-            marker="s",
-            s=60,
-            zorder=5,
-        )
-        ax.scatter(
-            leg.plan.goal_xy[0],
-            leg.plan.goal_xy[1],
-            color=leg.color,
-            marker="*",
-            s=140,
-            zorder=5,
-        )
-        ax.annotate(
-            f"{leg.label}\ncost={leg.plan.total_cost:.1f}",
-            xy=leg.plan.goal_xy,
-            xytext=(8, 8),
-            textcoords="offset points",
-            fontsize=8,
-            color=leg.color,
-        )
-
-    ax.scatter(
-        costmap.origin_xy[0],
-        costmap.origin_xy[1],
-        c="cyan",
-        marker="X",
-        s=120,
-        zorder=6,
-        label="Map origin (human corner)",
-    )
-    ax.set_xlabel("X [cm]")
-    ax.set_ylabel("Y [cm]")
-    ax.set_title(title)
-    ax.legend(loc="upper right", fontsize=8)
     plt.tight_layout()
     if save_path:
-        fig.savefig(save_path, dpi=150)
+        fig.savefig(save_path, dpi=150, facecolor="white")
     if show and _matplotlib_show_enabled():
         plt.show()
     else:
         plt.close(fig)
     return fig
+
+
+@dataclass
+class LiveCostmapVisualizer:
+    """
+    コストマップ上にロボット軌跡をリアルタイム表示し、フレーム PNG → MP4/GIF を生成する。
+
+    横軸=Y [cm], 縦軸=X [cm]。更新間隔は RECORD_INTERVAL 等と揃える想定。
+    """
+
+    costmap: Costmap2D
+    output_dir: Path
+    update_interval_s: float = 0.3
+    live_window: bool = True
+    delete_frames_after_video: bool = True
+    planned_legs: List[PathLegVisualization] = field(default_factory=list)
+    traveled_xy: List[WorldXY] = field(default_factory=list)
+    human_xy: Optional[WorldXY] = None
+    _frame_paths: List[Path] = field(default_factory=list, init=False, repr=False)
+    _last_update_ts: float = field(default_factory=time.time, init=False, repr=False)
+    _fig: Optional[plt.Figure] = field(default=None, init=False, repr=False)
+    _ax: Optional[plt.Axes] = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self.output_dir = Path(self.output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        clear_intermediate_frame_pngs(self.output_dir)
+        self.live_window = self.live_window and _matplotlib_show_enabled()
+        if self.live_window:
+            plt.ion()
+        else:
+            matplotlib.use("Agg")
+        self._fig, self._ax = plt.subplots(figsize=(9, 8), facecolor="white")
+        self._draw_frame(save=False)
+
+    def set_planned_legs(self, legs: Sequence[PathLegVisualization]) -> None:
+        self.planned_legs = list(legs)
+
+    def set_human_xy(self, human_xy: Optional[WorldXY]) -> None:
+        self.human_xy = human_xy
+
+    def maybe_update(
+        self,
+        robot_xy: WorldXY,
+        *,
+        human_xy: Optional[WorldXY] = None,
+        force: bool = False,
+    ) -> None:
+        """update_interval_s ごとに表示更新とフレーム保存。"""
+        if human_xy is not None:
+            self.human_xy = human_xy
+        self.traveled_xy.append(robot_xy)
+        now = time.time()
+        if not force and (now - self._last_update_ts) < self.update_interval_s:
+            return
+        self._last_update_ts = now
+        self._draw_frame(save=True)
+
+    def finalize(self) -> dict:
+        """最終フレームを保存し、MP4/GIF を生成。必要なら PNG を削除。"""
+        if self.traveled_xy:
+            self.maybe_update(self.traveled_xy[-1], force=True)
+        elif self._ax is not None:
+            self._draw_frame(save=True)
+
+        mp4_path = self.output_dir / "costmap_live.mp4"
+        gif_path = self.output_dir / "costmap_live.gif"
+        video_paths = export_frames_to_videos(
+            self._frame_paths,
+            mp4_path=mp4_path,
+            gif_path=gif_path,
+            fps=max(1.0, 1.0 / self.update_interval_s),
+            delete_frames_after=self.delete_frames_after_video,
+        )
+        self._frame_paths.clear()
+
+        if self.live_window:
+            plt.ioff()
+        if self._fig is not None:
+            plt.close(self._fig)
+            self._fig = None
+            self._ax = None
+
+        return {
+            "frame_count": len(video_paths.get("frames_used", [])),
+            "mp4": str(video_paths.get("mp4", "")),
+            "gif": str(video_paths.get("gif", "")),
+            "frames_deleted": video_paths.get("frames_deleted", 0),
+        }
+
+    def _draw_frame(self, *, save: bool) -> None:
+        if self._ax is None or self._fig is None:
+            return
+        draw_costmap_visualization(
+            self._ax,
+            self.costmap,
+            planned_legs=self.planned_legs,
+            traveled_xy=self.traveled_xy,
+            human_xy=self.human_xy,
+            title="Live costmap (Y horizontal, X vertical)",
+            show_colorbar=False,
+        )
+
+        if save:
+            frame_path = self.output_dir / f"frame_{len(self._frame_paths) + 1:05d}.png"
+            self._fig.tight_layout()
+            self._fig.savefig(frame_path, dpi=120, facecolor="white")
+            self._frame_paths.append(frame_path)
+
+        if self.live_window:
+            self._fig.canvas.draw_idle()
+            self._fig.canvas.flush_events()
+            plt.pause(0.001)
+
+
+def clear_intermediate_frame_pngs(directory: Path) -> int:
+    """live_costmap 内の frame_*.png を削除（再実行時の残骸対策）。"""
+    deleted = 0
+    for frame_path in sorted(Path(directory).glob("frame_*.png")):
+        frame_path.unlink(missing_ok=True)
+        deleted += 1
+    return deleted
+
+
+def delete_intermediate_frame_pngs(frame_paths: Sequence[Path]) -> int:
+    """動画化に使った中間 PNG を削除する。"""
+    deleted = 0
+    for frame_path in frame_paths:
+        path = Path(frame_path)
+        if path.name.startswith("frame_") and path.suffix.lower() == ".png":
+            if path.exists():
+                path.unlink()
+                deleted += 1
+    return deleted
+
+
+def _export_gif_with_pillow(frame_paths: Sequence[Path], gif_path: Path, fps: float) -> bool:
+    from PIL import Image
+
+    images = [Image.open(path) for path in frame_paths]
+    duration_ms = max(1, int(1000.0 / fps))
+    images[0].save(
+        gif_path,
+        save_all=True,
+        append_images=images[1:],
+        duration=duration_ms,
+        loop=0,
+    )
+    return True
+
+
+def _export_mp4_with_ffmpeg(frame_paths: Sequence[Path], mp4_path: Path, fps: float) -> bool:
+    if not frame_paths:
+        return False
+    first = Path(frame_paths[0])
+    pattern = str(first.parent / "frame_%05d.png")
+    command = [
+        "ffmpeg",
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-framerate",
+        str(fps),
+        "-i",
+        pattern,
+        "-pix_fmt",
+        "yuv420p",
+        str(mp4_path),
+    ]
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    except FileNotFoundError:
+        return False
+    if completed.returncode != 0:
+        print(f"[LiveCostmap] ffmpeg failed: {completed.stderr.strip()}")
+        return False
+    return True
+
+
+def export_frames_to_videos(
+    frame_paths: Sequence[Path],
+    *,
+    mp4_path: Path,
+    gif_path: Path,
+    fps: float,
+    delete_frames_after: bool = True,
+) -> dict:
+    """PNG フレーム列から MP4 と GIF を生成し、成功後に中間 PNG を削除する。"""
+    paths = [Path(path) for path in frame_paths]
+    result: dict = {
+        "frames_used": [str(path) for path in paths],
+        "gif_ok": False,
+        "mp4_ok": False,
+        "frames_deleted": 0,
+    }
+    if not paths:
+        print("[LiveCostmap] No frames to export.")
+        return result
+
+    mp4_path.parent.mkdir(parents=True, exist_ok=True)
+    gif_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        if _export_gif_with_pillow(paths, gif_path, fps):
+            result["gif"] = gif_path
+            result["gif_ok"] = True
+            print(f"[LiveCostmap] GIF saved: {gif_path}")
+    except Exception as exc:
+        print(f"[LiveCostmap] GIF export failed ({exc}).")
+
+    if _export_mp4_with_ffmpeg(paths, mp4_path, fps):
+        result["mp4"] = mp4_path
+        result["mp4_ok"] = True
+        print(f"[LiveCostmap] MP4 saved: {mp4_path}")
+    else:
+        try:
+            import imageio
+
+            frames = [imageio.imread(path) for path in paths]
+            imageio.mimsave(str(mp4_path), frames, fps=fps)
+            result["mp4"] = mp4_path
+            result["mp4_ok"] = True
+            print(f"[LiveCostmap] MP4 saved via imageio: {mp4_path}")
+        except Exception as exc:
+            print(
+                f"[LiveCostmap] MP4 export failed ({exc}). "
+                "Install ffmpeg or: pip install imageio[ffmpeg]"
+            )
+
+    if delete_frames_after and (result["gif_ok"] or result["mp4_ok"]):
+        deleted_count = delete_intermediate_frame_pngs(paths)
+        result["frames_deleted"] = deleted_count
+        print(f"[LiveCostmap] Deleted {deleted_count} intermediate frame PNG(s).")
+    elif delete_frames_after:
+        print("[LiveCostmap] Keeping frame PNGs (GIF and MP4 export both failed).")
+
+    return result

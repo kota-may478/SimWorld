@@ -103,6 +103,7 @@ from path_planning_costmap import (
     build_uniform_costmap,
     costmap_from_array,
     plan_waypoints_grid_astar,
+    LiveCostmapVisualizer,
     plot_costmap_with_paths,
 )
 
@@ -574,6 +575,11 @@ DELIVERY_ATTACH_STEP_SLEEP_S = 0.04
 
 # ---- 記録設定 ----
 RECORD_INTERVAL  = 0.3    # データ記録間隔 [s]
+
+# ---- ライブコストマップ可視化（フレーム → MP4/GIF） ----
+LIVE_COSTMAP_ENABLE = True
+LIVE_COSTMAP_DELETE_FRAMES_AFTER = True
+LIVE_COSTMAP_LIVE_WINDOW = True
 
 # %%
 # ==============================================================
@@ -1177,13 +1183,54 @@ def generate_task_instruction(
 
 _transport_costmap: Optional[Costmap2D] = None
 _path_plan_history: List[PathLegVisualization] = []
+_live_costmap_viz: Optional[LiveCostmapVisualizer] = None
 
 
 def reset_path_planning_state() -> None:
     """コストマップと計画履歴をクリア（タスク開始時）。"""
-    global _transport_costmap, _path_plan_history
+    global _transport_costmap, _path_plan_history, _live_costmap_viz
+    finalize_live_costmap_visualization()
     _transport_costmap = None
     _path_plan_history = []
+    _live_costmap_viz = None
+
+
+def start_live_costmap_visualization() -> None:
+    """タスク開始時にライブコストマップ表示を開始。"""
+    global _live_costmap_viz
+    if not LIVE_COSTMAP_ENABLE:
+        return
+    costmap = ensure_transport_costmap()
+    output_dir = _output_dir / "live_costmap"
+    _live_costmap_viz = LiveCostmapVisualizer(
+        costmap=costmap,
+        output_dir=output_dir,
+        update_interval_s=RECORD_INTERVAL,
+        live_window=LIVE_COSTMAP_LIVE_WINDOW,
+        delete_frames_after_video=LIVE_COSTMAP_DELETE_FRAMES_AFTER,
+    )
+    print(f"[LiveCostmap] Started (interval={RECORD_INTERVAL}s, dir={output_dir})")
+
+
+def record_live_costmap_robot_pose(
+    robot_xy: Tuple[float, float],
+    human_xy: Optional[Tuple[float, float]] = None,
+) -> None:
+    if _live_costmap_viz is not None:
+        _live_costmap_viz.maybe_update(robot_xy, human_xy=human_xy)
+
+
+def finalize_live_costmap_visualization() -> Optional[dict]:
+    """タスク終了後に MP4/GIF を書き出し、ウィンドウを閉じる。"""
+    global _live_costmap_viz
+    if _live_costmap_viz is None:
+        return None
+    _live_costmap_viz.set_planned_legs(_path_plan_history)
+    if HUMAN_NAME and actor_exists(HUMAN_NAME):
+        _live_costmap_viz.set_human_xy(get_pos2d(HUMAN_NAME))
+    result = _live_costmap_viz.finalize()
+    _live_costmap_viz = None
+    return result
 
 
 def set_transport_costmap(costmap: Costmap2D) -> None:
@@ -1526,6 +1573,9 @@ def execute_transport_task(
     reset_path_planning_state()
     human_corner_xy = get_pos2d(human_name) if actor_exists(human_name) else HUMAN_SPAWN[:2]
     ensure_transport_costmap(human_corner_xy)
+    start_live_costmap_visualization()
+    if _live_costmap_viz is not None:
+        _live_costmap_viz.set_human_xy(human_corner_xy)
 
     # Humanoid がロボットに手を振る
     ucv.humanoid_wave_to_dog(human_name)
@@ -1619,6 +1669,7 @@ def recorder_loop(
             "dist_human_robot_cm": dist_hr,
             "dist_robot_mat_cm":   dist_rm,
         })
+        record_live_costmap_robot_pose(robot_pos, human_pos)
         time.sleep(RECORD_INTERVAL)
 
 
@@ -1720,6 +1771,10 @@ t_rec.join(timeout=3)
 
 print(f"\n=== Task finished with state: {final_state.name} ===")
 print(f"=== {len(sim_data)} data points recorded ===")
+
+live_costmap_result = finalize_live_costmap_visualization()
+if live_costmap_result:
+    print(f"[LiveCostmap] Export: {live_costmap_result}")
 
 # %%
 # ==============================================================
