@@ -102,8 +102,12 @@ from simworld.utils.vector import Vector
 
 ucv = None
 communicator = None
+_carry_visual_actor: Optional[str] = None
 
 UE_PORT = 9000
+PICKUP_ATTACH_STEPS = 12
+PICKUP_ATTACH_STEP_SLEEP_S = 0.04
+CARRY_POSE_UPDATE_INTERVAL_S = 0.02
 
 
 def _is_wsl() -> bool:
@@ -291,9 +295,12 @@ MATERIAL_PRESETS = {
         "name": "MT_MaterialBox",
         "label": "box",
         "scale": (0.5, 0.5, 0.5),
-        "carry_forward_cm": 0.0,
+        "carry_forward_cm": 60.0,
         "carry_side_cm": 0.0,
-        "carry_z_cm": 60.0,
+        "carry_z_cm": 70.0,
+        "carry_proxy_bp_path": "/Game/CityDatabase/blueprints/BP_Box.BP_Box_C",
+        "carry_proxy_name": "MT_MaterialBoxCarryProxy",
+        "carry_proxy_scale": (0.5, 0.5, 0.5),
         "drop_z_cm": 20.0,
     },
 }
@@ -724,17 +731,21 @@ def actor_exists(actor_name: Optional[str]) -> bool:
     """指定した actor が UE 上に存在するかを返す。"""
     if not actor_name:
         return False
-    return actor_name in {str(name) for name in ucv.get_objects().tolist()}
+    active_ucv, _ = ensure_connection()
+    return actor_name in {str(name) for name in active_ucv.get_objects().tolist()}
 
 
 def destroy_actor_if_exists(actor_name: Optional[str]) -> None:
     """存在する場合のみ actor を削除する。"""
     if actor_exists(actor_name):
-        ucv.destroy(actor_name)
+        active_ucv, _ = ensure_connection()
+        active_ucv.destroy(actor_name)
 
 
 def get_material_tracking_name() -> str:
     """現在シーン上で可視な搬送対象 actor 名を返す。"""
+    if _carry_visual_actor and actor_exists(_carry_visual_actor):
+        return _carry_visual_actor
     if USE_MATERIAL_CARRY_PROXY and actor_exists(MATERIAL_CARRY_PROXY_NAME):
         return MATERIAL_CARRY_PROXY_NAME
     return MATERIAL_NAME
@@ -745,14 +756,87 @@ def hide_material_actor(actor_name: Optional[str]) -> None:
     if not actor_exists(actor_name):
         return
 
-    actor_x, actor_y, _ = ucv.get_location(actor_name)
+    active_ucv, _ = ensure_connection()
+    actor_x, actor_y, _ = active_ucv.get_location(actor_name)
     hidden_loc = (float(actor_x), float(actor_y), MATERIAL_HIDDEN_Z_CM)
-    ucv.set_collision(actor_name, False)
-    ucv.set_physics(actor_name, False)
-    ucv.set_movable(actor_name, True)
-    ucv.set_location(hidden_loc, actor_name)
-    ucv.set_orientation((0.0, 0.0, 0.0), actor_name)
-    ucv.set_scale(MATERIAL_HIDDEN_SCALE, actor_name)
+    active_ucv.set_collision(actor_name, False)
+    active_ucv.set_physics(actor_name, False)
+    active_ucv.set_movable(actor_name, True)
+    active_ucv.set_location(hidden_loc, actor_name)
+    active_ucv.set_orientation((0.0, 0.0, 0.0), actor_name)
+    active_ucv.set_scale(MATERIAL_HIDDEN_SCALE, actor_name)
+
+
+def get_carried_material_actor_name() -> str:
+    """搬送演出でロボットに追従させる actor 名を返す。"""
+    if _carry_visual_actor and actor_exists(_carry_visual_actor):
+        return _carry_visual_actor
+    if USE_MATERIAL_CARRY_PROXY:
+        return MATERIAL_CARRY_PROXY_NAME
+    return MATERIAL_NAME
+
+
+def _material_pickup_origin_xyz() -> Tuple[float, float, float]:
+    """ピックアップ直前のマテリアル位置 [cm]。"""
+    if actor_exists(MATERIAL_NAME):
+        return get_pos3d(MATERIAL_NAME)
+    return MATERIAL_SPAWN
+
+
+def begin_material_carry_visual() -> str:
+    """ピックアップ演出開始: 元の箱を隠し、ロボット追従用 actor を用意する。"""
+    global _carry_visual_actor
+
+    active_ucv, _ = ensure_connection()
+    pickup_origin = _material_pickup_origin_xyz()
+    hide_material_actor(MATERIAL_NAME)
+
+    if USE_MATERIAL_CARRY_PROXY:
+        actor = spawn_material_carry_proxy()
+        if actor is None:
+            raise RuntimeError("Failed to spawn material carry proxy.")
+        active_ucv.set_location(pickup_origin, actor)
+        active_ucv.set_orientation((0.0, 0.0, 0.0), actor)
+        active_ucv.set_scale(MATERIAL_CARRY_PROXY_SCALE, actor)
+    else:
+        actor = MATERIAL_NAME
+        active_ucv.set_collision(actor, False)
+        active_ucv.set_physics(actor, False)
+        active_ucv.set_movable(actor, True)
+        active_ucv.set_location(pickup_origin, actor)
+        active_ucv.set_scale(MATERIAL_SCALE, actor)
+
+    _carry_visual_actor = actor
+    print(
+        f"  [Robot] Carry visual ready: {actor} at pickup site "
+        f"(original {MATERIAL_NAME} hidden)"
+    )
+    return actor
+
+
+def animate_material_attach_to_robot(
+    stop_event: Optional[threading.Event] = None,
+    steps: int = PICKUP_ATTACH_STEPS,
+    step_sleep_s: float = PICKUP_ATTACH_STEP_SLEEP_S,
+) -> None:
+    """マテリアルをピックアップ位置からロボット保持位置へ近づける。"""
+    active_ucv, _ = ensure_connection()
+    actor = get_carried_material_actor_name()
+    if not actor_exists(actor):
+        sync_carried_material_pose()
+        return
+
+    start = get_pos3d(actor)
+    carry_loc, carry_rot = get_robot_carry_pose()
+    for step_idx in range(1, steps + 1):
+        if stop_event is not None and stop_event.is_set():
+            break
+        t = step_idx / steps
+        loc = tuple(start[i] + (carry_loc[i] - start[i]) * t for i in range(3))
+        active_ucv.set_location(loc, actor)
+        active_ucv.set_orientation(carry_rot, actor)
+        time.sleep(step_sleep_s)
+    sync_carried_material_pose()
 
 
 def spawn_material_actor(location: Tuple[float, float, float], enable_physics: bool = True) -> str:
@@ -786,13 +870,24 @@ def spawn_material_carry_proxy() -> Optional[str]:
 
 def sync_carried_material_pose() -> None:
     """現在の SpotDog 姿勢に合わせて保持中マテリアルの見た目を更新する。"""
-    actor_name = MATERIAL_NAME
-    if USE_MATERIAL_CARRY_PROXY:
-        actor_name = spawn_material_carry_proxy() or MATERIAL_NAME
+    active_ucv, _ = ensure_connection()
+    actor_name = get_carried_material_actor_name()
+    if not actor_exists(actor_name):
+        if USE_MATERIAL_CARRY_PROXY:
+            actor_name = spawn_material_carry_proxy() or MATERIAL_NAME
+        if not actor_exists(actor_name):
+            return
 
     carry_loc, carry_rot = get_robot_carry_pose()
-    ucv.set_location(carry_loc, actor_name)
-    ucv.set_orientation(carry_rot, actor_name)
+    active_ucv.set_location(carry_loc, actor_name)
+    active_ucv.set_orientation(carry_rot, actor_name)
+    active_ucv.set_movable(actor_name, True)
+    active_ucv.set_physics(actor_name, False)
+    active_ucv.set_collision(actor_name, False)
+    if actor_name == MATERIAL_CARRY_PROXY_NAME or actor_name == _carry_visual_actor:
+        active_ucv.set_scale(MATERIAL_CARRY_PROXY_SCALE, actor_name)
+    else:
+        active_ucv.set_scale(MATERIAL_SCALE, actor_name)
 
 
 # %%
@@ -833,6 +928,9 @@ def spawn_robot() -> str:
 
 def spawn_material() -> str:
     """搬送対象マテリアルをスポーンしてアクター名を返す。"""
+    global _carry_visual_actor
+
+    _carry_visual_actor = None
     for actor_name in KNOWN_MATERIAL_PROXY_NAMES:
         destroy_actor_if_exists(actor_name)
     for actor_name in KNOWN_MATERIAL_NAMES:
@@ -982,19 +1080,15 @@ def robot_navigate_to(
 def robot_simulate_pickup(stop_event: threading.Event) -> None:
     """
     ロボットがマテリアルをピックアップする演出。
-    SpotDog 用の PickUp API はないため、軽量物体を背上に保持する。
+    SpotDog 用の PickUp API はないため、元の箱を隠して追従用 actor をロボットへ付ける。
     """
     print(f"  [Robot] Picking up {MATERIAL_LABEL}...")
-    time.sleep(1.0)
-    if USE_MATERIAL_CARRY_PROXY:
-        hide_material_actor(MATERIAL_NAME)
-        spawn_material_carry_proxy()
-    else:
-        ucv.set_collision(MATERIAL_NAME, False)
-        ucv.set_physics(MATERIAL_NAME, False)
+    time.sleep(0.4)
+    begin_material_carry_visual()
+    animate_material_attach_to_robot(stop_event=stop_event)
     sync_carried_material_pose()
-    time.sleep(1.0)
-    print(f"  [Robot] {MATERIAL_LABEL} picked up.")
+    time.sleep(0.3)
+    print(f"  [Robot] {MATERIAL_LABEL} picked up (following robot).")
 
 
 def robot_carry_material(stop_event: threading.Event) -> None:
@@ -1004,7 +1098,7 @@ def robot_carry_material(stop_event: threading.Event) -> None:
     """
     while not stop_event.is_set():
         sync_carried_material_pose()
-        time.sleep(0.02)
+        time.sleep(CARRY_POSE_UPDATE_INTERVAL_S)
     sync_carried_material_pose()
 
 
@@ -1012,19 +1106,22 @@ def robot_simulate_drop(home_xy: Tuple[float, float]) -> None:
     """
     ロボットがホームベースでマテリアルを降ろすアニメーション。
     """
+    global _carry_visual_actor
+
     print(f"  [Robot] Dropping {MATERIAL_LABEL} at home base...")
-    time.sleep(1.0)
-    # マテリアルをホーム付近に配置し、物理を再有効化
+    time.sleep(0.4)
     drop_location = (home_xy[0] + 80, home_xy[1], MATERIAL_DROP_Z_CM)
-    if USE_MATERIAL_CARRY_PROXY:
-        destroy_actor_if_exists(MATERIAL_CARRY_PROXY_NAME)
-        spawn_material_actor(drop_location, enable_physics=True)
-    else:
-        ucv.set_location(drop_location, MATERIAL_NAME)
-        ucv.set_orientation((0.0, 0.0, 0.0), MATERIAL_NAME)
-        ucv.set_collision(MATERIAL_NAME, True)
-        ucv.set_physics(MATERIAL_NAME, True)
-    time.sleep(0.5)
+    carried_actor = get_carried_material_actor_name()
+    if actor_exists(carried_actor):
+        active_ucv, _ = ensure_connection()
+        active_ucv.set_location(drop_location, carried_actor)
+        active_ucv.set_orientation((0.0, 0.0, 0.0), carried_actor)
+        time.sleep(0.2)
+
+    destroy_actor_if_exists(MATERIAL_CARRY_PROXY_NAME)
+    _carry_visual_actor = None
+    spawn_material_actor(drop_location, enable_physics=True)
+    time.sleep(0.4)
     print(f"  [Robot] {MATERIAL_LABEL} dropped.")
 
 
