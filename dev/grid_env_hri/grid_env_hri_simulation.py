@@ -21,10 +21,13 @@ from __future__ import annotations
 
 import math
 import os
+import socket
+import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterable, Optional, Tuple
+from typing import Iterable, Iterator, List, Optional, Tuple
 
 # ---- SimWorld ルートをパスに追加 ----
 def _find_project_root() -> Path:
@@ -49,6 +52,7 @@ from simworld.utils.vector import Vector
 # ==============================================================
 
 FLOOR_BP = "/Game/CustomAssets/BP_Floor_30x30.BP_Floor_30x30_C"
+# 床左下の格子全体（0.3 m ピッチ）。既定は非表示に近い → SetBlocking + 色付けで薄く表示
 CUBE_BP = "/Game/CustomAssets/BP_TransparentCube.BP_TransparentCube_C"
 HUMAN_BP = "/Game/TrafficSystem/Pedestrian/Base_User_Agent.Base_User_Agent_C"
 ROBOT_BP = "/Game/Robot_Dog/Blueprint/BP_SpotRobot.BP_SpotRobot_C"
@@ -82,11 +86,270 @@ SETTLE_AFTER_SPAWN_S = 6.0
 HUMAN_MAP_XY_M = (1.0, 1.0)
 ROBOT_MAP_XY_M = (1.0, 3.0)
 
+# pakchunk9002: BP_TransparentCube の SetBlocking デモ（床面上・マップ座標 [m]、左下原点）
+# 実体モード（SetBlocking True）— 従来 BP_Box 目印があった付近
+DEMO_SOLID_MAP_XY_M: Tuple[Tuple[float, float], ...] = (
+    (8.0, 8.0),
+    (10.0, 8.0),
+    (8.0, 10.0),
+)
+# 半透明モード（SetBlocking False）— Humanoid 足元ではなく視認しやすい位置
+DEMO_TRANSLUCENT_MAP_XY_M: Tuple[Tuple[float, float], ...] = (
+    (5.5, 5.5),
+)
+# 格子全体を SetBlocking True にしたときの薄い色（任意）
+TRANSPARENT_CUBE_TINT = (
+    int(os.environ.get("TRANSPARENT_CUBE_TINT_R", "120")),
+    int(os.environ.get("TRANSPARENT_CUBE_TINT_G", "180")),
+    int(os.environ.get("TRANSPARENT_CUBE_TINT_B", "255")),
+)
+SPAWN_DEMO_MODE_CUBES = os.environ.get("SPAWN_DEMO_MODE_CUBES", "1") not in {
+    "0",
+    "false",
+    "False",
+}
+# 後方互換
+SPAWN_VISIBLE_MARKERS = SPAWN_DEMO_MODE_CUBES
+
 GRID_N = int(os.environ.get("GRID_N", "100"))
 SPAWN_INTERVAL_S = float(os.environ.get("SPAWN_INTERVAL_S", "0.005"))
 CUBE_ENABLE_PHYSICS = os.environ.get("CUBE_ENABLE_PHYSICS", "1") not in {"0", "false", "False"}
 # Humanoid / Robot に Simulated Physics を有効にするとラグドール化するため既定 OFF
 AGENT_ENABLE_PHYSICS = os.environ.get("AGENT_ENABLE_PHYSICS", "0") not in {"0", "false", "False"}
+
+# UnrealCV: client.request の既定 timeout は 5s。BP 初回ロードは遅いことがある。
+UE_REQUEST_TIMEOUT_S = float(os.environ.get("UE_REQUEST_TIMEOUT_S", "30"))
+UE_SPAWN_TIMEOUT_S = float(os.environ.get("UE_SPAWN_TIMEOUT_S", "180"))
+UE_SPAWN_POLL_S = float(os.environ.get("UE_SPAWN_POLL_S", "1.0"))
+UE_SPAWN_POLL_MAX = int(os.environ.get("UE_SPAWN_POLL_MAX", "60"))
+UE_PORT = 9000
+UE_TCP_PROBE_TIMEOUT_S = float(os.environ.get("UE_TCP_PROBE_TIMEOUT_S", "3"))
+UE_UNREALCV_MAX_ATTEMPTS = int(os.environ.get("UE_UNREALCV_MAX_ATTEMPTS", "5"))
+UE_UNREALCV_RETRY_INTERVAL_S = float(os.environ.get("UE_UNREALCV_RETRY_INTERVAL_S", "0.5"))
+
+
+# ==============================================================
+# UE 接続（Notebook / CLI 共通）
+# ==============================================================
+
+def _is_wsl() -> bool:
+    version_path = Path("/proc/version")
+    if not version_path.exists():
+        return False
+    text = version_path.read_text(encoding="utf-8").lower()
+    return "microsoft" in text or "wsl" in text
+
+
+def _wsl_default_gateway_ip() -> Optional[str]:
+    try:
+        result = subprocess.run(
+            ["ip", "route", "show", "default"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    parts = result.stdout.split()
+    if len(parts) >= 3 and parts[0] == "default" and parts[1] == "via":
+        return parts[2]
+    return None
+
+
+def _windows_host_ip_from_resolv() -> Optional[str]:
+    resolv_path = Path("/etc/resolv.conf")
+    if not resolv_path.exists():
+        return None
+    for line in resolv_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line.startswith("nameserver"):
+            parts = line.split()
+            if len(parts) >= 2:
+                return parts[1]
+    return None
+
+
+def _port_listener_hint(port: int = UE_PORT) -> str:
+    try:
+        result = subprocess.run(
+            ["ss", "-tlnp"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    needle = f":{port}"
+    lines = [line for line in result.stdout.splitlines() if needle in line and "LISTEN" in line]
+    return "; ".join(lines[:2])
+
+
+def _probe_unrealcv_endpoint(
+    host: str,
+    port: int = UE_PORT,
+    timeout_s: Optional[float] = None,
+) -> bool:
+    """TCP で接続し UnrealCV バナー（connected）を確認。到達不能ホストは数秒で諦める。"""
+    timeout = UE_TCP_PROBE_TIMEOUT_S if timeout_s is None else timeout_s
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        sock.connect((host, port))
+        banner = b""
+        deadline = time.monotonic() + timeout
+        while len(banner) < 128 and time.monotonic() < deadline:
+            try:
+                chunk = sock.recv(64)
+            except socket.timeout:
+                break
+            if not chunk:
+                break
+            banner += chunk
+            if b"connected" in banner.lower():
+                return True
+        return b"connected" in banner.lower()
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
+def _wsl_localhost_port_shadowed_by_python(port: int = UE_PORT) -> bool:
+    """WSL の 127.0.0.1:port が Python に占有され UE ではないか（malformat magic 255 の典型原因）。"""
+    hint = _port_listener_hint(port)
+    if not hint:
+        return False
+    for line in hint.split(";"):
+        line_lower = line.lower()
+        if "python" not in line_lower:
+            continue
+        if "127.0.0.1" in line or "0.0.0.0" in line:
+            return True
+    return False
+
+
+def _ue_host_candidates() -> List[str]:
+    hosts: List[str] = []
+    override = os.environ.get("UE_HOST", "").strip()
+    if override:
+        return [override]
+
+    if _is_wsl():
+        # WSL2 mirrored / localhost 転送時は 127.0.0.1 が Windows 上の SimWorld に届くことが多い
+        if not _wsl_localhost_port_shadowed_by_python(UE_PORT):
+            hosts.append("127.0.0.1")
+        for candidate in (_wsl_default_gateway_ip(), _windows_host_ip_from_resolv()):
+            if candidate and candidate not in hosts:
+                hosts.append(candidate)
+        return hosts
+
+    if "127.0.0.1" not in hosts:
+        hosts.append("127.0.0.1")
+    resolv_ip = _windows_host_ip_from_resolv()
+    if resolv_ip and resolv_ip not in hosts:
+        hosts.append(resolv_ip)
+    return hosts
+
+
+@contextmanager
+def _limited_unrealcv_check_connection() -> Iterator[None]:
+    """到達不能ホストで 30 回×1s リトライしないよう check_connection を一時的に制限。"""
+    import simworld.communicator.unrealcv as sucv_module
+
+    original = sucv_module.UnrealCV.check_connection
+    max_attempts = UE_UNREALCV_MAX_ATTEMPTS
+    retry_interval = UE_UNREALCV_RETRY_INTERVAL_S
+
+    def limited_check(
+        self: UnrealCV,
+        max_attempts: int = max_attempts,
+        retry_interval: float = retry_interval,
+    ) -> None:
+        return original(self, max_attempts=max_attempts, retry_interval=retry_interval)
+
+    sucv_module.UnrealCV.check_connection = limited_check  # type: ignore[method-assign]
+    try:
+        yield
+    finally:
+        sucv_module.UnrealCV.check_connection = original  # type: ignore[method-assign]
+
+
+def _connect_unrealcv(host: str, port: int = UE_PORT) -> UnrealCV:
+    with _limited_unrealcv_check_connection():
+        return UnrealCV(port=port, ip=host)
+
+
+def ensure_connection() -> Tuple[UnrealCV, Communicator]:
+    """UnrealCV / Communicator を初期化（短い TCP プローブ後に接続）。"""
+    if _is_wsl() and _wsl_localhost_port_shadowed_by_python(UE_PORT):
+        print(
+            "[UE] 127.0.0.1:9000 は WSL 内 Python が LISTEN 中のためスキップします。"
+            f" ({_port_listener_hint(UE_PORT)})"
+        )
+
+    candidates = _ue_host_candidates()
+    print(f"[UE] Probing UnrealCV on {candidates} (timeout={UE_TCP_PROBE_TIMEOUT_S:g}s each) ...")
+
+    errors: List[str] = []
+    reachable: List[str] = []
+    for host in candidates:
+        if host == "127.0.0.1" and _wsl_localhost_port_shadowed_by_python(UE_PORT):
+            errors.append(
+                f"{host}:{UE_PORT} — skipped (WSL Python shadows port; "
+                f"listener: {_port_listener_hint(UE_PORT)})"
+            )
+            continue
+        if _probe_unrealcv_endpoint(host, UE_PORT):
+            reachable.append(host)
+            print(f"[UE] probe OK: {host}:{UE_PORT}")
+        else:
+            extra = ""
+            if host == "127.0.0.1":
+                hint = _port_listener_hint(UE_PORT)
+                if hint:
+                    extra = f" (listener: {hint})"
+            errors.append(f"{host}:{UE_PORT} — not reachable / not UnrealCV{extra}")
+            print(f"[UE] probe skip: {host}:{UE_PORT}")
+
+    if not reachable:
+        errors.append(
+            "no host answered with UnrealCV banner — SimWorld が 9000 で LISTEN していないか、"
+            "WSL から Windows へ届いていません（.wslconfig の localhostForwarding 等を確認）"
+        )
+    else:
+        for host in reachable:
+            try:
+                ucv = _connect_unrealcv(host)
+                communicator = Communicator(ucv)
+                print(f"[UE] Connected via UnrealCV at {host}:{UE_PORT}")
+                return ucv, communicator
+            except Exception as exc:
+                errors.append(f"{host}:{UE_PORT} — {exc}")
+                print(f"[UE] connect failed on {host}:{UE_PORT}: {exc}")
+
+    shadow_hint = _port_listener_hint(UE_PORT)
+    shadow_note = ""
+    if shadow_hint and "python" in shadow_hint.lower():
+        shadow_note = (
+            "\n\n[WSL] 127.0.0.1:9000 が WSL 内の Python に占有されています"
+            f" ({shadow_hint})。"
+            " Jupyter Kernel → Restart、または `kill` で該当 Python を終了後、"
+            " Windows で SimWorld.exe を起動してから再接続してください。"
+            " 応急処置: `export UE_HOST=<WindowsホストIP>`（ゲートウェイ / resolv の nameserver）。"
+        )
+
+    raise ConnectionError(
+        "Unreal Engine (UnrealCV) に接続できませんでした。\n"
+        "1. Windows で SimWorld を起動:\n"
+        "     cd C:\\SimWorldServer\n"
+        "     .\\SimWorld.exe -windowed -log /Game/Maps/empty.umap\n"
+        "2. ログに `Start listening on port 9000` があるか確認\n"
+        "3. Kernel → Restart 後、初期設定 → UE 接続の順で再実行\n"
+        "試行結果:\n  - " + "\n  - ".join(errors)
+        + shadow_note
+    )
 
 
 # ==============================================================
@@ -143,34 +406,151 @@ def agent_spawn_xyz_cm(
 # UnrealCV ヘルパ
 # ==============================================================
 
+def _parse_location_response(raw: Optional[str]) -> Optional[Tuple[float, float, float]]:
+    if raw is None:
+        return None
+    parts = str(raw).strip().split()
+    if len(parts) < 3:
+        return None
+    try:
+        return float(parts[0]), float(parts[1]), float(parts[2])
+    except ValueError:
+        return None
+
+
+def _ue_request(ucv: UnrealCV, cmd: str, *, timeout_s: Optional[float] = None) -> Optional[str]:
+    """UnrealCV 同期リクエスト。失敗時は None（UnrealCV 1.2.x は timeout 未実装）。"""
+    del timeout_s
+    try:
+        with ucv.lock:
+            return ucv.client.request(cmd)
+    except Exception as exc:
+        print(f"[UE] request failed ({cmd[:72]!r}): {exc}")
+        return None
+
+
+def try_get_location_cm(ucv: UnrealCV, name: str) -> Optional[Tuple[float, float, float]]:
+    """vget /object/{name}/location — 全オブジェクト列挙より軽い。"""
+    if not name:
+        return None
+    raw = _ue_request(ucv, f"vget /object/{name}/location", timeout_s=min(15.0, UE_REQUEST_TIMEOUT_S))
+    return _parse_location_response(raw)
+
+
 def actor_names(ucv: UnrealCV) -> set[str]:
-    return {str(name) for name in ucv.get_objects().tolist()}
+    raw = _ue_request(ucv, "vget /objects", timeout_s=max(UE_REQUEST_TIMEOUT_S, 60.0))
+    if raw is None:
+        print("[UE] warn: vget /objects failed — returning empty set")
+        return set()
+    return {str(name) for name in raw.split()}
 
 
 def actor_exists(ucv: UnrealCV, name: str) -> bool:
-    return name in actor_names(ucv)
+    return try_get_location_cm(ucv, name) is not None
+
+
+def _prepare_ue_spawn(ucv: UnrealCV) -> None:
+    raw = _ue_request(ucv, "vset /action/clean_garbage", timeout_s=30.0)
+    if raw is None:
+        print("[UE] warn: clean_garbage failed")
+    time.sleep(0.15)
 
 
 def destroy_if_exists(ucv: UnrealCV, name: str) -> None:
-    if actor_exists(ucv, name):
-        ucv.set_physics(name, False)
-        ucv.set_collision(name, False)
-        ucv.destroy(name)
+    if not actor_exists(ucv, name):
+        return
+    print(f"[UE] destroy existing {name!r} ...")
+    _ue_request(ucv, f"vset /object/{name}/physics 0", timeout_s=15.0)
+    _ue_request(ucv, f"vset /object/{name}/collision 0", timeout_s=15.0)
+    _ue_request(ucv, f"vset /object/{name}/destroy", timeout_s=30.0)
+    time.sleep(0.1)
 
 
-def spawn_bp(ucv: UnrealCV, bp_path: str, name: str) -> bool:
-    ucv.spawn_bp_asset(bp_path, name)
-    time.sleep(0.02)
-    return actor_exists(ucv, name)
+def spawn_bp(
+    ucv: UnrealCV,
+    bp_path: str,
+    name: str,
+    *,
+    timeout_s: Optional[float] = None,
+) -> bool:
+    cmd = f"vset /objects/spawn_bp_asset {bp_path} {name}"
+    timeout = UE_SPAWN_TIMEOUT_S if timeout_s is None else timeout_s
+    print(f"[UE] spawn_bp_asset {name!r} (timeout={timeout:g}s) ...")
+    res = _ue_request(ucv, cmd, timeout_s=timeout)
+    if res is None:
+        print(
+            f"[UE] spawn_bp_asset: no response within {timeout:g}s — "
+            "SimWorld を前面に出す / pakchunk9002 / BP パスを確認"
+        )
+        return False
+    res_text = str(res).strip()
+    if res_text.lower().startswith("error"):
+        print(f"[UE] spawn_bp_asset error: {res_text}")
+        return False
+
+    for attempt in range(UE_SPAWN_POLL_MAX):
+        if actor_exists(ucv, name):
+            if attempt > 0:
+                print(f"[UE] {name!r} appeared after {attempt + 1} poll(s)")
+            return True
+        time.sleep(UE_SPAWN_POLL_S)
+
+    print(
+        f"[UE] spawn_bp_asset: command returned but {name!r} has no location — "
+        f"BP path ok? ({bp_path})"
+    )
+    return False
+
+
+def _set_blocking_vbp_tokens(blocking: bool) -> Tuple[str, str]:
+    """UnrealCV → BP Custom Event 向けの bool 表記（UE 実装差のフォールバック）。"""
+    if blocking:
+        return "True", "1"
+    return "False", "0"
+
+
+def set_cube_blocking_mode(
+    ucv: UnrealCV,
+    cube_id: str,
+    *,
+    blocking: bool,
+    apply_tint: bool = False,
+) -> bool:
+    """BP_TransparentCube の Custom Event SetBlocking（見た目は BP マテリアル、当たりは blocking）。"""
+    primary, fallback = _set_blocking_vbp_tokens(blocking)
+    raw = _ue_request(
+        ucv,
+        f"vbp {cube_id} SetBlocking {primary}",
+        timeout_s=15.0,
+    )
+    ok = raw is not None and not str(raw).strip().lower().startswith("error")
+    if not ok:
+        raw_fb = _ue_request(
+            ucv,
+            f"vbp {cube_id} SetBlocking {fallback}",
+            timeout_s=15.0,
+        )
+        ok = raw_fb is not None and not str(raw_fb).strip().lower().startswith("error")
+        if ok:
+            print(f"  note: SetBlocking {fallback!r} ok for {cube_id} (primary {primary!r} failed)")
+    if not ok:
+        print(
+            f"  warn: vbp SetBlocking {blocking} failed for {cube_id!r} — "
+            f"BP の Custom Event / pakchunk9002 を確認"
+        )
+
+    ucv.set_collision(cube_id, blocking)
+    if blocking and apply_tint:
+        try:
+            ucv.set_color(cube_id, list(TRANSPARENT_CUBE_TINT))
+        except Exception as exc:
+            print(f"  warn: set_color {cube_id}: {exc}")
+    return ok
 
 
 def enable_cube_blocking(ucv: UnrealCV, cube_id: str) -> None:
-    """BP_TransparentCube を可視化し、コリジョンを有効化する。"""
-    try:
-        ucv.client.request(f"vbp {cube_id} SetBlocking True")
-    except Exception as exc:
-        print(f"  warn: SetBlocking failed for {cube_id}: {exc}")
-    ucv.set_collision(cube_id, True)
+    """格子用: 実体モード + 薄い色付け（コリジョン ON）。"""
+    set_cube_blocking_mode(ucv, cube_id, blocking=True, apply_tint=True)
 
 
 def spawn_with_physics_drop(
@@ -209,7 +589,11 @@ def spawn_fixed_floor(ucv: UnrealCV) -> bool:
     cx, cy = floor_center_xy_cm()
     loc = (cx, cy, FLOOR_ACTOR_Z_CM)
 
+    print("[Floor] prepare UE (clean_garbage) ...")
+    _prepare_ue_spawn(ucv)
+    print("[Floor] remove stale actor if any ...")
     destroy_if_exists(ucv, FLOOR_ACTOR_NAME)
+    print(f"[Floor] spawn {FLOOR_BP} ...")
     if not spawn_bp(ucv, FLOOR_BP, FLOOR_ACTOR_NAME):
         print("[Floor] spawn failed — PAK / BP パス / SimWorld 再起動を確認")
         return False
@@ -223,10 +607,111 @@ def spawn_fixed_floor(ucv: UnrealCV) -> bool:
     return True
 
 
+def demo_cube_center_cm(map_xy_m: Tuple[float, float]) -> Tuple[float, float, float]:
+    """BP_TransparentCube（30 cm）を床面上に静置する中心 [cm]。"""
+    x, y = map_xy_m_to_world_cm(map_xy_m)
+    z = FLOOR_TOP_Z_CM + CUBE_HALF_CM + 2.0
+    return x, y, z
+
+
+def _spawn_demo_transparent_cube(
+    ucv: UnrealCV,
+    name: str,
+    map_xy_m: Tuple[float, float],
+    *,
+    blocking: bool,
+) -> bool:
+    """BP_TransparentCube デモ: 実体は格子と同手順、通過可はコリジョン OFF のみ。"""
+    loc = demo_cube_center_cm(map_xy_m)
+    destroy_if_exists(ucv, name)
+
+    if blocking:
+        # 格子スポーンと同じ: collision OFF → 配置 → SetBlocking True → collision ON
+        return spawn_with_physics_drop(
+            ucv,
+            CUBE_BP,
+            name,
+            loc,
+            enable_physics=False,
+            use_set_blocking=True,
+        )
+
+    if not spawn_bp(ucv, CUBE_BP, name):
+        return False
+    ucv.set_physics(name, False)
+    ucv.set_collision(name, False)
+    ucv.set_movable(name, True)
+    ucv.set_location(list(loc), name)
+    ucv.set_orientation((0.0, 0.0, 0.0), name)
+    time.sleep(PHYSICS_ENABLE_DELAY_S)
+    return set_cube_blocking_mode(ucv, name, blocking=False, apply_tint=False)
+
+
+def spawn_demo_mode_cubes(ucv: UnrealCV) -> dict[str, dict]:
+    """pakchunk9002 の BP_TransparentCube を実体 / 半透明で床上に配置（モード視認用）。"""
+    registry: dict[str, dict] = {}
+    print(
+        f"[DemoCubes] solid(SetBlocking True) @ {list(DEMO_SOLID_MAP_XY_M)} m, "
+        f"translucent(False) @ {list(DEMO_TRANSLUCENT_MAP_XY_M)} m "
+        f"(BP={CUBE_BP})"
+    )
+
+    for idx, map_xy in enumerate(DEMO_SOLID_MAP_XY_M):
+        name = f"demo_solid_{idx:02d}"
+        loc = demo_cube_center_cm(map_xy)
+        if not _spawn_demo_transparent_cube(ucv, name, map_xy, blocking=True):
+            print(f"  warn: demo solid spawn failed {name!r} — pakchunk9002 / BP を確認")
+            continue
+        registry[name] = {
+            "map_xy_m": map_xy,
+            "world_cm": loc,
+            "blocking": True,
+            "mode": "solid",
+        }
+        print(
+            f"  {name} solid (blocking) map={map_xy} m → {_fmt_xyz(loc)} "
+            "— 見た目は半透明グレー、当たりあり"
+        )
+
+    for idx, map_xy in enumerate(DEMO_TRANSLUCENT_MAP_XY_M):
+        name = f"demo_translucent_{idx:02d}"
+        loc = demo_cube_center_cm(map_xy)
+        if not _spawn_demo_transparent_cube(ucv, name, map_xy, blocking=False):
+            print(f"  warn: demo translucent spawn failed {name!r}")
+            continue
+        registry[name] = {
+            "map_xy_m": map_xy,
+            "world_cm": loc,
+            "blocking": False,
+            "mode": "translucent",
+        }
+        print(
+            f"  {name} pass-through map={map_xy} m → {_fmt_xyz(loc)} "
+            "(SetBlocking False — 当たりなし・カメラ/エージェントが通過可)"
+        )
+
+    print(f"[DemoCubes] done: {len(registry)}")
+    return registry
+
+
+def spawn_visible_marker_cubes(ucv: UnrealCV) -> dict[str, dict]:
+    """後方互換エイリアス（旧 BP_Box 目印 → BP_TransparentCube デモ）。"""
+    return spawn_demo_mode_cubes(ucv)
+
+
 def spawn_cubes(ucv: UnrealCV, grid_n: int) -> dict[str, dict]:
     registry: dict[str, dict] = {}
     total = grid_n * grid_n
-    print(f"[Cubes] spawning {total} (GRID_N={grid_n}, physics={CUBE_ENABLE_PHYSICS})")
+    extent_m = grid_n * CUBE_SIZE_M
+    print(
+        f"[Cubes] spawning {total} transparent grid cubes (GRID_N={grid_n}, "
+        f"physics={CUBE_ENABLE_PHYSICS})"
+    )
+    print(
+        f"  grid covers map x,y in [0, {extent_m:.1f}] m (floor corner); "
+        f"agents @ human {HUMAN_MAP_XY_M} m, robot {ROBOT_MAP_XY_M} m — "
+        "camera near agents may not show the grid"
+    )
 
     for row in range(grid_n):
         for col in range(grid_n):
@@ -317,6 +802,7 @@ def report_spawn_state(
     cube_registry: dict[str, dict],
     human_name: Optional[str],
     *,
+    marker_registry: Optional[dict[str, dict]] = None,
     floor_z_min_cm: float = FLOOR_TOP_Z_CM - 5.0,
 ) -> None:
     """スポーン後の位置をログ出力（箱の床外落下・エージェント転倒の確認用）。"""
@@ -361,12 +847,32 @@ def report_spawn_state(
             loc = tuple(ucv.get_location(cube_id))
             print(f"    sample {cube_id}: {_fmt_xyz(loc)}")
 
+    if marker_registry:
+        print(f"  demo_cubes: {len(marker_registry)}")
+        for demo_id, meta in sorted(marker_registry.items()):
+            if actor_exists(ucv, demo_id):
+                loc = tuple(ucv.get_location(demo_id))
+                mode = meta.get("mode", "?")
+                print(
+                    f"    {demo_id} {mode} map={meta.get('map_xy_m')} "
+                    f"→ {_fmt_xyz(loc)}"
+                )
+            else:
+                print(f"    {demo_id}: MISSING")
 
-def cleanup_spawned(ucv: UnrealCV, cube_ids: Iterable[str]) -> None:
+
+def cleanup_spawned(
+    ucv: UnrealCV,
+    cube_ids: Iterable[str],
+    *,
+    marker_ids: Optional[Iterable[str]] = None,
+) -> None:
     destroy_if_exists(ucv, FLOOR_ACTOR_NAME)
     destroy_if_exists(ucv, ROBOT_ACTOR_NAME)
     for cid in cube_ids:
         destroy_if_exists(ucv, cid)
+    for mid in marker_ids or ():
+        destroy_if_exists(ucv, mid)
     try:
         ucv.clean_garbage()
     except Exception:
@@ -386,13 +892,15 @@ def main() -> None:
         "  Launch: SimWorld.exe -windowed -log /Game/Maps/empty.umap"
     )
 
-    ucv = UnrealCV()
-    communicator = Communicator(ucv)
+    ucv, communicator = ensure_connection()
 
     if not spawn_fixed_floor(ucv):
         return
 
     cube_registry = spawn_cubes(ucv, GRID_N)
+    marker_registry: dict[str, dict] = {}
+    if SPAWN_DEMO_MODE_CUBES:
+        marker_registry = spawn_demo_mode_cubes(ucv)
     human_name = spawn_humanoid(communicator, ucv)
     robot_ok = spawn_robot(ucv)
 
@@ -400,11 +908,14 @@ def main() -> None:
         print(f"[Settle] waiting {SETTLE_AFTER_SPAWN_S}s for physics ...")
         time.sleep(SETTLE_AFTER_SPAWN_S)
 
-    report_spawn_state(ucv, cube_registry, human_name)
+    report_spawn_state(
+        ucv, cube_registry, human_name, marker_registry=marker_registry or None
+    )
 
     print("[Done]")
     print(f"  floor: {FLOOR_ACTOR_NAME}")
     print(f"  cubes: {len(cube_registry)}")
+    print(f"  demo_cubes: {len(marker_registry)}")
     print(f"  humanoid: {human_name}")
     print(f"  robot: {ROBOT_ACTOR_NAME if robot_ok else 'FAILED'}")
     print(
