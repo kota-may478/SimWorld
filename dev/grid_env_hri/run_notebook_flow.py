@@ -44,13 +44,16 @@ def main() -> int:
     human_name = geh.spawn_humanoid(communicator, ucv)
     robot_ok = geh.spawn_robot(ucv)
 
-    if geh.SETTLE_AFTER_SPAWN_S > 0:
-        print(f"[Flow] settle {geh.SETTLE_AFTER_SPAWN_S}s")
-        time.sleep(geh.SETTLE_AFTER_SPAWN_S)
+    geh.settle_after_cube_spawn_if_needed()
 
     geh.report_spawn_state(
         ucv, cube_registry, human_name, marker_registry=marker_registry or None
     )
+
+    if geh.RUN_DEMO_PASSAGE_TESTS and robot_ok and marker_registry:
+        if not geh.run_all_demo_passage_tests(ucv, marker_registry):
+            print("[Flow] passage tests FAILED", file=sys.stderr)
+            return 1
 
     print("[Flow] cleanup ...")
     geh.cleanup_spawned(

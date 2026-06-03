@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import socket
@@ -27,7 +28,7 @@ import sys
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterable, Iterator, List, Optional, Tuple
+from typing import Iterable, Iterator, List, NamedTuple, Optional, Tuple
 
 # ---- SimWorld ルートをパスに追加 ----
 def _find_project_root() -> Path:
@@ -111,9 +112,39 @@ SPAWN_DEMO_MODE_CUBES = os.environ.get("SPAWN_DEMO_MODE_CUBES", "1") not in {
 # 後方互換
 SPAWN_VISIBLE_MARKERS = SPAWN_DEMO_MODE_CUBES
 
+# SpotDog によるデモ立方体通過試験（ログ判定）
+RUN_DEMO_PASSAGE_TESTS = os.environ.get("RUN_DEMO_PASSAGE_TESTS", "1") not in {
+    "0",
+    "false",
+    "False",
+}
+PASSAGE_AXIS_OFFSET_M = float(os.environ.get("PASSAGE_AXIS_OFFSET_M", "1.5"))
+PASSAGE_ROBOT_SPEED = float(os.environ.get("PASSAGE_ROBOT_SPEED", "220"))
+PASSAGE_MOVE_SLICE_S = float(os.environ.get("PASSAGE_MOVE_SLICE_S", "0.45"))
+PASSAGE_MAX_MOVE_S = float(os.environ.get("PASSAGE_MAX_MOVE_S", "18"))
+PASSAGE_ARRIVE_CM = float(os.environ.get("PASSAGE_ARRIVE_CM", "35"))
+PASS_THROUGH_MIN_PROGRESS_RATIO = float(
+    os.environ.get("PASS_THROUGH_MIN_PROGRESS_RATIO", "0.82")
+)
+PASS_THROUGH_MAX_MISS_CM = float(
+    os.environ.get("PASS_THROUGH_MAX_MISS_CM", str(CUBE_HALF_CM + 45.0))
+)
+BLOCKED_MAX_PROGRESS_RATIO = float(os.environ.get("BLOCKED_MAX_PROGRESS_RATIO", "0.62"))
+
 GRID_N = int(os.environ.get("GRID_N", "100"))
 SPAWN_INTERVAL_S = float(os.environ.get("SPAWN_INTERVAL_S", "0.005"))
-CUBE_ENABLE_PHYSICS = os.environ.get("CUBE_ENABLE_PHYSICS", "1") not in {"0", "false", "False"}
+# 格子箱: 既定は床上・透過モード（SetBlocking False）・物理シミュ OFF（床突き抜け防止）
+GRID_CUBE_BLOCKING = os.environ.get("GRID_CUBE_BLOCKING", "0") not in {
+    "0",
+    "false",
+    "False",
+}
+# 1 にすると SetBlocking True のあと物理落下（床コリジョンが弱いと沈むことがある）
+CUBE_ENABLE_PHYSICS = os.environ.get("CUBE_ENABLE_PHYSICS", "0") not in {
+    "0",
+    "false",
+    "False",
+}
 # Humanoid / Robot に Simulated Physics を有効にするとラグドール化するため既定 OFF
 AGENT_ENABLE_PHYSICS = os.environ.get("AGENT_ENABLE_PHYSICS", "0") not in {"0", "false", "False"}
 
@@ -699,32 +730,75 @@ def spawn_visible_marker_cubes(ucv: UnrealCV) -> dict[str, dict]:
     return spawn_demo_mode_cubes(ucv)
 
 
+def spawn_grid_cube_on_floor(
+    ucv: UnrealCV,
+    cube_id: str,
+    row: int,
+    col: int,
+    *,
+    blocking: bool,
+) -> Tuple[bool, Tuple[float, float, float]]:
+    """BP_TransparentCube を床上面に静置（デモ立方体と同系、物理落下なし）。"""
+    loc = cube_center_cm(row, col, on_floor=True)
+    destroy_if_exists(ucv, cube_id)
+    if not spawn_bp(ucv, CUBE_BP, cube_id):
+        return False, loc
+
+    ucv.set_physics(cube_id, False)
+    ucv.set_collision(cube_id, False)
+    ucv.set_movable(cube_id, True)
+    ucv.set_location(list(loc), cube_id)
+    ucv.set_orientation((0.0, 0.0, 0.0), cube_id)
+    time.sleep(PHYSICS_ENABLE_DELAY_S)
+    set_cube_blocking_mode(ucv, cube_id, blocking=blocking, apply_tint=blocking)
+    return True, loc
+
+
 def spawn_cubes(ucv: UnrealCV, grid_n: int) -> dict[str, dict]:
     registry: dict[str, dict] = {}
     total = grid_n * grid_n
     extent_m = grid_n * CUBE_SIZE_M
+    use_physics_drop = CUBE_ENABLE_PHYSICS and GRID_CUBE_BLOCKING
+    mode_label = (
+        "blocking+physics_drop"
+        if use_physics_drop
+        else ("blocking on floor" if GRID_CUBE_BLOCKING else "pass-through on floor")
+    )
     print(
-        f"[Cubes] spawning {total} transparent grid cubes (GRID_N={grid_n}, "
-        f"physics={CUBE_ENABLE_PHYSICS})"
+        f"[Cubes] spawning {total} grid cubes (GRID_N={grid_n}, mode={mode_label})"
     )
     print(
         f"  grid covers map x,y in [0, {extent_m:.1f}] m (floor corner); "
         f"agents @ human {HUMAN_MAP_XY_M} m, robot {ROBOT_MAP_XY_M} m — "
         "camera near agents may not show the grid"
     )
+    if not GRID_CUBE_BLOCKING:
+        print(
+            "  GRID_CUBE_BLOCKING=0: SetBlocking False (透過/通過可), "
+            f"z≈{FLOOR_TOP_Z_CM + CUBE_HALF_CM + 2:.0f} cm on floor top"
+        )
 
     for row in range(grid_n):
         for col in range(grid_n):
             cube_id = f"cube_{row:03d}_{col:03d}"
-            loc = cube_center_cm(row, col)
-            ok = spawn_with_physics_drop(
-                ucv,
-                CUBE_BP,
-                cube_id,
-                loc,
-                enable_physics=CUBE_ENABLE_PHYSICS,
-                use_set_blocking=True,
-            )
+            if use_physics_drop:
+                loc = cube_center_cm(row, col)
+                ok = spawn_with_physics_drop(
+                    ucv,
+                    CUBE_BP,
+                    cube_id,
+                    loc,
+                    enable_physics=True,
+                    use_set_blocking=True,
+                )
+            else:
+                ok, loc = spawn_grid_cube_on_floor(
+                    ucv,
+                    cube_id,
+                    row,
+                    col,
+                    blocking=GRID_CUBE_BLOCKING,
+                )
             if ok:
                 registry[cube_id] = {
                     "row": row,
@@ -732,6 +806,7 @@ def spawn_cubes(ucv: UnrealCV, grid_n: int) -> dict[str, dict]:
                     "x_cm": loc[0],
                     "y_cm": loc[1],
                     "spawn_z_cm": loc[2],
+                    "blocking": GRID_CUBE_BLOCKING,
                 }
             else:
                 print(f"  warn: failed {cube_id}")
@@ -795,6 +870,18 @@ def spawn_robot(ucv: UnrealCV) -> bool:
 
 def _fmt_xyz(loc: Tuple[float, float, float]) -> str:
     return f"({loc[0]:.1f}, {loc[1]:.1f}, {loc[2]:.1f})"
+
+
+def settle_after_cube_spawn_if_needed() -> None:
+    """格子箱を物理落下させたときだけ SETTLE_AFTER_SPAWN_S 待機。"""
+    if SETTLE_AFTER_SPAWN_S > 0 and CUBE_ENABLE_PHYSICS and GRID_CUBE_BLOCKING:
+        print(f"[Settle] waiting {SETTLE_AFTER_SPAWN_S}s for cube physics ...")
+        time.sleep(SETTLE_AFTER_SPAWN_S)
+    elif SETTLE_AFTER_SPAWN_S > 0:
+        print(
+            "[Settle] skip cube physics wait "
+            "(grid on floor, pass-through / no physics drop)"
+        )
 
 
 def report_spawn_state(
@@ -861,6 +948,384 @@ def report_spawn_state(
                 print(f"    {demo_id}: MISSING")
 
 
+class PassageTrialVerdict(NamedTuple):
+    demo_id: str
+    expects_pass_through: bool
+    passed: bool
+    message: str
+    progress_cm: float
+    goal_distance_cm: float
+    min_dist_obstacle_cm: float
+    max_object_collision: int
+    crossed_obstacle: bool
+
+
+def parse_collision_counts(raw_response: object) -> dict:
+    if isinstance(raw_response, dict):
+        return raw_response
+    if isinstance(raw_response, str):
+        text = raw_response.strip()
+        if not text or text.lower().startswith("error"):
+            return {}
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+def max_object_collision_count(counts: dict) -> int:
+    return int(counts.get("ObjectCollision", 0) or 0) + int(
+        counts.get("BuildingCollision", 0) or 0
+    )
+
+
+def _normalize_angle_deg(angle: float) -> float:
+    while angle > 180.0:
+        angle -= 360.0
+    while angle < -180.0:
+        angle += 360.0
+    return angle
+
+
+def _robot_xy_cm(ucv: UnrealCV) -> Tuple[float, float]:
+    loc = ucv.get_location(ROBOT_ACTOR_NAME)
+    return float(loc[0]), float(loc[1])
+
+
+def _robot_yaw_deg(ucv: UnrealCV) -> float:
+    ori = ucv.get_orientation(ROBOT_ACTOR_NAME)
+    return float(ori[1])
+
+
+def _dist_xy_cm(a: Tuple[float, float], b: Tuple[float, float]) -> float:
+    return math.hypot(a[0] - b[0], a[1] - b[1])
+
+
+def _yaw_toward_deg(from_xy: Tuple[float, float], to_xy: Tuple[float, float]) -> float:
+    return math.degrees(math.atan2(to_xy[1] - from_xy[1], to_xy[0] - from_xy[0]))
+
+
+def _projection_on_segment(
+    start_xy: Tuple[float, float],
+    goal_xy: Tuple[float, float],
+    point_xy: Tuple[float, float],
+) -> float:
+    ax = goal_xy[0] - start_xy[0]
+    ay = goal_xy[1] - start_xy[1]
+    length = math.hypot(ax, ay)
+    if length < 1e-6:
+        return 0.0
+    ux, uy = ax / length, ay / length
+    px = point_xy[0] - start_xy[0]
+    py = point_xy[1] - start_xy[1]
+    return px * ux + py * uy
+
+
+def passage_progress_along_segment(
+    start_xy: Tuple[float, float],
+    goal_xy: Tuple[float, float],
+    final_xy: Tuple[float, float],
+) -> float:
+    """start→goal 軸方向への移動量 [cm]（負にならないようクリップ）。"""
+    return max(0.0, _projection_on_segment(start_xy, goal_xy, final_xy))
+
+
+def crossed_obstacle_plane(
+    start_xy: Tuple[float, float],
+    goal_xy: Tuple[float, float],
+    obstacle_xy: Tuple[float, float],
+    final_xy: Tuple[float, float],
+    *,
+    half_extent_cm: float = CUBE_HALF_CM,
+    margin_cm: float = 10.0,
+) -> bool:
+    """最終位置が障害物立方体の「向こう側」平面を越えたか（直進試験用）。"""
+    obs_proj = _projection_on_segment(start_xy, goal_xy, obstacle_xy)
+    final_proj = _projection_on_segment(start_xy, goal_xy, final_xy)
+    goal_proj = _projection_on_segment(start_xy, goal_xy, goal_xy)
+    direction_sign = 1.0 if goal_proj >= obs_proj else -1.0
+    threshold = obs_proj + direction_sign * (half_extent_cm + margin_cm)
+    if direction_sign > 0:
+        return final_proj >= threshold
+    return final_proj <= threshold
+
+
+def judge_passage_trial(
+    *,
+    expects_pass_through: bool,
+    goal_distance_cm: float,
+    progress_cm: float,
+    min_dist_to_obstacle_cm: float,
+    max_object_collision: int,
+    crossed_obstacle: bool,
+) -> Tuple[bool, str]:
+    """通過可/不可の期待に対するログ判定（目視不要）。"""
+    if goal_distance_cm < 1e-3:
+        return False, "goal_distance_cm is zero"
+
+    progress_ratio = progress_cm / goal_distance_cm
+
+    if expects_pass_through:
+        if not crossed_obstacle:
+            return (
+                False,
+                f"did not cross obstacle plane (final progress {progress_cm:.0f} cm, "
+                f"min_dist={min_dist_to_obstacle_cm:.0f} cm)",
+            )
+        if progress_ratio < PASS_THROUGH_MIN_PROGRESS_RATIO:
+            return (
+                False,
+                f"progress {progress_cm:.0f}/{goal_distance_cm:.0f} cm "
+                f"({progress_ratio:.2f} < {PASS_THROUGH_MIN_PROGRESS_RATIO})",
+            )
+        return (
+            True,
+            f"passed through (crossed_plane=True, progress_ratio={progress_ratio:.2f}, "
+            f"min_dist={min_dist_to_obstacle_cm:.0f} cm, max_obj_coll={max_object_collision})",
+        )
+
+    if crossed_obstacle:
+        return (
+            False,
+            "robot crossed obstacle plane — SetBlocking True / BP collision "
+            "not effective (re-cook pakchunk9002 BP_TransparentCube SetBlocking event)",
+        )
+    if progress_ratio >= BLOCKED_MAX_PROGRESS_RATIO:
+        return (
+            False,
+            f"progress {progress_cm:.0f}/{goal_distance_cm:.0f} cm "
+            f"({progress_ratio:.2f} >= {BLOCKED_MAX_PROGRESS_RATIO}, should be blocked)",
+        )
+    return (
+        True,
+        f"blocked before obstacle plane (crossed_plane=False, progress_ratio={progress_ratio:.2f}, "
+        f"min_dist={min_dist_to_obstacle_cm:.0f} cm, max_obj_coll={max_object_collision})",
+    )
+
+
+def reapply_demo_cube_blocking_modes(
+    ucv: UnrealCV,
+    demo_registry: dict[str, dict],
+) -> None:
+    """通過試験前にデモ立方体へ SetBlocking を再適用（スポーン直後の取りこぼし対策）。"""
+    for demo_id, meta in sorted(demo_registry.items()):
+        if not actor_exists(ucv, demo_id):
+            print(f"[PassageTest] warn: {demo_id} missing before blocking reapply")
+            continue
+        blocking = meta.get("mode") != "translucent" and meta.get("blocking") is not False
+        ok = set_cube_blocking_mode(ucv, demo_id, blocking=blocking, apply_tint=blocking)
+        print(f"[PassageTest] reapply SetBlocking {blocking} on {demo_id}: {'ok' if ok else 'FAIL'}")
+
+
+def passage_segment_for_demo(
+    map_xy_m: Tuple[float, float],
+    *,
+    expects_pass_through: bool,
+) -> Tuple[Tuple[float, float], Tuple[float, float], Tuple[float, float]]:
+    """障害物中心を貫く start / goal [cm] と障害物中心 [cm]。"""
+    ox, oy = map_xy_m_to_world_cm(map_xy_m)
+    offset_cm = PASSAGE_AXIS_OFFSET_M * 100.0
+    obstacle_xy = (ox, oy)
+    if expects_pass_through:
+        start_xy = (ox, oy - offset_cm)
+        goal_xy = (ox, oy + offset_cm)
+    else:
+        start_xy = (ox - offset_cm, oy)
+        goal_xy = (ox + offset_cm, oy)
+    return start_xy, goal_xy, obstacle_xy
+
+
+def place_robot_and_face(
+    ucv: UnrealCV,
+    start_xy: Tuple[float, float],
+    goal_xy: Tuple[float, float],
+) -> None:
+    """SpotDog を start に置き、goal 方向を向かせる。"""
+    if not actor_exists(ucv, ROBOT_ACTOR_NAME):
+        raise RuntimeError(f"{ROBOT_ACTOR_NAME!r} is not spawned")
+
+    ucv.set_physics(ROBOT_ACTOR_NAME, False)
+    ucv.set_movable(ROBOT_ACTOR_NAME, True)
+    ucv.set_collision(ROBOT_ACTOR_NAME, True)
+    ucv.set_location(
+        [start_xy[0], start_xy[1], ROBOT_SPAWN_Z_CM],
+        ROBOT_ACTOR_NAME,
+    )
+    ucv.enable_controller(ROBOT_ACTOR_NAME, True)
+    time.sleep(PHYSICS_ENABLE_DELAY_S)
+
+    target_yaw = _yaw_toward_deg(start_xy, goal_xy)
+    current_yaw = _robot_yaw_deg(ucv)
+    angle_diff = _normalize_angle_deg(target_yaw - current_yaw)
+    if abs(angle_diff) > 5.0:
+        clockwise = 1 if angle_diff < 0.0 else -1
+        rotate_s = min(1.2, max(0.35, abs(angle_diff) / 90.0))
+        ucv.dog_rotate(ROBOT_ACTOR_NAME, [rotate_s, abs(angle_diff), clockwise])
+        time.sleep(rotate_s + 0.05)
+
+
+def drive_robot_through_segment(
+    ucv: UnrealCV,
+    start_xy: Tuple[float, float],
+    goal_xy: Tuple[float, float],
+    obstacle_xy: Tuple[float, float],
+) -> Tuple[Tuple[float, float], float, int]:
+    """goal へ前進し、最終位置・障害物への最小距離・最大 ObjectCollision を返す。"""
+    place_robot_and_face(ucv, start_xy, goal_xy)
+
+    min_dist = float("inf")
+    max_obj_coll = 0
+    elapsed = 0.0
+
+    while elapsed < PASSAGE_MAX_MOVE_S:
+        pos = _robot_xy_cm(ucv)
+        min_dist = min(min_dist, _dist_xy_cm(pos, obstacle_xy))
+        counts = parse_collision_counts(ucv.get_collision_num(ROBOT_ACTOR_NAME))
+        max_obj_coll = max(max_obj_coll, max_object_collision_count(counts))
+
+        if _dist_xy_cm(pos, goal_xy) <= PASSAGE_ARRIVE_CM:
+            break
+
+        ucv.dog_move(
+            ROBOT_ACTOR_NAME,
+            [PASSAGE_ROBOT_SPEED, PASSAGE_MOVE_SLICE_S, 0],
+        )
+        elapsed += PASSAGE_MOVE_SLICE_S
+
+    final_xy = _robot_xy_cm(ucv)
+    min_dist = min(min_dist, _dist_xy_cm(final_xy, obstacle_xy))
+    counts = parse_collision_counts(ucv.get_collision_num(ROBOT_ACTOR_NAME))
+    max_obj_coll = max(max_obj_coll, max_object_collision_count(counts))
+
+    if min_dist == float("inf"):
+        min_dist = _dist_xy_cm(final_xy, obstacle_xy)
+    return final_xy, min_dist, max_obj_coll
+
+
+def run_demo_passage_test(
+    ucv: UnrealCV,
+    demo_id: str,
+    meta: dict,
+) -> PassageTrialVerdict:
+    """1 個のデモ立方体に対する通過試験。"""
+    expects_pass = meta.get("mode") == "translucent" or meta.get("blocking") is False
+    map_xy = meta.get("map_xy_m")
+    if map_xy is None:
+        return PassageTrialVerdict(
+            demo_id,
+            expects_pass,
+            False,
+            "missing map_xy_m in registry",
+            0.0,
+            0.0,
+            float("inf"),
+            0,
+            False,
+        )
+
+    start_xy, goal_xy, obstacle_xy = passage_segment_for_demo(
+        tuple(map_xy),
+        expects_pass_through=expects_pass,
+    )
+    goal_distance_cm = _dist_xy_cm(start_xy, goal_xy)
+
+    print(
+        f"[PassageTest] {demo_id} expect={'PASS' if expects_pass else 'BLOCK'} "
+        f"start={_fmt_xyz((start_xy[0], start_xy[1], 0))} "
+        f"goal={_fmt_xyz((goal_xy[0], goal_xy[1], 0))} "
+        f"obstacle={_fmt_xyz((obstacle_xy[0], obstacle_xy[1], 0))}"
+    )
+
+    final_xy, min_dist_cm, max_obj_coll = drive_robot_through_segment(
+        ucv,
+        start_xy,
+        goal_xy,
+        obstacle_xy,
+    )
+    progress_cm = passage_progress_along_segment(start_xy, goal_xy, final_xy)
+    crossed = crossed_obstacle_plane(start_xy, goal_xy, obstacle_xy, final_xy)
+
+    ok, message = judge_passage_trial(
+        expects_pass_through=expects_pass,
+        goal_distance_cm=goal_distance_cm,
+        progress_cm=progress_cm,
+        min_dist_to_obstacle_cm=min_dist_cm,
+        max_object_collision=max_obj_coll,
+        crossed_obstacle=crossed,
+    )
+
+    verdict = PassageTrialVerdict(
+        demo_id=demo_id,
+        expects_pass_through=expects_pass,
+        passed=ok,
+        message=message,
+        progress_cm=progress_cm,
+        goal_distance_cm=goal_distance_cm,
+        min_dist_obstacle_cm=min_dist_cm,
+        max_object_collision=max_obj_coll,
+        crossed_obstacle=crossed,
+    )
+    status = "PASS" if ok else "FAIL"
+    print(
+        f"[PassageTest] {demo_id} {status}: {message} | "
+        f"final=({final_xy[0]:.0f},{final_xy[1]:.0f}) "
+        f"progress={progress_cm:.0f}/{goal_distance_cm:.0f} cm "
+        f"crossed_plane={crossed} min_dist={min_dist_cm:.0f} cm "
+        f"max_obj_coll={max_obj_coll}"
+    )
+    return verdict
+
+
+def run_all_demo_passage_tests(
+    ucv: UnrealCV,
+    demo_registry: dict[str, dict],
+) -> bool:
+    """全デモ立方体の通過試験。全件 PASS なら True。"""
+    if not demo_registry:
+        print("[PassageTest] skip: empty demo_registry")
+        return True
+
+    if not actor_exists(ucv, ROBOT_ACTOR_NAME):
+        print("[PassageTest] FAIL: robot not spawned")
+        return False
+
+    reapply_demo_cube_blocking_modes(ucv, demo_registry)
+
+    verdicts: List[PassageTrialVerdict] = []
+    for demo_id in sorted(demo_registry.keys()):
+        verdicts.append(run_demo_passage_test(ucv, demo_id, demo_registry[demo_id]))
+
+    passed_n = sum(1 for v in verdicts if v.passed)
+    total = len(verdicts)
+    all_ok = passed_n == total
+    print(
+        f"[PassageTest] SUMMARY {passed_n}/{total} "
+        f"{'ALL PASS' if all_ok else 'SOME FAILED'}"
+    )
+    if not all_ok:
+        for v in verdicts:
+            if not v.passed:
+                print(
+                    f"  FAILED {v.demo_id} expect={'PASS' if v.expects_pass_through else 'BLOCK'}: "
+                    f"{v.message}"
+                )
+        solid_crossed = [
+            v.demo_id
+            for v in verdicts
+            if not v.expects_pass_through and v.crossed_obstacle
+        ]
+        if solid_crossed:
+            print(
+                "[PassageTest] HINT: solid cube(s) "
+                f"{solid_crossed} were crossed with max_obj_coll=0 — "
+                "BP_TransparentCube SetBlocking(True) is not enabling collision in UE. "
+                "Fix in Editor (D-3b): Branch True → Query and Physics on mesh, "
+                "repackage pakchunk9002, restart SimWorld."
+            )
+    return all_ok
+
+
 def cleanup_spawned(
     ucv: UnrealCV,
     cube_ids: Iterable[str],
@@ -904,13 +1369,16 @@ def main() -> None:
     human_name = spawn_humanoid(communicator, ucv)
     robot_ok = spawn_robot(ucv)
 
-    if SETTLE_AFTER_SPAWN_S > 0:
-        print(f"[Settle] waiting {SETTLE_AFTER_SPAWN_S}s for physics ...")
-        time.sleep(SETTLE_AFTER_SPAWN_S)
+    settle_after_cube_spawn_if_needed()
 
     report_spawn_state(
         ucv, cube_registry, human_name, marker_registry=marker_registry or None
     )
+
+    if RUN_DEMO_PASSAGE_TESTS and robot_ok and marker_registry:
+        passage_ok = run_all_demo_passage_tests(ucv, marker_registry)
+        if not passage_ok:
+            print("[PassageTest] collision behavior check FAILED — see logs above")
 
     print("[Done]")
     print(f"  floor: {FLOOR_ACTOR_NAME}")
