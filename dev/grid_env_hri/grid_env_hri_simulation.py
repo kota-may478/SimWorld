@@ -10,7 +10,7 @@
 座標系（UE cm、empty マップ）:
   - 床 30 m 四方の **左下隅** が (x, y) = (0, 0)
   - 床上面の高さ = FLOOR_TOP_Z_CM（既定 100 cm = empty 原点から 1 m）
-  - 床は物理 OFF・固定。箱 / Humanoid / Robot は床面上方から生成し重力で設置
+  - 床は物理 OFF・固定。箱は短い落下で設置。Humanoid / Robot は床面上へ直接配置
 
 使い方:
   python grid_env_hri_simulation.py              # GRID_N=100（10,000 箱）
@@ -70,8 +70,11 @@ FLOOR_TOP_Z_CM = 100.0
 # 床メッシュ pivot: spawn_grid 検証時、actor Z=0 で上面 ≈ Z=0 → 上面を FLOOR_TOP_Z_CM に合わせる
 FLOOR_ACTOR_Z_CM = FLOOR_TOP_Z_CM
 
-# 重力落下用: 床上面からの余裕 [cm]
-SPAWN_ABOVE_FLOOR_CM = 80.0
+# 箱のみ短い落下（大きい値だと角の格子から床外へ弾き飛ばされる）
+CUBE_SPAWN_ABOVE_FLOOR_CM = float(os.environ.get("CUBE_SPAWN_ABOVE_FLOOR_CM", "5.0"))
+# Humanoid / Robot は床面上へ直接配置（hri_spotdog_follow / material_transport と同様）
+HUMAN_SPAWN_Z_CM = float(os.environ.get("HUMAN_SPAWN_Z_CM", str(FLOOR_TOP_Z_CM)))
+ROBOT_SPAWN_Z_CM = float(os.environ.get("ROBOT_SPAWN_Z_CM", str(FLOOR_TOP_Z_CM)))
 PHYSICS_ENABLE_DELAY_S = 0.08
 SETTLE_AFTER_SPAWN_S = 6.0
 
@@ -82,7 +85,8 @@ ROBOT_MAP_XY_M = (1.0, 3.0)
 GRID_N = int(os.environ.get("GRID_N", "100"))
 SPAWN_INTERVAL_S = float(os.environ.get("SPAWN_INTERVAL_S", "0.005"))
 CUBE_ENABLE_PHYSICS = os.environ.get("CUBE_ENABLE_PHYSICS", "1") not in {"0", "false", "False"}
-AGENT_ENABLE_PHYSICS = os.environ.get("AGENT_ENABLE_PHYSICS", "1") not in {"0", "false", "False"}
+# Humanoid / Robot に Simulated Physics を有効にするとラグドール化するため既定 OFF
+AGENT_ENABLE_PHYSICS = os.environ.get("AGENT_ENABLE_PHYSICS", "0") not in {"0", "false", "False"}
 
 
 # ==============================================================
@@ -102,20 +106,37 @@ def map_xy_m_to_world_cm(map_xy_m: Tuple[float, float]) -> Tuple[float, float]:
     return ox + mx * 100.0, oy + my * 100.0
 
 
-def cube_center_cm(row: int, col: int, *, above_floor_cm: float = SPAWN_ABOVE_FLOOR_CM) -> Tuple[float, float, float]:
-    """格子 (row, col) の箱中心 [cm]。上面 FLOOR_TOP_Z_CM の上 above_floor_cm。"""
+def cube_center_cm(
+    row: int,
+    col: int,
+    *,
+    above_floor_cm: Optional[float] = None,
+    on_floor: bool = False,
+) -> Tuple[float, float, float]:
+    """格子 (row, col) の箱中心 [cm]。
+
+    on_floor=True のとき床上面 + 半辺 + 2 cm に静置配置。
+    物理落下時は above_floor_cm（既定 CUBE_SPAWN_ABOVE_FLOOR_CM）だけ上げる。
+    """
     ox, oy = MAP_ORIGIN_XY_CM
     x = ox + col * CUBE_SIZE_CM + CUBE_HALF_CM
     y = oy + row * CUBE_SIZE_CM + CUBE_HALF_CM
-    z = FLOOR_TOP_Z_CM + CUBE_HALF_CM + above_floor_cm
+    if on_floor or not CUBE_ENABLE_PHYSICS:
+        z = FLOOR_TOP_Z_CM + CUBE_HALF_CM + 2.0
+    else:
+        drop_cm = CUBE_SPAWN_ABOVE_FLOOR_CM if above_floor_cm is None else above_floor_cm
+        z = FLOOR_TOP_Z_CM + CUBE_HALF_CM + drop_cm
     return x, y, z
 
 
-def agent_spawn_xyz_cm(map_xy_m: Tuple[float, float]) -> Tuple[float, float, float]:
-    """Humanoid / Robot スポーン位置（床上面 + 余裕）。"""
+def agent_spawn_xyz_cm(
+    map_xy_m: Tuple[float, float],
+    *,
+    spawn_z_cm: float,
+) -> Tuple[float, float, float]:
+    """Humanoid / Robot スポーン位置（床面上、物理落下なし）。"""
     x, y = map_xy_m_to_world_cm(map_xy_m)
-    z = FLOOR_TOP_Z_CM + SPAWN_ABOVE_FLOOR_CM
-    return x, y, z
+    return x, y, spawn_z_cm
 
 
 # ==============================================================
@@ -144,8 +165,12 @@ def spawn_bp(ucv: UnrealCV, bp_path: str, name: str) -> bool:
 
 
 def enable_cube_blocking(ucv: UnrealCV, cube_id: str) -> None:
-    """BP_TransparentCube の Custom Event SetBlocking を ON。"""
-    ucv.client.request(f"vbp {cube_id} SetBlocking True")
+    """BP_TransparentCube を可視化し、コリジョンを有効化する。"""
+    try:
+        ucv.client.request(f"vbp {cube_id} SetBlocking True")
+    except Exception as exc:
+        print(f"  warn: SetBlocking failed for {cube_id}: {exc}")
+    ucv.set_collision(cube_id, True)
 
 
 def spawn_with_physics_drop(
@@ -235,7 +260,8 @@ def spawn_cubes(ucv: UnrealCV, grid_n: int) -> dict[str, dict]:
 
 
 def spawn_humanoid(communicator: Communicator, ucv: UnrealCV) -> Optional[str]:
-    loc = agent_spawn_xyz_cm(HUMAN_MAP_XY_M)
+    """Humanoid を床面上に配置（物理シミュレーションは使わない）。"""
+    loc = agent_spawn_xyz_cm(HUMAN_MAP_XY_M, spawn_z_cm=HUMAN_SPAWN_Z_CM)
     human = Humanoid(position=Vector(loc[0], loc[1]), direction=Vector(1, 0))
     communicator.spawn_agent(
         agent=human,
@@ -245,28 +271,95 @@ def spawn_humanoid(communicator: Communicator, ucv: UnrealCV) -> Optional[str]:
         type="humanoid",
     )
     human_name = communicator.get_humanoid_name(human.id)
+    ucv.set_physics(human_name, False)
+    ucv.set_movable(human_name, True)
+    ucv.set_collision(human_name, True)
     if AGENT_ENABLE_PHYSICS:
-        ucv.set_physics(human_name, True)
-    print(f"[Humanoid] {human_name} spawn @ {loc} physics={AGENT_ENABLE_PHYSICS}")
+        print(
+            f"  warn: AGENT_ENABLE_PHYSICS=True は Humanoid をラグドール化させるため無視します"
+        )
+    try:
+        communicator.humanoid_set_speed(human.id, 0.0)
+    except Exception:
+        pass
+    print(f"[Humanoid] {human_name} spawn @ {loc} (kinematic, no sim physics)")
     return human_name
 
 
 def spawn_robot(ucv: UnrealCV) -> bool:
-    loc = agent_spawn_xyz_cm(ROBOT_MAP_XY_M)
+    """SpotDog を material_transport と同様に配置しコントローラを有効化。"""
+    loc = agent_spawn_xyz_cm(ROBOT_MAP_XY_M, spawn_z_cm=ROBOT_SPAWN_Z_CM)
     destroy_if_exists(ucv, ROBOT_ACTOR_NAME)
-    if not spawn_with_physics_drop(
-        ucv,
-        ROBOT_BP,
-        ROBOT_ACTOR_NAME,
-        loc,
-        enable_physics=AGENT_ENABLE_PHYSICS,
-        use_set_blocking=False,
-    ):
+    if not spawn_bp(ucv, ROBOT_BP, ROBOT_ACTOR_NAME):
         print("[Robot] spawn failed")
         return False
+
+    ucv.set_physics(ROBOT_ACTOR_NAME, False)
+    ucv.set_movable(ROBOT_ACTOR_NAME, True)
+    ucv.set_location(list(loc), ROBOT_ACTOR_NAME)
+    ucv.set_orientation((0.0, 0.0, 0.0), ROBOT_ACTOR_NAME)
+    ucv.set_collision(ROBOT_ACTOR_NAME, True)
     ucv.enable_controller(ROBOT_ACTOR_NAME, True)
-    print(f"[Robot] {ROBOT_ACTOR_NAME} @ {loc} physics={AGENT_ENABLE_PHYSICS}")
+    if AGENT_ENABLE_PHYSICS:
+        print(
+            f"  warn: AGENT_ENABLE_PHYSICS=True は SpotDog を転倒させるため無視します"
+        )
+    print(f"[Robot] {ROBOT_ACTOR_NAME} @ {loc} (controller on, no sim physics)")
     return True
+
+
+def _fmt_xyz(loc: Tuple[float, float, float]) -> str:
+    return f"({loc[0]:.1f}, {loc[1]:.1f}, {loc[2]:.1f})"
+
+
+def report_spawn_state(
+    ucv: UnrealCV,
+    cube_registry: dict[str, dict],
+    human_name: Optional[str],
+    *,
+    floor_z_min_cm: float = FLOOR_TOP_Z_CM - 5.0,
+) -> None:
+    """スポーン後の位置をログ出力（箱の床外落下・エージェント転倒の確認用）。"""
+    print("[Verify] actor locations after settle:")
+    if actor_exists(ucv, FLOOR_ACTOR_NAME):
+        floor_loc = ucv.get_location(FLOOR_ACTOR_NAME)
+        print(f"  floor {FLOOR_ACTOR_NAME}: {_fmt_xyz(tuple(floor_loc))}")
+
+    if human_name and actor_exists(ucv, human_name):
+        loc = tuple(ucv.get_location(human_name))
+        ok = loc[2] >= floor_z_min_cm
+        print(f"  humanoid {human_name}: {_fmt_xyz(loc)} {'OK' if ok else 'LOW-Z?'}")
+    elif human_name:
+        print(f"  humanoid {human_name}: MISSING")
+
+    if actor_exists(ucv, ROBOT_ACTOR_NAME):
+        loc = tuple(ucv.get_location(ROBOT_ACTOR_NAME))
+        ok = loc[2] >= floor_z_min_cm
+        print(f"  robot {ROBOT_ACTOR_NAME}: {_fmt_xyz(loc)} {'OK' if ok else 'LOW-Z?'}")
+    else:
+        print(f"  robot {ROBOT_ACTOR_NAME}: MISSING")
+
+    on_floor = 0
+    below_floor = 0
+    missing = 0
+    sample_ids = sorted(cube_registry.keys())[:3]
+    for cube_id in cube_registry:
+        if not actor_exists(ucv, cube_id):
+            missing += 1
+            continue
+        loc = tuple(ucv.get_location(cube_id))
+        if loc[2] >= floor_z_min_cm:
+            on_floor += 1
+        else:
+            below_floor += 1
+    print(
+        f"  cubes: on/above floor={on_floor}, below floor z={below_floor}, "
+        f"missing={missing}, total={len(cube_registry)}"
+    )
+    for cube_id in sample_ids:
+        if actor_exists(ucv, cube_id):
+            loc = tuple(ucv.get_location(cube_id))
+            print(f"    sample {cube_id}: {_fmt_xyz(loc)}")
 
 
 def cleanup_spawned(ucv: UnrealCV, cube_ids: Iterable[str]) -> None:
@@ -306,6 +399,8 @@ def main() -> None:
     if SETTLE_AFTER_SPAWN_S > 0:
         print(f"[Settle] waiting {SETTLE_AFTER_SPAWN_S}s for physics ...")
         time.sleep(SETTLE_AFTER_SPAWN_S)
+
+    report_spawn_state(ucv, cube_registry, human_name)
 
     print("[Done]")
     print(f"  floor: {FLOOR_ACTOR_NAME}")
