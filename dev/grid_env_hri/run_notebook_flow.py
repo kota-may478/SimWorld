@@ -44,7 +44,9 @@ def main() -> int:
     human_name = geh.spawn_humanoid(communicator, ucv)
     robot_ok = geh.spawn_robot(ucv)
 
-    geh.settle_after_cube_spawn_if_needed()
+    geh.settle_after_cube_spawn_if_needed(
+        demo_physics_drop=geh.DEMO_CUBE_PHYSICS_DROP and bool(marker_registry)
+    )
 
     geh.report_spawn_state(
         ucv, cube_registry, human_name, marker_registry=marker_registry or None

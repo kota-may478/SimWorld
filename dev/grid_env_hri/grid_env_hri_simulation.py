@@ -10,7 +10,9 @@
 座標系（UE cm、empty マップ）:
   - 床 30 m 四方の **左下隅** が (x, y) = (0, 0)
   - 床上面の高さ = FLOOR_TOP_Z_CM（既定 100 cm = empty 原点から 1 m）
-  - 床は物理 OFF・固定。箱は短い落下で設置。Humanoid / Robot は床面上へ直接配置
+  - 床は物理 OFF・固定。箱は床上に直接配置（既定）または短い物理落下（オプション）
+  - Humanoid / Robot は床面上へ直接配置
+  - 箱の Actor Z は CUBE_PIVOT_AT_CENTER で下面/中心 pivot を切替（浮き見え時は 0=下面）
 
 使い方:
   python grid_env_hri_simulation.py              # GRID_N=100（10,000 箱）
@@ -77,6 +79,20 @@ FLOOR_ACTOR_Z_CM = FLOOR_TOP_Z_CM
 
 # 箱のみ短い落下（大きい値だと角の格子から床外へ弾き飛ばされる）
 CUBE_SPAWN_ABOVE_FLOOR_CM = float(os.environ.get("CUBE_SPAWN_ABOVE_FLOOR_CM", "5.0"))
+# BP root がメッシュ中心のとき 1。下面合わせのとき 0（約半辺分の浮きを解消）
+CUBE_PIVOT_AT_CENTER = os.environ.get("CUBE_PIVOT_AT_CENTER", "0") not in {
+    "0",
+    "false",
+    "False",
+}
+# 床上面との隙間 [cm]（貫通防止の微小オフセット）
+CUBE_ON_FLOOR_EPS_CM = float(os.environ.get("CUBE_ON_FLOOR_EPS_CM", "0.5"))
+# デモ立方体（通過試験4個）を床上から短く落下させて設置
+DEMO_CUBE_PHYSICS_DROP = os.environ.get("DEMO_CUBE_PHYSICS_DROP", "0") not in {
+    "0",
+    "false",
+    "False",
+}
 # Humanoid / Robot は床面上へ直接配置（hri_spotdog_follow / material_transport と同様）
 HUMAN_SPAWN_Z_CM = float(os.environ.get("HUMAN_SPAWN_Z_CM", str(FLOOR_TOP_Z_CM)))
 ROBOT_SPAWN_Z_CM = float(os.environ.get("ROBOT_SPAWN_Z_CM", str(FLOOR_TOP_Z_CM)))
@@ -125,6 +141,8 @@ RUN_TRANSLUCENT_TOGGLE_PASSAGE_TESTS = os.environ.get(
 SINGLE_TOGGLE_CUBE_NAME = os.environ.get("SINGLE_TOGGLE_CUBE_NAME", "toggle_test_cube")
 SINGLE_TOGGLE_MAP_X_M = float(os.environ.get("SINGLE_TOGGLE_MAP_X_M", "5.5"))
 SINGLE_TOGGLE_MAP_Y_M = float(os.environ.get("SINGLE_TOGGLE_MAP_Y_M", "5.5"))
+# 通過試験などで marker_registry 外にスポーンする Actor（cleanup_spawned が常に削除）
+GRID_ENV_EXTRA_CLEANUP_ACTORS: Tuple[str, ...] = (SINGLE_TOGGLE_CUBE_NAME,)
 PASSAGE_AXIS_OFFSET_M = float(os.environ.get("PASSAGE_AXIS_OFFSET_M", "1.5"))
 PASSAGE_ROBOT_SPEED = float(os.environ.get("PASSAGE_ROBOT_SPEED", "220"))
 PASSAGE_MOVE_SLICE_S = float(os.environ.get("PASSAGE_MOVE_SLICE_S", "0.45"))
@@ -408,6 +426,34 @@ def map_xy_m_to_world_cm(map_xy_m: Tuple[float, float]) -> Tuple[float, float]:
     return ox + mx * 100.0, oy + my * 100.0
 
 
+def cube_bottom_z_on_floor_cm() -> float:
+    """床上面に箱の下面を載せる Actor Z（pivot=下面）。"""
+    return FLOOR_TOP_Z_CM + CUBE_ON_FLOOR_EPS_CM
+
+
+def cube_center_z_on_floor_cm() -> float:
+    """床上面に箱の中心を載せる Actor Z（pivot=中心）。"""
+    return FLOOR_TOP_Z_CM + CUBE_HALF_CM + CUBE_ON_FLOOR_EPS_CM
+
+
+def cube_actor_z_on_floor_cm() -> float:
+    """CUBE_PIVOT_AT_CENTER に応じた床上 Actor Z [cm]。"""
+    if CUBE_PIVOT_AT_CENTER:
+        return cube_center_z_on_floor_cm()
+    return cube_bottom_z_on_floor_cm()
+
+
+def cube_actor_location_on_floor_cm(x: float, y: float) -> Tuple[float, float, float]:
+    """map 平面座標 [cm] と床上 Z で Actor location を返す。"""
+    return x, y, cube_actor_z_on_floor_cm()
+
+
+def cube_actor_location_physics_drop_cm(x: float, y: float) -> Tuple[float, float, float]:
+    """床上位置から CUBE_SPAWN_ABOVE_FLOOR_CM だけ上げた落下開始位置 [cm]。"""
+    x, y, z = cube_actor_location_on_floor_cm(x, y)
+    return x, y, z + CUBE_SPAWN_ABOVE_FLOOR_CM
+
+
 def cube_center_cm(
     row: int,
     col: int,
@@ -415,20 +461,14 @@ def cube_center_cm(
     above_floor_cm: Optional[float] = None,
     on_floor: bool = False,
 ) -> Tuple[float, float, float]:
-    """格子 (row, col) の箱中心 [cm]。
-
-    on_floor=True のとき床上面 + 半辺 + 2 cm に静置配置。
-    物理落下時は above_floor_cm（既定 CUBE_SPAWN_ABOVE_FLOOR_CM）だけ上げる。
-    """
+    """格子 (row, col) の箱 Actor location [cm]（下面 or 中心 pivot）。"""
     ox, oy = MAP_ORIGIN_XY_CM
     x = ox + col * CUBE_SIZE_CM + CUBE_HALF_CM
     y = oy + row * CUBE_SIZE_CM + CUBE_HALF_CM
     if on_floor or not CUBE_ENABLE_PHYSICS:
-        z = FLOOR_TOP_Z_CM + CUBE_HALF_CM + 2.0
-    else:
-        drop_cm = CUBE_SPAWN_ABOVE_FLOOR_CM if above_floor_cm is None else above_floor_cm
-        z = FLOOR_TOP_Z_CM + CUBE_HALF_CM + drop_cm
-    return x, y, z
+        return cube_actor_location_on_floor_cm(x, y)
+    drop_cm = CUBE_SPAWN_ABOVE_FLOOR_CM if above_floor_cm is None else above_floor_cm
+    return x, y, cube_actor_z_on_floor_cm() + drop_cm
 
 
 def agent_spawn_xyz_cm(
@@ -647,10 +687,63 @@ def spawn_fixed_floor(ucv: UnrealCV) -> bool:
 
 
 def demo_cube_center_cm(map_xy_m: Tuple[float, float]) -> Tuple[float, float, float]:
-    """BP_TransparentCube（30 cm）を床面上に静置する中心 [cm]。"""
+    """BP_TransparentCube（30 cm）を床面上に静置する Actor location [cm]。"""
     x, y = map_xy_m_to_world_cm(map_xy_m)
-    z = FLOOR_TOP_Z_CM + CUBE_HALF_CM + 2.0
-    return x, y, z
+    return cube_actor_location_on_floor_cm(x, y)
+
+
+def _place_cube_kinematic_on_floor(
+    ucv: UnrealCV,
+    name: str,
+    loc: Tuple[float, float, float],
+    *,
+    blocking: bool,
+    apply_tint: bool,
+) -> bool:
+    """スポーン済み Actor を床上に固定配置（物理 OFF）。"""
+    ucv.set_physics(name, False)
+    ucv.set_collision(name, False)
+    ucv.set_movable(name, True)
+    ucv.set_location(list(loc), name)
+    ucv.set_orientation((0.0, 0.0, 0.0), name)
+    time.sleep(PHYSICS_ENABLE_DELAY_S)
+    return set_cube_blocking_mode(ucv, name, blocking=blocking, apply_tint=apply_tint)
+
+
+def spawn_transparent_cube_on_floor(
+    ucv: UnrealCV,
+    name: str,
+    map_xy_m: Tuple[float, float],
+    *,
+    blocking: bool,
+    apply_tint: bool = False,
+    use_physics_drop: bool = False,
+) -> Tuple[bool, Tuple[float, float, float]]:
+    """BP_TransparentCube を床上面に設置（直接配置 or 短い物理落下）。"""
+    x, y = map_xy_m_to_world_cm(map_xy_m)
+    destroy_if_exists(ucv, name)
+
+    if use_physics_drop:
+        loc = cube_actor_location_physics_drop_cm(x, y)
+        ok = spawn_with_physics_drop(
+            ucv,
+            CUBE_BP,
+            name,
+            loc,
+            enable_physics=True,
+            use_set_blocking=blocking,
+        )
+        if ok and not blocking:
+            set_cube_blocking_mode(ucv, name, blocking=False, apply_tint=apply_tint)
+        return ok, loc
+
+    loc = cube_actor_location_on_floor_cm(x, y)
+    if not spawn_bp(ucv, CUBE_BP, name):
+        return False, loc
+    ok = _place_cube_kinematic_on_floor(
+        ucv, name, loc, blocking=blocking, apply_tint=apply_tint and blocking
+    )
+    return ok, loc
 
 
 def _spawn_demo_transparent_cube(
@@ -660,45 +753,38 @@ def _spawn_demo_transparent_cube(
     *,
     blocking: bool,
 ) -> bool:
-    """BP_TransparentCube デモ: 実体は格子と同手順、通過可はコリジョン OFF のみ。"""
-    loc = demo_cube_center_cm(map_xy_m)
-    destroy_if_exists(ucv, name)
-
-    if blocking:
-        # 格子スポーンと同じ: collision OFF → 配置 → SetBlocking True → collision ON
-        return spawn_with_physics_drop(
-            ucv,
-            CUBE_BP,
-            name,
-            loc,
-            enable_physics=False,
-            use_set_blocking=True,
-        )
-
-    if not spawn_bp(ucv, CUBE_BP, name):
-        return False
-    ucv.set_physics(name, False)
-    ucv.set_collision(name, False)
-    ucv.set_movable(name, True)
-    ucv.set_location(list(loc), name)
-    ucv.set_orientation((0.0, 0.0, 0.0), name)
-    time.sleep(PHYSICS_ENABLE_DELAY_S)
-    return set_cube_blocking_mode(ucv, name, blocking=False, apply_tint=False)
+    """BP_TransparentCube デモ立方体（通過試験用）。"""
+    ok, _loc = spawn_transparent_cube_on_floor(
+        ucv,
+        name,
+        map_xy_m,
+        blocking=blocking,
+        apply_tint=blocking,
+        use_physics_drop=DEMO_CUBE_PHYSICS_DROP,
+    )
+    return ok
 
 
 def spawn_demo_mode_cubes(ucv: UnrealCV) -> dict[str, dict]:
     """pakchunk9002 の BP_TransparentCube を実体 / 半透明で床上に配置（モード視認用）。"""
     registry: dict[str, dict] = {}
+    place_mode = (
+        f"physics_drop +{CUBE_SPAWN_ABOVE_FLOOR_CM:.0f}cm"
+        if DEMO_CUBE_PHYSICS_DROP
+        else f"on_floor kinematic (pivot={'center' if CUBE_PIVOT_AT_CENTER else 'bottom'})"
+    )
     print(
         f"[DemoCubes] solid(SetBlocking True) @ {list(DEMO_SOLID_MAP_XY_M)} m, "
         f"translucent(False) @ {list(DEMO_TRANSLUCENT_MAP_XY_M)} m "
-        f"(BP={CUBE_BP})"
+        f"(BP={CUBE_BP}, placement={place_mode})"
     )
 
     for idx, map_xy in enumerate(DEMO_SOLID_MAP_XY_M):
         name = f"demo_solid_{idx:02d}"
-        loc = demo_cube_center_cm(map_xy)
-        if not _spawn_demo_transparent_cube(ucv, name, map_xy, blocking=True):
+        ok, loc = spawn_transparent_cube_on_floor(
+            ucv, name, map_xy, blocking=True, apply_tint=True, use_physics_drop=DEMO_CUBE_PHYSICS_DROP
+        )
+        if not ok:
             print(f"  warn: demo solid spawn failed {name!r} — pakchunk9002 / BP を確認")
             continue
         registry[name] = {
@@ -714,8 +800,14 @@ def spawn_demo_mode_cubes(ucv: UnrealCV) -> dict[str, dict]:
 
     for idx, map_xy in enumerate(DEMO_TRANSLUCENT_MAP_XY_M):
         name = f"demo_translucent_{idx:02d}"
-        loc = demo_cube_center_cm(map_xy)
-        if not _spawn_demo_transparent_cube(ucv, name, map_xy, blocking=False):
+        ok, loc = spawn_transparent_cube_on_floor(
+            ucv,
+            name,
+            map_xy,
+            blocking=False,
+            use_physics_drop=DEMO_CUBE_PHYSICS_DROP,
+        )
+        if not ok:
             print(f"  warn: demo translucent spawn failed {name!r}")
             continue
         registry[name] = {
@@ -746,20 +838,15 @@ def spawn_grid_cube_on_floor(
     *,
     blocking: bool,
 ) -> Tuple[bool, Tuple[float, float, float]]:
-    """BP_TransparentCube を床上面に静置（デモ立方体と同系、物理落下なし）。"""
+    """BP_TransparentCube を床上面に静置（デモ立方体と同系）。"""
     loc = cube_center_cm(row, col, on_floor=True)
     destroy_if_exists(ucv, cube_id)
     if not spawn_bp(ucv, CUBE_BP, cube_id):
         return False, loc
-
-    ucv.set_physics(cube_id, False)
-    ucv.set_collision(cube_id, False)
-    ucv.set_movable(cube_id, True)
-    ucv.set_location(list(loc), cube_id)
-    ucv.set_orientation((0.0, 0.0, 0.0), cube_id)
-    time.sleep(PHYSICS_ENABLE_DELAY_S)
-    set_cube_blocking_mode(ucv, cube_id, blocking=blocking, apply_tint=blocking)
-    return True, loc
+    ok = _place_cube_kinematic_on_floor(
+        ucv, cube_id, loc, blocking=blocking, apply_tint=blocking
+    )
+    return ok, loc
 
 
 def spawn_cubes(ucv: UnrealCV, grid_n: int) -> dict[str, dict]:
@@ -783,7 +870,8 @@ def spawn_cubes(ucv: UnrealCV, grid_n: int) -> dict[str, dict]:
     if not GRID_CUBE_BLOCKING:
         print(
             "  GRID_CUBE_BLOCKING=0: SetBlocking False (透過/通過可), "
-            f"z≈{FLOOR_TOP_Z_CM + CUBE_HALF_CM + 2:.0f} cm on floor top"
+            f"z≈{cube_actor_z_on_floor_cm():.1f} cm on floor top "
+            f"(pivot={'center' if CUBE_PIVOT_AT_CENTER else 'bottom'})"
         )
 
     for row in range(grid_n):
@@ -880,15 +968,19 @@ def _fmt_xyz(loc: Tuple[float, float, float]) -> str:
     return f"({loc[0]:.1f}, {loc[1]:.1f}, {loc[2]:.1f})"
 
 
-def settle_after_cube_spawn_if_needed() -> None:
-    """格子箱を物理落下させたときだけ SETTLE_AFTER_SPAWN_S 待機。"""
-    if SETTLE_AFTER_SPAWN_S > 0 and CUBE_ENABLE_PHYSICS and GRID_CUBE_BLOCKING:
-        print(f"[Settle] waiting {SETTLE_AFTER_SPAWN_S}s for cube physics ...")
+def settle_after_cube_spawn_if_needed(*, demo_physics_drop: bool = False) -> None:
+    """格子箱またはデモ立方体の物理落下後に SETTLE_AFTER_SPAWN_S 待機。"""
+    need_wait = SETTLE_AFTER_SPAWN_S > 0 and (
+        (CUBE_ENABLE_PHYSICS and GRID_CUBE_BLOCKING) or demo_physics_drop
+    )
+    if need_wait:
+        label = "demo cubes" if demo_physics_drop else "grid cubes"
+        print(f"[Settle] waiting {SETTLE_AFTER_SPAWN_S}s for {label} physics ...")
         time.sleep(SETTLE_AFTER_SPAWN_S)
     elif SETTLE_AFTER_SPAWN_S > 0:
         print(
             "[Settle] skip cube physics wait "
-            "(grid on floor, pass-through / no physics drop)"
+            "(on-floor kinematic placement)"
         )
 
 
@@ -901,7 +993,13 @@ def report_spawn_state(
     floor_z_min_cm: float = FLOOR_TOP_Z_CM - 5.0,
 ) -> None:
     """スポーン後の位置をログ出力（箱の床外落下・エージェント転倒の確認用）。"""
-    print("[Verify] actor locations after settle:")
+    pivot_label = "center" if CUBE_PIVOT_AT_CENTER else "bottom"
+    expected_z = cube_actor_z_on_floor_cm()
+    print(
+        f"[Verify] actor locations after settle "
+        f"(cube pivot={pivot_label}, expected actor Z≈{expected_z:.1f} cm, "
+        f"floor top Z={FLOOR_TOP_Z_CM:.1f} cm):"
+    )
     if actor_exists(ucv, FLOOR_ACTOR_NAME):
         floor_loc = ucv.get_location(FLOOR_ACTOR_NAME)
         print(f"  floor {FLOOR_ACTOR_NAME}: {_fmt_xyz(tuple(floor_loc))}")
@@ -948,9 +1046,11 @@ def report_spawn_state(
             if actor_exists(ucv, demo_id):
                 loc = tuple(ucv.get_location(demo_id))
                 mode = meta.get("mode", "?")
+                dz = loc[2] - expected_z
+                z_note = "OK" if abs(dz) <= 3.0 else f"ZΔ{dz:+.1f}?"
                 print(
                     f"    {demo_id} {mode} map={meta.get('map_xy_m')} "
-                    f"→ {_fmt_xyz(loc)}"
+                    f"→ {_fmt_xyz(loc)} {z_note}"
                 )
             else:
                 print(f"    {demo_id}: MISSING")
@@ -1333,15 +1433,17 @@ def spawn_single_toggle_test_cube(ucv: UnrealCV) -> dict[str, dict]:
     """通過切替試験用: TransparentCube を 1 個だけ床上にスポーン（初期は OFF / 透過）。"""
     name = SINGLE_TOGGLE_CUBE_NAME
     map_xy = (SINGLE_TOGGLE_MAP_X_M, SINGLE_TOGGLE_MAP_Y_M)
-    loc = demo_cube_center_cm(map_xy)
-    destroy_if_exists(ucv, name)
     print(
-        f"[SingleCube] spawn 1x {CUBE_BP} as {name!r} @ map={map_xy} m → {_fmt_xyz(loc)} "
-        "(initial SetBlocking False)"
+        f"[SingleCube] spawn 1x {CUBE_BP} as {name!r} @ map={map_xy} m "
+        f"(on floor, initial SetBlocking False)"
     )
-    if not _spawn_demo_transparent_cube(ucv, name, map_xy, blocking=False):
+    ok, loc = spawn_transparent_cube_on_floor(
+        ucv, name, map_xy, blocking=False, use_physics_drop=DEMO_CUBE_PHYSICS_DROP
+    )
+    if not ok:
         print(f"[SingleCube] spawn failed for {name!r}")
         return {}
+    print(f"[SingleCube] placed at {_fmt_xyz(loc)}")
     registry = {
         name: {
             "map_xy_m": map_xy,
@@ -1497,18 +1599,48 @@ def run_all_demo_passage_tests(
     return all_ok
 
 
+def grid_env_extra_cleanup_actor_names(
+    *,
+    extra_ids: Optional[Iterable[str]] = None,
+) -> Tuple[str, ...]:
+    """格子・デモ registry に含まれないが grid_env_hri でスポーンし得る Actor 名。"""
+    names: List[str] = list(GRID_ENV_EXTRA_CLEANUP_ACTORS)
+    if extra_ids is not None:
+        names.extend(extra_ids)
+    # 重複除去（順序維持）
+    seen: set[str] = set()
+    unique: List[str] = []
+    for name in names:
+        if name and name not in seen:
+            seen.add(name)
+            unique.append(name)
+    return tuple(unique)
+
+
 def cleanup_spawned(
     ucv: UnrealCV,
     cube_ids: Iterable[str],
     *,
     marker_ids: Optional[Iterable[str]] = None,
+    extra_ids: Optional[Iterable[str]] = None,
 ) -> None:
+    """床・Robot・格子箱・デモ箱・通過試験用単体箱などを削除。"""
+    cube_set = {cid for cid in cube_ids}
+    marker_set = {mid for mid in (marker_ids or ())}
+    extras = grid_env_extra_cleanup_actor_names(extra_ids=extra_ids)
+
     destroy_if_exists(ucv, FLOOR_ACTOR_NAME)
     destroy_if_exists(ucv, ROBOT_ACTOR_NAME)
-    for cid in cube_ids:
+    for cid in cube_set:
         destroy_if_exists(ucv, cid)
-    for mid in marker_ids or ():
+    for mid in marker_set:
         destroy_if_exists(ucv, mid)
+    for eid in extras:
+        if eid in cube_set or eid in marker_set:
+            continue
+        if actor_exists(ucv, eid):
+            print(f"[Cleanup] extra actor {eid!r} (not in cube/marker registry)")
+        destroy_if_exists(ucv, eid)
     try:
         ucv.clean_garbage()
     except Exception:
@@ -1540,7 +1672,9 @@ def main() -> None:
     human_name = spawn_humanoid(communicator, ucv)
     robot_ok = spawn_robot(ucv)
 
-    settle_after_cube_spawn_if_needed()
+    settle_after_cube_spawn_if_needed(
+        demo_physics_drop=DEMO_CUBE_PHYSICS_DROP and bool(marker_registry)
+    )
 
     report_spawn_state(
         ucv, cube_registry, human_name, marker_registry=marker_registry or None
