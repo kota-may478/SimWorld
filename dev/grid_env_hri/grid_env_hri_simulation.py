@@ -118,6 +118,9 @@ RUN_DEMO_PASSAGE_TESTS = os.environ.get("RUN_DEMO_PASSAGE_TESTS", "1") not in {
     "false",
     "False",
 }
+RUN_TRANSLUCENT_TOGGLE_PASSAGE_TESTS = os.environ.get(
+    "RUN_TRANSLUCENT_TOGGLE_PASSAGE_TESTS", "1"
+) not in {"0", "false", "False"}
 PASSAGE_AXIS_OFFSET_M = float(os.environ.get("PASSAGE_AXIS_OFFSET_M", "1.5"))
 PASSAGE_ROBOT_SPEED = float(os.environ.get("PASSAGE_ROBOT_SPEED", "220"))
 PASSAGE_MOVE_SLICE_S = float(os.environ.get("PASSAGE_MOVE_SLICE_S", "0.45"))
@@ -130,6 +133,7 @@ PASS_THROUGH_MAX_MISS_CM = float(
     os.environ.get("PASS_THROUGH_MAX_MISS_CM", str(CUBE_HALF_CM + 45.0))
 )
 BLOCKED_MAX_PROGRESS_RATIO = float(os.environ.get("BLOCKED_MAX_PROGRESS_RATIO", "0.62"))
+BLOCKED_MIN_PROGRESS_RATIO = float(os.environ.get("BLOCKED_MIN_PROGRESS_RATIO", "0.15"))
 
 GRID_N = int(os.environ.get("GRID_N", "100"))
 SPAWN_INTERVAL_S = float(os.environ.get("SPAWN_INTERVAL_S", "0.005"))
@@ -1097,6 +1101,12 @@ def judge_passage_trial(
             f"progress {progress_cm:.0f}/{goal_distance_cm:.0f} cm "
             f"({progress_ratio:.2f} >= {BLOCKED_MAX_PROGRESS_RATIO}, should be blocked)",
         )
+    if progress_ratio < BLOCKED_MIN_PROGRESS_RATIO:
+        return (
+            False,
+            f"robot did not advance toward obstacle "
+            f"(progress_ratio={progress_ratio:.2f} < {BLOCKED_MIN_PROGRESS_RATIO})",
+        )
     return (
         True,
         f"blocked before obstacle plane (crossed_plane=False, progress_ratio={progress_ratio:.2f}, "
@@ -1122,12 +1132,22 @@ def passage_segment_for_demo(
     map_xy_m: Tuple[float, float],
     *,
     expects_pass_through: bool,
+    segment_axis: str = "auto",
 ) -> Tuple[Tuple[float, float], Tuple[float, float], Tuple[float, float]]:
-    """障害物中心を貫く start / goal [cm] と障害物中心 [cm]。"""
+    """障害物中心を貫く start / goal [cm] と障害物中心 [cm]。
+
+    segment_axis:
+      - auto: 通過可は南北（y）、BLOCK は東西（x）
+      - through: 常に南北（SetBlocking 切替試験で同一経路を使う）
+    """
     ox, oy = map_xy_m_to_world_cm(map_xy_m)
     offset_cm = PASSAGE_AXIS_OFFSET_M * 100.0
     obstacle_xy = (ox, oy)
-    if expects_pass_through:
+    use_through_axis = (
+        segment_axis == "through"
+        or (segment_axis == "auto" and expects_pass_through)
+    )
+    if use_through_axis:
         start_xy = (ox, oy - offset_cm)
         goal_xy = (ox, oy + offset_cm)
     else:
@@ -1207,6 +1227,8 @@ def run_demo_passage_test(
     ucv: UnrealCV,
     demo_id: str,
     meta: dict,
+    *,
+    segment_axis: str = "auto",
 ) -> PassageTrialVerdict:
     """1 個のデモ立方体に対する通過試験。"""
     expects_pass = meta.get("mode") == "translucent" or meta.get("blocking") is False
@@ -1227,6 +1249,7 @@ def run_demo_passage_test(
     start_xy, goal_xy, obstacle_xy = passage_segment_for_demo(
         tuple(map_xy),
         expects_pass_through=expects_pass,
+        segment_axis=segment_axis,
     )
     goal_distance_cm = _dist_xy_cm(start_xy, goal_xy)
 
@@ -1277,6 +1300,76 @@ def run_demo_passage_test(
     return verdict
 
 
+def run_demo_passage_test_with_blocking(
+    ucv: UnrealCV,
+    demo_id: str,
+    meta: dict,
+    *,
+    blocking: bool,
+    segment_axis: str = "auto",
+) -> PassageTrialVerdict:
+    """指定した SetBlocking 状態を適用してから通過試験を実行する。"""
+    label = "solid(blocking)" if blocking else "translucent(pass-through)"
+    print(f"[PassageTest] {demo_id} apply SetBlocking {blocking} ({label}) ...")
+    ok_apply = set_cube_blocking_mode(ucv, demo_id, blocking=blocking, apply_tint=blocking)
+    if not ok_apply:
+        print(f"[PassageTest] warn: SetBlocking {blocking} apply failed for {demo_id!r}")
+    time.sleep(PHYSICS_ENABLE_DELAY_S)
+    trial_meta = {
+        **meta,
+        "blocking": blocking,
+        "mode": "solid" if blocking else "translucent",
+    }
+    return run_demo_passage_test(
+        ucv, demo_id, trial_meta, segment_axis=segment_axis
+    )
+
+
+def run_translucent_blocking_toggle_passage_tests(
+    ucv: UnrealCV,
+    demo_id: str,
+    meta: dict,
+) -> bool:
+    """同一 TransparentCube で透過↔実体を切り替え、Robot 通過試験で両モードを検証。"""
+    print(
+        f"[PassageTest] Toggle sequence on {demo_id}: "
+        "False→expect PASS, True→expect BLOCK, False→expect PASS"
+    )
+    phases = (
+        (False, "pass-through"),
+        (True, "blocking"),
+        (False, "pass-through again"),
+    )
+    verdicts: List[PassageTrialVerdict] = []
+    for blocking, phase_label in phases:
+        print(f"[PassageTest] --- toggle phase: {phase_label} ---")
+        verdicts.append(
+            run_demo_passage_test_with_blocking(
+                ucv,
+                demo_id,
+                meta,
+                blocking=blocking,
+                segment_axis="through",
+            )
+        )
+
+    passed_n = sum(1 for v in verdicts if v.passed)
+    total = len(verdicts)
+    all_ok = passed_n == total
+    print(
+        f"[PassageTest] Toggle SUMMARY {passed_n}/{total} "
+        f"{'ALL PASS' if all_ok else 'SOME FAILED'} ({demo_id})"
+    )
+    if not all_ok:
+        for v in verdicts:
+            if not v.passed:
+                print(
+                    f"  FAILED {v.demo_id} expect={'PASS' if v.expects_pass_through else 'BLOCK'}: "
+                    f"{v.message}"
+                )
+    return all_ok
+
+
 def run_all_demo_passage_tests(
     ucv: UnrealCV,
     demo_registry: dict[str, dict],
@@ -1323,6 +1416,23 @@ def run_all_demo_passage_tests(
                 "Fix in Editor (D-3b): Branch True → Query and Physics on mesh, "
                 "repackage pakchunk9002, restart SimWorld."
             )
+
+    if RUN_TRANSLUCENT_TOGGLE_PASSAGE_TESTS:
+        toggle_targets = [
+            (demo_id, demo_registry[demo_id])
+            for demo_id in sorted(demo_registry.keys())
+            if demo_registry[demo_id].get("mode") == "translucent"
+            or demo_registry[demo_id].get("blocking") is False
+        ]
+        if not toggle_targets:
+            print("[PassageTest] toggle skip: no translucent demo cube in registry")
+        else:
+            for demo_id, meta in toggle_targets:
+                toggle_ok = run_translucent_blocking_toggle_passage_tests(
+                    ucv, demo_id, meta
+                )
+                all_ok = all_ok and toggle_ok
+
     return all_ok
 
 

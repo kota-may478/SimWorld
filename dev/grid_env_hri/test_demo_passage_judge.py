@@ -41,6 +41,18 @@ class TestPassageJudge(unittest.TestCase):
         )
         self.assertTrue(ok, msg)
 
+    def test_blocked_fail_no_approach(self) -> None:
+        ok, msg = geh.judge_passage_trial(
+            expects_pass_through=False,
+            goal_distance_cm=300.0,
+            progress_cm=0.0,
+            min_dist_to_obstacle_cm=150.0,
+            max_object_collision=0,
+            crossed_obstacle=False,
+        )
+        self.assertFalse(ok)
+        self.assertIn("did not advance", msg)
+
     def test_blocked_fail_crossed_plane(self) -> None:
         ok, msg = geh.judge_passage_trial(
             expects_pass_through=False,
