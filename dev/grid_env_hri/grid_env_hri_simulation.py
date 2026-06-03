@@ -121,6 +121,10 @@ RUN_DEMO_PASSAGE_TESTS = os.environ.get("RUN_DEMO_PASSAGE_TESTS", "1") not in {
 RUN_TRANSLUCENT_TOGGLE_PASSAGE_TESTS = os.environ.get(
     "RUN_TRANSLUCENT_TOGGLE_PASSAGE_TESTS", "1"
 ) not in {"0", "false", "False"}
+# 単一 TransparentCube で SetBlocking OFF/ON を Robot 通過試験のみ行う
+SINGLE_TOGGLE_CUBE_NAME = os.environ.get("SINGLE_TOGGLE_CUBE_NAME", "toggle_test_cube")
+SINGLE_TOGGLE_MAP_X_M = float(os.environ.get("SINGLE_TOGGLE_MAP_X_M", "5.5"))
+SINGLE_TOGGLE_MAP_Y_M = float(os.environ.get("SINGLE_TOGGLE_MAP_Y_M", "5.5"))
 PASSAGE_AXIS_OFFSET_M = float(os.environ.get("PASSAGE_AXIS_OFFSET_M", "1.5"))
 PASSAGE_ROBOT_SPEED = float(os.environ.get("PASSAGE_ROBOT_SPEED", "220"))
 PASSAGE_MOVE_SLICE_S = float(os.environ.get("PASSAGE_MOVE_SLICE_S", "0.45"))
@@ -1325,28 +1329,60 @@ def run_demo_passage_test_with_blocking(
     )
 
 
-def run_translucent_blocking_toggle_passage_tests(
-    ucv: UnrealCV,
-    demo_id: str,
-    meta: dict,
-) -> bool:
-    """同一 TransparentCube で透過↔実体を切り替え、Robot 通過試験で両モードを検証。"""
+def spawn_single_toggle_test_cube(ucv: UnrealCV) -> dict[str, dict]:
+    """通過切替試験用: TransparentCube を 1 個だけ床上にスポーン（初期は OFF / 透過）。"""
+    name = SINGLE_TOGGLE_CUBE_NAME
+    map_xy = (SINGLE_TOGGLE_MAP_X_M, SINGLE_TOGGLE_MAP_Y_M)
+    loc = demo_cube_center_cm(map_xy)
+    destroy_if_exists(ucv, name)
     print(
-        f"[PassageTest] Toggle sequence on {demo_id}: "
-        "False→expect PASS, True→expect BLOCK, False→expect PASS"
+        f"[SingleCube] spawn 1x {CUBE_BP} as {name!r} @ map={map_xy} m → {_fmt_xyz(loc)} "
+        "(initial SetBlocking False)"
     )
-    phases = (
-        (False, "pass-through"),
-        (True, "blocking"),
-        (False, "pass-through again"),
+    if not _spawn_demo_transparent_cube(ucv, name, map_xy, blocking=False):
+        print(f"[SingleCube] spawn failed for {name!r}")
+        return {}
+    registry = {
+        name: {
+            "map_xy_m": map_xy,
+            "world_cm": loc,
+            "blocking": False,
+            "mode": "translucent",
+        }
+    }
+    print(f"[SingleCube] ready — use vbp {name} SetBlocking True/False to toggle ON/OFF")
+    return registry
+
+
+def run_blocking_toggle_passage_tests(
+    ucv: UnrealCV,
+    cube_id: str,
+    meta: dict,
+    *,
+    phases: Optional[Tuple[Tuple[bool, str], ...]] = None,
+) -> bool:
+    """同一立方体で SetBlocking OFF/ON を切り替えながら Robot 通過試験を行う。
+
+    blocking=False → OFF（透過・通過可）→ PASS 期待
+    blocking=True  → ON（実体・非通過）→ BLOCK 期待
+    """
+    if phases is None:
+        phases = (
+            (False, "OFF (SetBlocking False → pass-through)"),
+            (True, "ON (SetBlocking True → blocked)"),
+            (False, "OFF again (SetBlocking False → pass-through)"),
+        )
+    print(
+        f"[PassageTest] Single-object toggle on {cube_id!r}: "
+        + " → ".join(label for _, label in phases)
     )
     verdicts: List[PassageTrialVerdict] = []
     for blocking, phase_label in phases:
-        print(f"[PassageTest] --- toggle phase: {phase_label} ---")
+        print(f"[PassageTest] --- {phase_label} ---")
         verdicts.append(
             run_demo_passage_test_with_blocking(
                 ucv,
-                demo_id,
+                cube_id,
                 meta,
                 blocking=blocking,
                 segment_axis="through",
@@ -1358,16 +1394,41 @@ def run_translucent_blocking_toggle_passage_tests(
     all_ok = passed_n == total
     print(
         f"[PassageTest] Toggle SUMMARY {passed_n}/{total} "
-        f"{'ALL PASS' if all_ok else 'SOME FAILED'} ({demo_id})"
+        f"{'ALL PASS' if all_ok else 'SOME FAILED'} ({cube_id})"
     )
     if not all_ok:
         for v in verdicts:
             if not v.passed:
                 print(
-                    f"  FAILED {v.demo_id} expect={'PASS' if v.expects_pass_through else 'BLOCK'}: "
-                    f"{v.message}"
+                    f"  FAILED {v.demo_id} "
+                    f"SetBlocking={'True' if not v.expects_pass_through else 'False'} "
+                    f"expect={'PASS' if v.expects_pass_through else 'BLOCK'}: {v.message}"
                 )
     return all_ok
+
+
+def run_translucent_blocking_toggle_passage_tests(
+    ucv: UnrealCV,
+    demo_id: str,
+    meta: dict,
+) -> bool:
+    """同一 TransparentCube で透過↔実体を切り替え、Robot 通過試験で両モードを検証。"""
+    return run_blocking_toggle_passage_tests(ucv, demo_id, meta)
+
+
+def run_single_cube_toggle_passage_suite(ucv: UnrealCV) -> bool:
+    """床 + 立方体 1 個 + SpotDog で SetBlocking OFF/ON 切替通過試験のみ実行。"""
+    if not actor_exists(ucv, ROBOT_ACTOR_NAME):
+        print("[SingleCube] FAIL: robot not spawned — spawn_robot() first")
+        return False
+
+    registry = spawn_single_toggle_test_cube(ucv)
+    if not registry:
+        return False
+
+    cube_id = SINGLE_TOGGLE_CUBE_NAME
+    meta = registry[cube_id]
+    return run_blocking_toggle_passage_tests(ucv, cube_id, meta)
 
 
 def run_all_demo_passage_tests(
