@@ -545,6 +545,20 @@ def destroy_if_exists(ucv: UnrealCV, name: str) -> None:
     time.sleep(0.1)
 
 
+def _spawn_bp_class_path(bp_path: str) -> str:
+    """Stock UnrealCV ``vset /objects/spawn`` expects a UClass path (often *_C)."""
+    if "." in bp_path and bp_path.endswith("_C"):
+        return bp_path
+    if "." in bp_path:
+        return f"{bp_path}_C"
+    return bp_path
+
+
+def _spawn_bp_no_handler(res_text: str) -> bool:
+    lower = res_text.lower()
+    return "no handler found" in lower and "spawn_bp_asset" in lower
+
+
 def spawn_bp(
     ucv: UnrealCV,
     bp_path: str,
@@ -552,19 +566,32 @@ def spawn_bp(
     *,
     timeout_s: Optional[float] = None,
 ) -> bool:
-    cmd = f"vset /objects/spawn_bp_asset {bp_path} {name}"
     timeout = UE_SPAWN_TIMEOUT_S if timeout_s is None else timeout_s
-    print(f"[UE] spawn_bp_asset {name!r} (timeout={timeout:g}s) ...")
-    res = _ue_request(ucv, cmd, timeout_s=timeout)
-    if res is None:
-        print(
-            f"[UE] spawn_bp_asset: no response within {timeout:g}s — "
-            "SimWorld を前面に出す / pakchunk9002 / BP パスを確認"
-        )
-        return False
-    res_text = str(res).strip()
-    if res_text.lower().startswith("error"):
-        print(f"[UE] spawn_bp_asset error: {res_text}")
+    class_path = _spawn_bp_class_path(bp_path)
+    spawn_cmds: list[tuple[str, str]] = [
+        (f"vset /objects/spawn_bp_asset {bp_path} {name}", "spawn_bp_asset"),
+        (f"vset /objects/spawn {class_path} {name}", "spawn (stock UnrealCV)"),
+    ]
+
+    res_text = ""
+    for cmd, label in spawn_cmds:
+        print(f"[UE] {label} {name!r} (timeout={timeout:g}s) ...")
+        res = _ue_request(ucv, cmd, timeout_s=timeout)
+        if res is None:
+            print(
+                f"[UE] {label}: no response within {timeout:g}s — "
+                "SimWorld を前面に出す / pakchunk9002 / BP パスを確認"
+            )
+            return False
+        res_text = str(res).strip()
+        if res_text.lower().startswith("error"):
+            if label == spawn_cmds[0][1] and _spawn_bp_no_handler(res_text):
+                print(f"[UE] {label} unavailable — trying {spawn_cmds[1][1]} ...")
+                continue
+            print(f"[UE] {label} error: {res_text}")
+            return False
+        break
+    else:
         return False
 
     for attempt in range(UE_SPAWN_POLL_MAX):
