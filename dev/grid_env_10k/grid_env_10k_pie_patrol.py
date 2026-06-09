@@ -77,6 +77,7 @@ PATH_MAX_TOTAL_STEPS = 1200
 RETURN_ARRIVE_TOLERANCE_CM = 120.0
 ROBOT_BP = geh.ROBOT_BP
 REGISTRY_CACHE_PATH = G10K_DIR / ".pie_block_registry.json"
+ROBOT_PROBE_NAME = "__GridEnv_SpotRobot_probe__"
 
 
 @dataclass(frozen=True)
@@ -326,13 +327,40 @@ def robot_bp_setup_hint() -> str:
 
 
 def cleanup_runtime_agents(ucv: UnrealCV) -> None:
-    """PIE セッション内の Humanoid / SpotDog を削除。"""
-    geh.destroy_if_exists(ucv, geh.ROBOT_ACTOR_NAME)
+    """Remove patrol Humanoid / SpotDog / probe actors from the PIE session."""
+    geh.destroy_actor_safely(ucv, geh.ROBOT_ACTOR_NAME)
+    geh.destroy_actor_safely(ucv, ROBOT_PROBE_NAME)
     raw = geh._ue_request(ucv, "vget /objects", timeout_s=90.0)
     if raw:
         for name in raw.split():
             if name.startswith("GEN_BP_Humanoid"):
-                geh.destroy_if_exists(ucv, name)
+                geh.destroy_actor_safely(ucv, name)
+    geh._prepare_ue_spawn(ucv)
+
+
+def prepare_pie_rerun(ucv: UnrealCV) -> None:
+    """Early cleanup when re-running patrol in the same PIE session."""
+    print("[Scenario] prepare PIE rerun (clear prior agents) ...")
+    cleanup_runtime_agents(ucv)
+
+
+def _configure_robot_at(ucv: UnrealCV, loc: Sequence[float]) -> None:
+    """Apply standard SpotDog spawn settings at ``loc`` [cm]."""
+    ucv.set_physics(geh.ROBOT_ACTOR_NAME, False)
+    ucv.set_movable(geh.ROBOT_ACTOR_NAME, True)
+    ucv.set_location(list(loc), geh.ROBOT_ACTOR_NAME)
+    ucv.set_orientation((0.0, 0.0, 0.0), geh.ROBOT_ACTOR_NAME)
+    ucv.set_collision(geh.ROBOT_ACTOR_NAME, True)
+    ucv.enable_controller(geh.ROBOT_ACTOR_NAME, True)
+    time.sleep(geh.PHYSICS_ENABLE_DELAY_S)
+
+
+def _find_existing_humanoid_name(ucv: UnrealCV) -> Optional[str]:
+    raw = geh._ue_request(ucv, "vget /objects", timeout_s=60.0)
+    if not raw:
+        return None
+    names = [n for n in raw.split() if n.startswith("GEN_BP_Humanoid")]
+    return names[0] if names else None
 
 
 def spawn_humanoid_at(
@@ -343,6 +371,16 @@ def spawn_humanoid_at(
     gx, gy = cell
     map_xy = block_index_to_map_xy_m(gx, gy)
     loc = geh.agent_spawn_xyz_cm(map_xy, spawn_z_cm=geh.HUMAN_SPAWN_Z_CM)
+
+    existing = _find_existing_humanoid_name(ucv)
+    if existing and geh.actor_exists(ucv, existing):
+        print(f"[Humanoid] reuse {existing!r} (teleport to cell)")
+        ucv.set_physics(existing, False)
+        ucv.set_movable(existing, True)
+        ucv.set_location(list(loc), existing)
+        ucv.set_collision(existing, True)
+        return existing
+
     human = Humanoid(position=Vector(loc[0], loc[1]), direction=Vector(1, 0))
     communicator.spawn_agent(
         agent=human,
@@ -367,19 +405,32 @@ def spawn_robot_at(ucv: UnrealCV, cell: BlockIndex) -> bool:
     gx, gy = cell
     map_xy = block_index_to_map_xy_m(gx, gy)
     loc = geh.agent_spawn_xyz_cm(map_xy, spawn_z_cm=geh.ROBOT_SPAWN_Z_CM)
-    geh.destroy_if_exists(ucv, geh.ROBOT_ACTOR_NAME)
-    if not geh.spawn_bp(ucv, ROBOT_BP, geh.ROBOT_ACTOR_NAME):
+    robot_name = geh.ROBOT_ACTOR_NAME
+
+    gone = geh.destroy_actor_safely(ucv, robot_name)
+    if not gone and geh.actor_exists(ucv, robot_name):
+        print(
+            f"[Robot] reuse existing {robot_name!r} at goal/start "
+            "(teleport to start cell; skip spawn_bp rename)"
+        )
+        _configure_robot_at(ucv, loc)
+        print(
+            f"[Robot] {robot_name} @ cell({gx},{gy}) "
+            f"map={map_xy} world={geh._fmt_xyz(loc)}"
+        )
+        return True
+
+    if not geh.spawn_bp(ucv, ROBOT_BP, robot_name):
+        if geh.actor_exists(ucv, robot_name):
+            print(f"[Robot] spawn failed but {robot_name!r} exists — reusing via teleport")
+            _configure_robot_at(ucv, loc)
+            return True
         print("[Robot] spawn failed")
         return False
-    ucv.set_physics(geh.ROBOT_ACTOR_NAME, False)
-    ucv.set_movable(geh.ROBOT_ACTOR_NAME, True)
-    ucv.set_location(list(loc), geh.ROBOT_ACTOR_NAME)
-    ucv.set_orientation((0.0, 0.0, 0.0), geh.ROBOT_ACTOR_NAME)
-    ucv.set_collision(geh.ROBOT_ACTOR_NAME, True)
-    ucv.enable_controller(geh.ROBOT_ACTOR_NAME, True)
-    time.sleep(geh.PHYSICS_ENABLE_DELAY_S)
+
+    _configure_robot_at(ucv, loc)
     print(
-        f"[Robot] {geh.ROBOT_ACTOR_NAME} @ cell({gx},{gy}) "
+        f"[Robot] {robot_name} @ cell({gx},{gy}) "
         f"map={map_xy} world={geh._fmt_xyz(loc)}"
     )
     return True
@@ -638,11 +689,14 @@ def run_patrol_scenario(
     goal_dwell_s: float = GOAL_DWELL_S,
     grid_n: int = GRID_N,
     skip_perimeter_if_already_solid: bool = False,
+    skip_robot_probe: bool = False,
 ) -> PatrolResult:
     """Perimeter T -> spawn agents -> outbound A* -> dwell -> return A*."""
     ucv, communicator = g10k.ensure_connection()
     if not ucv.client.isconnected():
         raise ConnectionError("UnrealCV not connected — start PIE in UE Editor first.")
+
+    prepare_pie_rerun(ucv)
 
     scripts_dir = str(G10K_DIR / "scripts")
     if scripts_dir not in sys.path:
@@ -651,7 +705,9 @@ def run_patrol_scenario(
 
     if not mount_paks(ucv):
         raise RuntimeError(robot_bp_setup_hint())
-    if not probe_robot_spawn(ucv):
+    if skip_robot_probe:
+        print("[Robot] skip BP probe (reuse session)")
+    elif not probe_robot_spawn(ucv):
         raise RuntimeError(robot_bp_setup_hint())
 
     start_xy = block_index_to_world_xy_cm(*robot_start_cell)
@@ -672,8 +728,6 @@ def run_patrol_scenario(
     blocking = perimeter_blocking_set(grid_n=grid_n)
     costmap = build_costmap_from_blocking_cells(blocking, grid_n=grid_n)
 
-    cleanup_runtime_agents(ucv)
-    time.sleep(0.3)
     human_name = spawn_humanoid_at(communicator, ucv, human_cell)
     robot_spawned = spawn_robot_at(ucv, robot_start_cell)
     if not robot_spawned:

@@ -542,7 +542,7 @@ def wait_until_actor_gone(
     timeout_s: float = 3.0,
     poll_s: float = 0.15,
 ) -> bool:
-    """Destroy 後に同名 Actor が残っていないことを確認（Rename クラッシュ回避）。"""
+    """Poll until ``name`` is no longer reachable (post-destroy rename safety)."""
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if not actor_exists(ucv, name):
@@ -551,15 +551,47 @@ def wait_until_actor_gone(
     return not actor_exists(ucv, name)
 
 
-def destroy_if_exists(ucv: UnrealCV, name: str) -> None:
-    if not actor_exists(ucv, name):
-        return
-    print(f"[UE] destroy existing {name!r} ...")
+def _disable_actor_for_destroy(ucv: UnrealCV, name: str) -> None:
+    """Best-effort shutdown before destroy (controller / physics / collision)."""
+    try:
+        ucv.enable_controller(name, False)
+    except Exception:
+        pass
     _ue_request(ucv, f"vset /object/{name}/physics 0", timeout_s=15.0)
     _ue_request(ucv, f"vset /object/{name}/collision 0", timeout_s=15.0)
-    _ue_request(ucv, f"vset /object/{name}/destroy", timeout_s=30.0)
-    if not wait_until_actor_gone(ucv, name):
-        print(f"[UE] warn: {name!r} still present after destroy (may block rename)")
+
+
+def destroy_actor_safely(
+    ucv: UnrealCV,
+    name: str,
+    *,
+    timeout_s: float = 12.0,
+    max_attempts: int = 4,
+) -> bool:
+    """Destroy ``name`` with retries and GC; return True when absent or gone."""
+    if not actor_exists(ucv, name):
+        return True
+    per_attempt_timeout = max(2.0, timeout_s / max_attempts)
+    for attempt in range(1, max_attempts + 1):
+        if not actor_exists(ucv, name):
+            return True
+        print(f"[UE] destroy {name!r} attempt {attempt}/{max_attempts} ...")
+        _disable_actor_for_destroy(ucv, name)
+        _ue_request(ucv, f"vset /object/{name}/destroy", timeout_s=30.0)
+        if wait_until_actor_gone(ucv, name, timeout_s=per_attempt_timeout):
+            return True
+        _prepare_ue_spawn(ucv)
+    gone = not actor_exists(ucv, name)
+    if not gone:
+        print(
+            f"[UE] warn: {name!r} still present after {max_attempts} destroy attempts "
+            "(reuse/teleport instead of respawn)"
+        )
+    return gone
+
+
+def destroy_if_exists(ucv: UnrealCV, name: str) -> None:
+    destroy_actor_safely(ucv, name)
 
 
 def _spawn_bp_class_path(bp_path: str) -> str:
@@ -606,8 +638,14 @@ def spawn_bp(
                 print(f"[UE] {label} unavailable — trying {spawn_cmds[1][1]} ...")
                 continue
             if "renaming blocked" in res_text.lower() or "still in use" in res_text.lower():
-                print(f"[UE] {label}: rename race — destroy + retry once ...")
-                destroy_if_exists(ucv, name)
+                print(f"[UE] {label}: rename race — destroy + retry ...")
+                if not destroy_actor_safely(ucv, name):
+                    if actor_exists(ucv, name):
+                        print(
+                            f"[UE] {label}: abort spawn; {name!r} still alive "
+                            "(caller should reuse/teleport)"
+                        )
+                        return False
                 _prepare_ue_spawn(ucv)
                 res = _ue_request(ucv, cmd, timeout_s=timeout)
                 if res is None:

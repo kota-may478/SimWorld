@@ -64,10 +64,14 @@ def probe_robot_spawn(ucv, *, force: bool = False) -> bool:
         print("[Robot] skip probe (already OK this session)")
         return True
     probe_name = "__GridEnv_SpotRobot_probe__"
-    geh.destroy_if_exists(ucv, probe_name)
+    if not geh.destroy_actor_safely(ucv, probe_name):
+        if geh.actor_exists(ucv, probe_name):
+            print("[Robot] probe skipped — prior probe actor reused")
+            _ROBOT_PROBE_OK = True
+            return True
     ok = geh.spawn_bp(ucv, geh.ROBOT_BP, probe_name, timeout_s=60.0)
     if ok:
-        geh.destroy_if_exists(ucv, probe_name)
+        geh.destroy_actor_safely(ucv, probe_name)
         _ROBOT_PROBE_OK = True
     return ok
 
