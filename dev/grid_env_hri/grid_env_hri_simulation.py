@@ -535,6 +535,22 @@ def _prepare_ue_spawn(ucv: UnrealCV) -> None:
     time.sleep(0.15)
 
 
+def wait_until_actor_gone(
+    ucv: UnrealCV,
+    name: str,
+    *,
+    timeout_s: float = 3.0,
+    poll_s: float = 0.15,
+) -> bool:
+    """Destroy 後に同名 Actor が残っていないことを確認（Rename クラッシュ回避）。"""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if not actor_exists(ucv, name):
+            return True
+        time.sleep(poll_s)
+    return not actor_exists(ucv, name)
+
+
 def destroy_if_exists(ucv: UnrealCV, name: str) -> None:
     if not actor_exists(ucv, name):
         return
@@ -542,7 +558,8 @@ def destroy_if_exists(ucv: UnrealCV, name: str) -> None:
     _ue_request(ucv, f"vset /object/{name}/physics 0", timeout_s=15.0)
     _ue_request(ucv, f"vset /object/{name}/collision 0", timeout_s=15.0)
     _ue_request(ucv, f"vset /object/{name}/destroy", timeout_s=30.0)
-    time.sleep(0.1)
+    if not wait_until_actor_gone(ucv, name):
+        print(f"[UE] warn: {name!r} still present after destroy (may block rename)")
 
 
 def _spawn_bp_class_path(bp_path: str) -> str:
@@ -588,6 +605,16 @@ def spawn_bp(
             if label == spawn_cmds[0][1] and _spawn_bp_no_handler(res_text):
                 print(f"[UE] {label} unavailable — trying {spawn_cmds[1][1]} ...")
                 continue
+            if "renaming blocked" in res_text.lower() or "still in use" in res_text.lower():
+                print(f"[UE] {label}: rename race — destroy + retry once ...")
+                destroy_if_exists(ucv, name)
+                _prepare_ue_spawn(ucv)
+                res = _ue_request(ucv, cmd, timeout_s=timeout)
+                if res is None:
+                    return False
+                res_text = str(res).strip()
+                if not res_text.lower().startswith("error"):
+                    break
             print(f"[UE] {label} error: {res_text}")
             return False
         break
