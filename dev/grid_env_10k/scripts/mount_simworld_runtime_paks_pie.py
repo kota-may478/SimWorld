@@ -24,6 +24,8 @@ PAK_SRC = os.environ.get(
 )
 _PAKS_MOUNTED = False
 _ROBOT_PROBE_OK = False
+_HUMANOID_PROBE_OK = False
+HUMANOID_PROBE_NAME = "__GridEnv_Humanoid_probe__"
 
 
 def _mount_one_pak(ucv, path: str, name: str) -> bool:
@@ -56,6 +58,23 @@ def mount_paks(ucv, *, force: bool = False) -> bool:
     if ok_all:
         _PAKS_MOUNTED = True
     return ok_all
+
+
+def probe_humanoid_spawn(ucv, *, force: bool = False) -> bool:
+    global _HUMANOID_PROBE_OK
+    if _HUMANOID_PROBE_OK and not force:
+        print("[Humanoid] skip probe (already OK this session)")
+        return True
+    if not geh.destroy_actor_safely(ucv, HUMANOID_PROBE_NAME):
+        if geh.actor_exists(ucv, HUMANOID_PROBE_NAME):
+            print("[Humanoid] probe skipped — prior probe actor reused")
+            _HUMANOID_PROBE_OK = True
+            return True
+    ok = geh.spawn_bp(ucv, geh.HUMAN_BP, HUMANOID_PROBE_NAME, timeout_s=60.0)
+    if ok:
+        geh.destroy_actor_safely(ucv, HUMANOID_PROBE_NAME)
+        _HUMANOID_PROBE_OK = True
+    return ok
 
 
 def probe_robot_spawn(ucv, *, force: bool = False) -> bool:
