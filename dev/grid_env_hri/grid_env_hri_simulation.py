@@ -11,7 +11,7 @@
   - 床 30 m 四方の **左下隅** が (x, y) = (0, 0)
   - 床上面の高さ = FLOOR_TOP_Z_CM（既定 100 cm = empty 原点から 1 m）
   - 床は物理 OFF・固定。箱は床上に直接配置（既定）または短い物理落下（オプション）
-  - Humanoid / Robot は床面上へ直接配置
+  - Humanoid / Robot spawn on floor grid with AGENT_SPAWN_ABOVE_FLOOR_CM clearance
   - 箱の Actor Z は CUBE_PIVOT_AT_CENTER で下面/中心 pivot を切替（浮き見え時は 0=下面）
 
 使い方:
@@ -93,9 +93,54 @@ DEMO_CUBE_PHYSICS_DROP = os.environ.get("DEMO_CUBE_PHYSICS_DROP", "0") not in {
     "false",
     "False",
 }
-# Humanoid / Robot は床面上へ直接配置（hri_spotdog_follow / material_transport と同様）
-HUMAN_SPAWN_Z_CM = float(os.environ.get("HUMAN_SPAWN_Z_CM", str(FLOOR_TOP_Z_CM)))
-ROBOT_SPAWN_Z_CM = float(os.environ.get("ROBOT_SPAWN_Z_CM", str(FLOOR_TOP_Z_CM)))
+# Spawn agents slightly above floor top so capsule/mesh does not intersect on placement.
+AGENT_SPAWN_ABOVE_FLOOR_CM = float(os.environ.get("AGENT_SPAWN_ABOVE_FLOOR_CM", "50.0"))
+# Base_User_Agent root is at feet (same Z convention as hri_spotdog Z=100 on floor top).
+# Set HUMANOID_ROOT_AT_FEET=0 only if your BP uses capsule-center pivot.
+HUMANOID_ROOT_AT_FEET = os.environ.get("HUMANOID_ROOT_AT_FEET", "1") not in {
+    "0",
+    "false",
+    "False",
+}
+HUMANOID_CAPSULE_HALF_HEIGHT_CM = float(
+    os.environ.get("HUMANOID_CAPSULE_HALF_HEIGHT_CM", "88.0")
+)
+
+
+def resolve_floor_top_z_cm(ucv: UnrealCV) -> float:
+    """Floor top Z [cm] from ``grid_floor_main`` when present, else ``FLOOR_TOP_Z_CM``."""
+    if actor_exists(ucv, FLOOR_ACTOR_NAME):
+        loc = try_get_location_cm(ucv, FLOOR_ACTOR_NAME)
+        if loc is not None:
+            return loc[2]
+    return FLOOR_TOP_Z_CM
+
+
+def robot_spawn_z_on_floor_cm(*, floor_top_z_cm: Optional[float] = None) -> float:
+    """UE Z for SpotDog root (pivot near ground contact)."""
+    top = FLOOR_TOP_Z_CM if floor_top_z_cm is None else floor_top_z_cm
+    return top + AGENT_SPAWN_ABOVE_FLOOR_CM
+
+
+def humanoid_spawn_z_on_floor_cm(*, floor_top_z_cm: Optional[float] = None) -> float:
+    """UE Z for Humanoid root (feet on floor + clearance, or capsule-center pivot)."""
+    if HUMANOID_ROOT_AT_FEET:
+        return robot_spawn_z_on_floor_cm(floor_top_z_cm=floor_top_z_cm)
+    top = FLOOR_TOP_Z_CM if floor_top_z_cm is None else floor_top_z_cm
+    return top + HUMANOID_CAPSULE_HALF_HEIGHT_CM + AGENT_SPAWN_ABOVE_FLOOR_CM
+
+
+def agent_spawn_z_on_floor_cm() -> float:
+    """Backward-compatible default (robot-style ground pivot)."""
+    return robot_spawn_z_on_floor_cm()
+
+
+HUMAN_SPAWN_Z_CM = float(
+    os.environ.get("HUMAN_SPAWN_Z_CM", str(humanoid_spawn_z_on_floor_cm()))
+)
+ROBOT_SPAWN_Z_CM = float(
+    os.environ.get("ROBOT_SPAWN_Z_CM", str(robot_spawn_z_on_floor_cm()))
+)
 PHYSICS_ENABLE_DELAY_S = 0.08
 SETTLE_AFTER_SPAWN_S = 6.0
 
@@ -183,6 +228,17 @@ UE_PORT = 9000
 UE_TCP_PROBE_TIMEOUT_S = float(os.environ.get("UE_TCP_PROBE_TIMEOUT_S", "3"))
 UE_UNREALCV_MAX_ATTEMPTS = int(os.environ.get("UE_UNREALCV_MAX_ATTEMPTS", "5"))
 UE_UNREALCV_RETRY_INTERVAL_S = float(os.environ.get("UE_UNREALCV_RETRY_INTERVAL_S", "0.5"))
+UE_PING_TIMEOUT_S = float(os.environ.get("UE_PING_TIMEOUT_S", "2.0"))
+# When 1, TCP connect without UnrealCV banner still counts as reachable (PIE busy).
+UE_PROBE_RELAXED_TCP = os.environ.get("UE_PROBE_RELAXED_TCP", "1") not in {
+    "0",
+    "false",
+    "False",
+}
+
+_UE_SESSION_UCV: Optional[UnrealCV] = None
+_UE_SESSION_COMM: Optional[Communicator] = None
+_UE_SESSION_HOST: Optional[str] = None
 
 
 # ==============================================================
@@ -266,11 +322,81 @@ def _probe_unrealcv_endpoint(
             banner += chunk
             if b"connected" in banner.lower():
                 return True
-        return b"connected" in banner.lower()
-    except OSError:
+        if b"connected" in banner.lower():
+            return True
+        if UE_PROBE_RELAXED_TCP:
+            print(
+                f"[UE] probe relaxed OK: {host}:{port} TCP open "
+                f"(banner={banner[:48]!r})"
+            )
+            return True
+        return False
+    except OSError as exc:
+        print(f"[UE] probe TCP failed {host}:{port} — {exc}")
         return False
     finally:
         sock.close()
+
+
+def _ping_ucv(ucv: UnrealCV) -> bool:
+    """Lightweight liveness check for an existing UnrealCV client."""
+    try:
+        if not ucv.client.isconnected():
+            return False
+        with ucv.lock:
+            ucv.client.request("vget /version", timeout=UE_PING_TIMEOUT_S)
+        return True
+    except Exception:
+        return False
+
+
+def release_connection(
+    ucv: Optional[UnrealCV] = None,
+    *,
+    communicator: Optional[Communicator] = None,
+) -> None:
+    """Disconnect module-level UnrealCV session (call before Kernel restart / PIE reset).
+
+    Pass notebook ``ucv`` when ``importlib.reload`` cleared the module session but the
+    kernel still holds the live TCP client.
+    """
+    global _UE_SESSION_UCV, _UE_SESSION_COMM, _UE_SESSION_HOST
+    for client in (ucv, _UE_SESSION_UCV):
+        if client is None:
+            continue
+        try:
+            client.disconnect()
+        except Exception:
+            pass
+    _UE_SESSION_UCV = None
+    _UE_SESSION_COMM = None
+    _UE_SESSION_HOST = None
+    print("[UE] session released")
+
+
+def adopt_ue_session(
+    ucv: UnrealCV,
+    communicator: Optional[Communicator] = None,
+) -> Tuple[UnrealCV, Communicator]:
+    """Re-register a live notebook client after ``importlib.reload(geh)``."""
+    if not _ping_ucv(ucv):
+        raise ConnectionError("notebook ucv is not responding")
+    comm = communicator if communicator is not None else Communicator(ucv)
+    host = _UE_SESSION_HOST or getattr(ucv, "ip", None) or "127.0.0.1"
+    print(f"[UE] Adopted existing UnrealCV session at {host}:{UE_PORT}")
+    return _store_ue_session(ucv, comm, host)
+
+
+def _store_ue_session(
+    ucv: UnrealCV,
+    communicator: Communicator,
+    host: str,
+) -> Tuple[UnrealCV, Communicator]:
+    global _UE_SESSION_UCV, _UE_SESSION_COMM, _UE_SESSION_HOST
+    _UE_SESSION_UCV = ucv
+    _UE_SESSION_COMM = communicator
+    _UE_SESSION_HOST = host
+    return ucv, communicator
 
 
 def _wsl_localhost_port_shadowed_by_python(port: int = UE_PORT) -> bool:
@@ -338,8 +464,47 @@ def _connect_unrealcv(host: str, port: int = UE_PORT) -> UnrealCV:
         return UnrealCV(port=port, ip=host)
 
 
-def ensure_connection() -> Tuple[UnrealCV, Communicator]:
-    """UnrealCV / Communicator を初期化（短い TCP プローブ後に接続）。"""
+def ensure_connection(
+    *,
+    force_new: bool = False,
+    ucv: Optional[UnrealCV] = None,
+    communicator: Optional[Communicator] = None,
+) -> Tuple[UnrealCV, Communicator]:
+    """UnrealCV / Communicator を初期化（短い TCP プローブ後に接続）。
+
+    Reuses the module-level session when still alive (notebook re-runs).
+    Pass ``ucv`` / ``communicator`` from the notebook to reuse globals explicitly.
+    Set ``force_new=True`` to drop any stale TCP session before reconnecting.
+    """
+    global _UE_SESSION_UCV, _UE_SESSION_COMM
+
+    if ucv is not None:
+        if _ping_ucv(ucv):
+            comm = communicator if communicator is not None else Communicator(ucv)
+            host = _UE_SESSION_HOST or getattr(ucv, "ip", None) or "127.0.0.1"
+            print(f"[UE] Reusing notebook UnrealCV session at {host}:{UE_PORT}")
+            return _store_ue_session(ucv, comm, host)
+        print("[UE] notebook ucv not responding — opening a new session")
+        try:
+            ucv.disconnect()
+        except Exception:
+            pass
+
+    if force_new:
+        release_connection()
+
+    if not force_new and _UE_SESSION_UCV is not None:
+        if _ping_ucv(_UE_SESSION_UCV):
+            if _UE_SESSION_COMM is None:
+                _UE_SESSION_COMM = Communicator(_UE_SESSION_UCV)
+            print(
+                f"[UE] Reusing UnrealCV session at "
+                f"{_UE_SESSION_HOST or _UE_SESSION_UCV.ip}:{UE_PORT}"
+            )
+            return _UE_SESSION_UCV, _UE_SESSION_COMM
+        print("[UE] Stale UnrealCV session — disconnecting before reconnect")
+        release_connection()
+
     if _is_wsl() and _wsl_localhost_port_shadowed_by_python(UE_PORT):
         print(
             "[UE] 127.0.0.1:9000 は WSL 内 Python が LISTEN 中のためスキップします。"
@@ -381,7 +546,7 @@ def ensure_connection() -> Tuple[UnrealCV, Communicator]:
                 ucv = _connect_unrealcv(host)
                 communicator = Communicator(ucv)
                 print(f"[UE] Connected via UnrealCV at {host}:{UE_PORT}")
-                return ucv, communicator
+                return _store_ue_session(ucv, communicator, host)
             except Exception as exc:
                 errors.append(f"{host}:{UE_PORT} — {exc}")
                 print(f"[UE] connect failed on {host}:{UE_PORT}: {exc}")
@@ -397,15 +562,25 @@ def ensure_connection() -> Tuple[UnrealCV, Communicator]:
             " 応急処置: `export UE_HOST=<WindowsホストIP>`（ゲートウェイ / resolv の nameserver）。"
         )
 
+    stale_note = (
+        "\n\n[単一クライアント] UnrealCV は TCP 1 本のみ。"
+        " `Listen`（UE）+ `Established` 1 本（Python）は正常で、2 本目の接続は開けません。"
+        " 1) `release_ue_connection()` または Kernel → Restart、"
+        " 2) Cell 2 → Cell 5 を再実行。"
+        " PIE Stop → Play が必要なのは UE クラッシュ時や CloseWait が複数残ったときだけです。"
+    )
+
     raise ConnectionError(
         "Unreal Engine (UnrealCV) に接続できませんでした。\n"
         "1. Windows で SimWorld を起動:\n"
         "     cd C:\\SimWorldServer\n"
         "     .\\SimWorld.exe -windowed -log /Game/Maps/empty.umap\n"
+        "   （Editor PIE の場合は grid_100x100 を Play）\n"
         "2. ログに `Start listening on port 9000` があるか確認\n"
         "3. Kernel → Restart 後、初期設定 → UE 接続の順で再実行\n"
         "試行結果:\n  - " + "\n  - ".join(errors)
         + shadow_note
+        + stale_note
     )
 
 
@@ -474,11 +649,111 @@ def cube_center_cm(
 def agent_spawn_xyz_cm(
     map_xy_m: Tuple[float, float],
     *,
-    spawn_z_cm: float,
+    spawn_z_cm: Optional[float] = None,
+    agent_kind: str = "robot",
+    floor_top_z_cm: Optional[float] = None,
 ) -> Tuple[float, float, float]:
-    """Humanoid / Robot スポーン位置（床面上、物理落下なし）。"""
+    """Humanoid / Robot spawn XYZ [cm] on the floor grid (kinematic placement)."""
     x, y = map_xy_m_to_world_cm(map_xy_m)
-    return x, y, spawn_z_cm
+    if spawn_z_cm is not None:
+        z = spawn_z_cm
+    elif agent_kind == "humanoid":
+        z = humanoid_spawn_z_on_floor_cm(floor_top_z_cm=floor_top_z_cm)
+    else:
+        z = robot_spawn_z_on_floor_cm(floor_top_z_cm=floor_top_z_cm)
+    return x, y, z
+
+
+def humanoid_feet_z_cm(actor_z_cm: float) -> float:
+    """Approximate foot height from Humanoid actor Z."""
+    if HUMANOID_ROOT_AT_FEET:
+        return actor_z_cm
+    return actor_z_cm - HUMANOID_CAPSULE_HALF_HEIGHT_CM
+
+
+def configure_humanoid_kinematic(
+    ucv: UnrealCV,
+    communicator: Communicator,
+    human_name: str,
+    loc: Tuple[float, float, float],
+    *,
+    human_id: Optional[int] = None,
+) -> None:
+    """Place Humanoid without sim physics; stop locomotion / montage."""
+    ucv.set_physics(human_name, False)
+    ucv.set_movable(human_name, True)
+    ucv.set_location(list(loc), human_name)
+    ucv.set_orientation((0.0, 0.0, 0.0), human_name)
+    ucv.set_collision(human_name, True)
+    for cmd in (
+        lambda: ucv.humanoid_stop(human_name),
+        lambda: ucv.humanoid_stop_current_action(human_name),
+    ):
+        try:
+            cmd()
+        except Exception:
+            pass
+    try:
+        if human_id is not None:
+            communicator.humanoid_set_speed(human_id, 0.0)
+        else:
+            ucv.humanoid_set_speed(human_name, 0.0)
+    except Exception:
+        pass
+    time.sleep(PHYSICS_ENABLE_DELAY_S)
+
+
+def verify_humanoid_on_floor(
+    ucv: UnrealCV,
+    human_name: str,
+    *,
+    floor_top_z_cm: float = FLOOR_TOP_Z_CM,
+) -> Tuple[bool, Optional[Tuple[float, float, float]]]:
+    """True when estimated feet are on/above the floor top."""
+    loc = try_get_location_cm(ucv, human_name)
+    if loc is None:
+        return False, None
+    feet_z = humanoid_feet_z_cm(loc[2])
+    ok = feet_z >= floor_top_z_cm - 5.0
+    return ok, loc
+
+
+def place_humanoid_on_floor(
+    ucv: UnrealCV,
+    communicator: Communicator,
+    human_name: str,
+    base_loc: Tuple[float, float, float],
+    *,
+    human_id: Optional[int] = None,
+    floor_top_z_cm: Optional[float] = None,
+) -> bool:
+    """Configure Humanoid at ``base_loc``; bump Z and retry until feet clear the floor."""
+    floor_z = FLOOR_TOP_Z_CM if floor_top_z_cm is None else floor_top_z_cm
+    for attempt in range(5):
+        z_bump = attempt * 30.0
+        loc = (base_loc[0], base_loc[1], base_loc[2] + z_bump)
+        configure_humanoid_kinematic(
+            ucv, communicator, human_name, loc, human_id=human_id
+        )
+        ok, actual = verify_humanoid_on_floor(
+            ucv, human_name, floor_top_z_cm=floor_z
+        )
+        if ok:
+            feet = humanoid_feet_z_cm(actual[2]) if actual else float("nan")
+            suffix = f" (+{z_bump:.0f}cm retry)" if z_bump > 0 else ""
+            print(
+                f"[Humanoid] on-floor OK {human_name} actor={_fmt_xyz(actual)} "
+                f"feet≈{feet:.1f}cm floor_top={floor_z:.1f}cm{suffix}"
+            )
+            return True
+        if actual:
+            feet = humanoid_feet_z_cm(actual[2])
+            print(
+                f"[Humanoid] on-floor retry {attempt + 1}/5: "
+                f"actor={_fmt_xyz(actual)} feet≈{feet:.1f}cm "
+                f"(need >={floor_z - 5:.1f}cm)"
+            )
+    return False
 
 
 # ==============================================================
@@ -1008,35 +1283,45 @@ def spawn_cubes(ucv: UnrealCV, grid_n: int) -> dict[str, dict]:
 
 
 def spawn_humanoid(communicator: Communicator, ucv: UnrealCV) -> Optional[str]:
-    """Humanoid を床面上に配置（物理シミュレーションは使わない）。"""
-    loc = agent_spawn_xyz_cm(HUMAN_MAP_XY_M, spawn_z_cm=HUMAN_SPAWN_Z_CM)
-    human = Humanoid(position=Vector(loc[0], loc[1]), direction=Vector(1, 0))
-    communicator.spawn_agent(
-        agent=human,
-        name=None,
-        position=loc,
-        model_path=HUMAN_BP,
-        type="humanoid",
+    """Spawn Humanoid on the floor grid (kinematic, capsule-center Z)."""
+    floor_z = resolve_floor_top_z_cm(ucv)
+    loc = agent_spawn_xyz_cm(
+        HUMAN_MAP_XY_M, agent_kind="humanoid", floor_top_z_cm=floor_z
     )
+    human = Humanoid(position=Vector(loc[0], loc[1]), direction=Vector(1, 0))
     human_name = communicator.get_humanoid_name(human.id)
-    ucv.set_physics(human_name, False)
-    ucv.set_movable(human_name, True)
-    ucv.set_collision(human_name, True)
+    destroy_actor_safely(ucv, human_name)
+    if not spawn_bp(ucv, HUMAN_BP, human_name):
+        print(f"[Humanoid] spawn_bp failed ({HUMAN_BP})")
+        return None
+    if not place_humanoid_on_floor(
+        ucv,
+        communicator,
+        human_name,
+        loc,
+        human_id=human.id,
+        floor_top_z_cm=floor_z,
+    ):
+        print(f"[Humanoid] placement failed for {human_name}")
+        return None
     if AGENT_ENABLE_PHYSICS:
         print(
-            f"  warn: AGENT_ENABLE_PHYSICS=True は Humanoid をラグドール化させるため無視します"
+            "  warn: AGENT_ENABLE_PHYSICS=True is ignored for Humanoid (ragdoll risk)"
         )
-    try:
-        communicator.humanoid_set_speed(human.id, 0.0)
-    except Exception:
-        pass
-    print(f"[Humanoid] {human_name} spawn @ {loc} (kinematic, no sim physics)")
+    print(
+        f"[Humanoid] {human_name} spawn @ {loc} "
+        f"(capsule_half={HUMANOID_CAPSULE_HALF_HEIGHT_CM:.0f}cm, "
+        f"clearance={AGENT_SPAWN_ABOVE_FLOOR_CM:.0f}cm)"
+    )
     return human_name
 
 
 def spawn_robot(ucv: UnrealCV) -> bool:
     """SpotDog を material_transport と同様に配置しコントローラを有効化。"""
-    loc = agent_spawn_xyz_cm(ROBOT_MAP_XY_M, spawn_z_cm=ROBOT_SPAWN_Z_CM)
+    floor_z = resolve_floor_top_z_cm(ucv)
+    loc = agent_spawn_xyz_cm(
+        ROBOT_MAP_XY_M, agent_kind="robot", floor_top_z_cm=floor_z
+    )
     destroy_if_exists(ucv, ROBOT_ACTOR_NAME)
     if not spawn_bp(ucv, ROBOT_BP, ROBOT_ACTOR_NAME):
         print("[Robot] spawn failed")
@@ -1052,7 +1337,10 @@ def spawn_robot(ucv: UnrealCV) -> bool:
         print(
             f"  warn: AGENT_ENABLE_PHYSICS=True は SpotDog を転倒させるため無視します"
         )
-    print(f"[Robot] {ROBOT_ACTOR_NAME} @ {loc} (controller on, no sim physics)")
+    print(
+        f"[Robot] {ROBOT_ACTOR_NAME} @ {loc} "
+        f"(controller on, z_clearance={AGENT_SPAWN_ABOVE_FLOOR_CM:.0f}cm)"
+    )
     return True
 
 
@@ -1098,8 +1386,12 @@ def report_spawn_state(
 
     if human_name and actor_exists(ucv, human_name):
         loc = tuple(ucv.get_location(human_name))
-        ok = loc[2] >= floor_z_min_cm
-        print(f"  humanoid {human_name}: {_fmt_xyz(loc)} {'OK' if ok else 'LOW-Z?'}")
+        feet_z = humanoid_feet_z_cm(loc[2])
+        ok = feet_z >= floor_z_min_cm
+        print(
+            f"  humanoid {human_name}: {_fmt_xyz(loc)} "
+            f"feet≈{feet_z:.1f}cm {'OK' if ok else 'LOW-Z?'}"
+        )
     elif human_name:
         print(f"  humanoid {human_name}: MISSING")
 
