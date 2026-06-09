@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""grid_100x100 (PIE) パトロールデモ: 外周実体化 + A* ナビ + SpotDog 往復。
+"""grid_100x100 PIE patrol: perimeter solidification, A* navigation, SpotDog round trip.
 
-前提:
-  - UE Editor で grid_100x100 を開き PIE 実行済み
-  - マップに床 + block_* (初期 F) が保存済み
+Prerequisites:
+  - UE Editor: open grid_100x100 and start PIE
+  - Map already contains floor + block_* actors (initially translucent)
   - WSL: conda activate simworld
 
-座標は grid_env_10k の 1 始まりマス番号 (gx, gy)。
+Grid cell indices (gx, gy) are 1-based (see grid_env_10k).
 """
 
 from __future__ import annotations
@@ -43,7 +43,6 @@ import grid_env_10k as g10k  # noqa: E402
 import grid_env_hri_simulation as geh  # noqa: E402
 from path_planning_costmap import (  # noqa: E402
     COSTMAP_LETHAL_COST,
-    COSTMAP_RESOLUTION_CM,
     AStarPlanResult,
     Costmap2D,
     build_uniform_costmap,
@@ -54,14 +53,16 @@ from simworld.communicator.communicator import Communicator  # noqa: E402
 from simworld.communicator.unrealcv import UnrealCV  # noqa: E402
 from simworld.utils.vector import Vector  # noqa: E402
 
-# ---- シナリオ既定 ----
+# ---- Scenario defaults ----
 GRID_N = 100
+# Costmap cell size matches block width (0.30 m) for 1:1 grid alignment.
+COSTMAP_RESOLUTION_CM = geh.CUBE_SIZE_CM
 HUMAN_CELL: BlockIndex = (5, 5)
 ROBOT_START_CELL: BlockIndex = (10, 5)
 ROBOT_GOAL_CELL: BlockIndex = (50, 50)
 GOAL_DWELL_S = 5.0
 
-# ---- ロボット制御（material_transport と同系） ----
+# ---- Robot control (same family as llm_material_transport) ----
 ROBOT_SPEED = 200.0
 ROBOT_MOVE_SLICE_S = 0.2
 ROBOT_TURN_DUR_S = 1.0
@@ -99,7 +100,7 @@ class PatrolResult:
 
 
 def block_index_to_map_xy_m(gx: int, gy: int) -> Tuple[float, float]:
-    """マス (gx, gy) の中心をマップ連続座標 [m]（左下原点）で返す。"""
+    """Return cell-center map coordinates [m] (lower-left origin) for (gx, gy)."""
     g10k.validate_block_index(gx, gy, grid_n=GRID_N)
     col = gx - 1
     row = gy - 1
@@ -117,7 +118,7 @@ def world_cm_to_block_index(
     *,
     grid_n: int = GRID_N,
 ) -> Optional[BlockIndex]:
-    """UE 世界 XY [cm] → 最寄りマス (gx, gy)。範囲外は None。"""
+    """Map UE world XY [cm] to nearest cell (gx, gy); None if out of range."""
     ox, oy = geh.MAP_ORIGIN_XY_CM
     col = int(round((x_cm - ox - geh.CUBE_HALF_CM) / geh.CUBE_SIZE_CM))
     row = int(round((y_cm - oy - geh.CUBE_HALF_CM) / geh.CUBE_SIZE_CM))
@@ -178,7 +179,7 @@ def build_pie_block_registry(
     cells: Optional[Set[BlockIndex]] = None,
     use_cache: bool = True,
 ) -> Dict[BlockIndex, str]:
-    """PIE 上の UObject 名を (gx, gy) に紐付け（vget /objects は UAID 名のみのため）。"""
+    """Map PIE actor names to (gx, gy); vget /objects returns UAID names only."""
     needed = set(cells) if cells is not None else None
     registry: Dict[BlockIndex, str] = {}
     cache = _load_registry_cache() if use_cache else {}
@@ -410,7 +411,7 @@ def build_costmap_from_blocking_cells(
     *,
     grid_n: int = GRID_N,
 ) -> Costmap2D:
-    """実体化 (T) マスを lethal として 30 m コストマップを構築。"""
+    """Build a 30 m costmap; solid (T) cells are marked lethal at block resolution."""
     size_m = grid_n * geh.CUBE_SIZE_M
     costmap = build_uniform_costmap(
         origin_xy=geh.MAP_ORIGIN_XY_CM,
@@ -426,8 +427,8 @@ def build_costmap_from_blocking_cells(
         y1 = y0 + geh.CUBE_SIZE_CM
         _mark_rect_lethal(costmap, x0, y0, x1, y1)
     print(
-        f"[Costmap] {size_m:.0f} m, lethal cells from {len(blocking_cells)} blocks, "
-        f"grid={costmap.costs.shape}"
+        f"[Costmap] {size_m:.0f} m, resolution={costmap.resolution_cm / 100:.2f} m, "
+        f"lethal from {len(blocking_cells)} blocks, grid={costmap.costs.shape}"
     )
     return costmap
 
@@ -539,7 +540,7 @@ def robot_navigate_astar(
     tolerance_cm: float = ARRIVE_TOLERANCE_CM,
     label: str = "",
 ) -> bool:
-    """A* グローバル経路 + (回転, 前進) オープンループ制御。"""
+    """Global A* waypoints + open-loop rotate-then-drive control."""
     start_xy = get_pos2d(ucv, geh.ROBOT_ACTOR_NAME)
     plan = plan_astar_waypoints(costmap, start_xy, goal_xy)
     waypoints = plan.waypoints_xy
@@ -638,7 +639,7 @@ def run_patrol_scenario(
     grid_n: int = GRID_N,
     skip_perimeter_if_already_solid: bool = False,
 ) -> PatrolResult:
-    """外周 T → エージェントスポーン → 往路 A* → 停止 → 復路 A*。"""
+    """Perimeter T -> spawn agents -> outbound A* -> dwell -> return A*."""
     ucv, communicator = g10k.ensure_connection()
     if not ucv.client.isconnected():
         raise ConnectionError("UnrealCV not connected — start PIE in UE Editor first.")
