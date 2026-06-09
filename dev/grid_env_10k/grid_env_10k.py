@@ -104,16 +104,41 @@ def iter_block_indices(
             yield gx, gy
 
 
-def ensure_connection() -> Tuple[UnrealCV, Communicator]:
-    return geh.ensure_connection()
+def ensure_connection(
+    *,
+    force_new: bool = False,
+    ucv: Optional[UnrealCV] = None,
+    communicator: Optional[Communicator] = None,
+) -> Tuple[UnrealCV, Communicator]:
+    return geh.ensure_connection(
+        force_new=force_new,
+        ucv=ucv,
+        communicator=communicator,
+    )
 
 
-def reconnect_if_needed(ucv: Optional[UnrealCV]) -> Tuple[UnrealCV, Communicator]:
-    """UnrealCV が切れたあと再接続（10,000 スポーン中の reset 対策）。"""
-    if ucv is not None and ucv.client.isconnected():
-        return ucv, Communicator(ucv)
-    print("[UE] reconnecting after disconnect ...")
-    return ensure_connection()
+def release_connection(
+    ucv: Optional[UnrealCV] = None,
+    *,
+    communicator: Optional[Communicator] = None,
+) -> None:
+    geh.release_connection(ucv, communicator=communicator)
+
+
+def adopt_ue_session(
+    ucv: UnrealCV,
+    communicator: Optional[Communicator] = None,
+) -> Tuple[UnrealCV, Communicator]:
+    return geh.adopt_ue_session(ucv, communicator)
+
+
+def reconnect_if_needed(
+    ucv: Optional[UnrealCV],
+    *,
+    communicator: Optional[Communicator] = None,
+) -> Tuple[UnrealCV, Communicator]:
+    """Reuse live UnrealCV; otherwise reconnect (notebook / long spawn safe)."""
+    return geh.ensure_connection(ucv=ucv, communicator=communicator)
 
 
 def prepare_ue_session(ucv: UnrealCV) -> None:

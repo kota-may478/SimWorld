@@ -78,6 +78,13 @@ RETURN_ARRIVE_TOLERANCE_CM = 120.0
 ROBOT_BP = geh.ROBOT_BP
 REGISTRY_CACHE_PATH = G10K_DIR / ".pie_block_registry.json"
 ROBOT_PROBE_NAME = "__GridEnv_SpotRobot_probe__"
+HUMAN_BP_CANDIDATES: Tuple[str, ...] = (
+    geh.HUMAN_BP,
+    "/Game/TrafficSystem/Pedestrian/Base_Pedestrian.Base_Pedestrian_C",
+    # Editor loose TrafficSystem may lack compiled _C; Human_Avatar fallback (PIE spawn OK).
+    "/Game/Human_Avatar/DefaultCharacter/Blueprint/BP_Default_Character.BP_Default_Character_C",
+)
+HUMANOID_CELL_XY_TOLERANCE_CM = 120.0
 
 
 @dataclass(frozen=True)
@@ -91,6 +98,7 @@ class SegmentCommand:
 class PatrolResult:
     perimeter_ok: bool
     human_name: Optional[str]
+    humanoid_on_floor: bool
     robot_spawned: bool
     outbound_arrived: bool
     return_arrived: bool
@@ -98,6 +106,8 @@ class PatrolResult:
     goal_xy: WorldXY
     final_xy: WorldXY
     return_dist_cm: float
+    humanoid_xy: Optional[WorldXY] = None
+    humanoid_feet_z_cm: Optional[float] = None
 
 
 def block_index_to_map_xy_m(gx: int, gy: int) -> Tuple[float, float]:
@@ -326,15 +336,21 @@ def robot_bp_setup_hint() -> str:
     )
 
 
+def humanoid_bp_setup_hint() -> str:
+    return (
+        "Humanoid BP が PIE からスポーンできません（runtime pak に含まれません）。\n"
+        "  1. WSL: bash dev/grid_env_10k/scripts/install_traffic_system_editor.sh\n"
+        "  2. WSL: bash dev/grid_env_10k/scripts/verify_traffic_system_preflight.sh\n"
+        "  3. UE Editor: PIE Play（grid_100x100）— TrafficSystem BP は Editor で開かない\n"
+        "  4. WSL: python dev/grid_env_10k/run_humanoid_spawn_test.py\n"
+        "  ※ verify/compile の Editor Python は load_asset でクラッシュするため使わない"
+    )
+
+
 def cleanup_runtime_agents(ucv: UnrealCV) -> None:
-    """Remove patrol Humanoid / SpotDog / probe actors from the PIE session."""
+    """Remove SpotDog / probe actors; keep Humanoid for safe reposition on re-run."""
     geh.destroy_actor_safely(ucv, geh.ROBOT_ACTOR_NAME)
     geh.destroy_actor_safely(ucv, ROBOT_PROBE_NAME)
-    raw = geh._ue_request(ucv, "vget /objects", timeout_s=90.0)
-    if raw:
-        for name in raw.split():
-            if name.startswith("GEN_BP_Humanoid"):
-                geh.destroy_actor_safely(ucv, name)
     geh._prepare_ue_spawn(ucv)
 
 
@@ -355,6 +371,69 @@ def _configure_robot_at(ucv: UnrealCV, loc: Sequence[float]) -> None:
     time.sleep(geh.PHYSICS_ENABLE_DELAY_S)
 
 
+def _spawn_humanoid_bp(ucv: UnrealCV, human_name: str) -> bool:
+    for bp in HUMAN_BP_CANDIDATES:
+        if geh.spawn_bp(ucv, bp, human_name):
+            print(f"[Humanoid] spawn_bp OK ({bp})")
+            return True
+        print(f"[Humanoid] spawn_bp failed ({bp})")
+    return False
+
+
+def verify_humanoid_after_patrol(
+    ucv: UnrealCV,
+    communicator: Communicator,
+    human_cell: BlockIndex,
+    human_name: Optional[str],
+) -> Tuple[bool, Optional[str], Optional[WorldXY], Optional[float]]:
+    """After SpotDog finishes, confirm Humanoid exists on the floor at ``human_cell``."""
+    floor_z = geh.resolve_floor_top_z_cm(ucv)
+    expected_xy = block_index_to_world_xy_cm(*human_cell)
+    map_xy = block_index_to_map_xy_m(*human_cell)
+    target_loc = geh.agent_spawn_xyz_cm(
+        map_xy, agent_kind="humanoid", floor_top_z_cm=floor_z
+    )
+
+    name = human_name
+    if not name or not geh.actor_exists(ucv, name):
+        name = _find_existing_humanoid_name(ucv)
+    if not name:
+        print("[Humanoid] post-patrol respawn attempt (missing actor)")
+        name = spawn_humanoid_at(communicator, ucv, human_cell)
+    if not name:
+        print("[Humanoid] post-patrol VERIFY FAIL: actor missing after respawn")
+        return False, None, None, None
+
+    ok_floor, loc = geh.verify_humanoid_on_floor(
+        ucv, name, floor_top_z_cm=floor_z
+    )
+    if not ok_floor:
+        print(f"[Humanoid] post-patrol repair placement for {name!r}")
+        geh.place_humanoid_on_floor(
+            ucv, communicator, name, target_loc, floor_top_z_cm=floor_z
+        )
+        ok_floor, loc = geh.verify_humanoid_on_floor(
+            ucv, name, floor_top_z_cm=floor_z
+        )
+
+    if loc is None:
+        print(f"[Humanoid] post-patrol VERIFY FAIL: no location for {name!r}")
+        return False, name, None, None
+
+    feet_z = geh.humanoid_feet_z_cm(loc[2])
+    xy = (loc[0], loc[1])
+    xy_dist = dist2d(xy, expected_xy)
+    xy_ok = xy_dist <= HUMANOID_CELL_XY_TOLERANCE_CM
+    ok = ok_floor and xy_ok
+    status = "OK" if ok else "FAIL"
+    print(
+        f"[Humanoid] post-patrol VERIFY {status} {name} actor={geh._fmt_xyz(loc)} "
+        f"feet≈{feet_z:.1f}cm floor_top={floor_z:.1f}cm "
+        f"xy_dist={xy_dist:.1f}cm (limit {HUMANOID_CELL_XY_TOLERANCE_CM:.0f})"
+    )
+    return ok, name, xy, feet_z
+
+
 def _find_existing_humanoid_name(ucv: UnrealCV) -> Optional[str]:
     raw = geh._ue_request(ucv, "vget /objects", timeout_s=60.0)
     if not raw:
@@ -370,41 +449,55 @@ def spawn_humanoid_at(
 ) -> Optional[str]:
     gx, gy = cell
     map_xy = block_index_to_map_xy_m(gx, gy)
-    loc = geh.agent_spawn_xyz_cm(map_xy, spawn_z_cm=geh.HUMAN_SPAWN_Z_CM)
+    floor_z = geh.resolve_floor_top_z_cm(ucv)
+    loc = geh.agent_spawn_xyz_cm(
+        map_xy, agent_kind="humanoid", floor_top_z_cm=floor_z
+    )
 
     existing = _find_existing_humanoid_name(ucv)
     if existing and geh.actor_exists(ucv, existing):
         print(f"[Humanoid] reuse {existing!r} (teleport to cell)")
-        ucv.set_physics(existing, False)
-        ucv.set_movable(existing, True)
-        ucv.set_location(list(loc), existing)
-        ucv.set_collision(existing, True)
-        return existing
+        if geh.place_humanoid_on_floor(
+            ucv, communicator, existing, loc, floor_top_z_cm=floor_z
+        ):
+            print(
+                f"[Humanoid] {existing} @ cell({gx},{gy}) map={map_xy} "
+                f"target={geh._fmt_xyz(loc)} floor_top={floor_z:.1f}cm"
+            )
+            return existing
+        print(f"[Humanoid] reuse failed — respawn {existing!r}")
+        geh.destroy_actor_safely(ucv, existing)
 
     human = Humanoid(position=Vector(loc[0], loc[1]), direction=Vector(1, 0))
-    communicator.spawn_agent(
-        agent=human,
-        name=None,
-        position=loc,
-        model_path=geh.HUMAN_BP,
-        type="humanoid",
-    )
     human_name = communicator.get_humanoid_name(human.id)
-    ucv.set_physics(human_name, False)
-    ucv.set_movable(human_name, True)
-    ucv.set_collision(human_name, True)
-    try:
-        communicator.humanoid_set_speed(human.id, 0.0)
-    except Exception:
-        pass
-    print(f"[Humanoid] {human_name} @ cell({gx},{gy}) map={map_xy} world={geh._fmt_xyz(loc)}")
+    if not _spawn_humanoid_bp(ucv, human_name):
+        print(humanoid_bp_setup_hint())
+        return None
+    if not geh.place_humanoid_on_floor(
+        ucv,
+        communicator,
+        human_name,
+        loc,
+        human_id=human.id,
+        floor_top_z_cm=floor_z,
+    ):
+        print(f"[Humanoid] placement failed for {human_name}")
+        return None
+    print(
+        f"[Humanoid] {human_name} @ cell({gx},{gy}) map={map_xy} "
+        f"target={geh._fmt_xyz(loc)} floor_top={floor_z:.1f}cm "
+        f"capsule_half={geh.HUMANOID_CAPSULE_HALF_HEIGHT_CM:.0f}cm"
+    )
     return human_name
 
 
 def spawn_robot_at(ucv: UnrealCV, cell: BlockIndex) -> bool:
     gx, gy = cell
     map_xy = block_index_to_map_xy_m(gx, gy)
-    loc = geh.agent_spawn_xyz_cm(map_xy, spawn_z_cm=geh.ROBOT_SPAWN_Z_CM)
+    floor_z = geh.resolve_floor_top_z_cm(ucv)
+    loc = geh.agent_spawn_xyz_cm(
+        map_xy, agent_kind="robot", floor_top_z_cm=floor_z
+    )
     robot_name = geh.ROBOT_ACTOR_NAME
 
     gone = geh.destroy_actor_safely(ucv, robot_name)
@@ -416,7 +509,8 @@ def spawn_robot_at(ucv: UnrealCV, cell: BlockIndex) -> bool:
         _configure_robot_at(ucv, loc)
         print(
             f"[Robot] {robot_name} @ cell({gx},{gy}) "
-            f"map={map_xy} world={geh._fmt_xyz(loc)}"
+            f"map={map_xy} world={geh._fmt_xyz(loc)} "
+            f"z_clearance={geh.AGENT_SPAWN_ABOVE_FLOOR_CM:.0f}cm"
         )
         return True
 
@@ -431,7 +525,8 @@ def spawn_robot_at(ucv: UnrealCV, cell: BlockIndex) -> bool:
     _configure_robot_at(ucv, loc)
     print(
         f"[Robot] {robot_name} @ cell({gx},{gy}) "
-        f"map={map_xy} world={geh._fmt_xyz(loc)}"
+        f"map={map_xy} world={geh._fmt_xyz(loc)} "
+        f"z_clearance={geh.AGENT_SPAWN_ABOVE_FLOOR_CM:.0f}cm"
     )
     return True
 
@@ -690,18 +785,22 @@ def run_patrol_scenario(
     grid_n: int = GRID_N,
     skip_perimeter_if_already_solid: bool = False,
     skip_robot_probe: bool = False,
+    ucv: Optional[UnrealCV] = None,
+    communicator: Optional[Communicator] = None,
 ) -> PatrolResult:
     """Perimeter T -> spawn agents -> outbound A* -> dwell -> return A*."""
-    ucv, communicator = g10k.ensure_connection()
-    if not ucv.client.isconnected():
-        raise ConnectionError("UnrealCV not connected — start PIE in UE Editor first.")
+    ucv, communicator = g10k.reconnect_if_needed(ucv, communicator=communicator)
 
     prepare_pie_rerun(ucv)
 
     scripts_dir = str(G10K_DIR / "scripts")
     if scripts_dir not in sys.path:
         sys.path.insert(0, scripts_dir)
-    from mount_simworld_runtime_paks_pie import mount_paks, probe_robot_spawn  # noqa: WPS433
+    from mount_simworld_runtime_paks_pie import (  # noqa: WPS433
+        mount_paks,
+        probe_humanoid_spawn,
+        probe_robot_spawn,
+    )
 
     if not mount_paks(ucv):
         raise RuntimeError(robot_bp_setup_hint())
@@ -709,6 +808,10 @@ def run_patrol_scenario(
         print("[Robot] skip BP probe (reuse session)")
     elif not probe_robot_spawn(ucv):
         raise RuntimeError(robot_bp_setup_hint())
+    if skip_robot_probe:
+        print("[Humanoid] skip BP probe (reuse session)")
+    elif not probe_humanoid_spawn(ucv):
+        print("[Humanoid] WARN: BP probe failed — will try spawn with fallbacks")
 
     start_xy = block_index_to_world_xy_cm(*robot_start_cell)
     goal_xy = block_index_to_world_xy_cm(*robot_goal_cell)
@@ -730,10 +833,14 @@ def run_patrol_scenario(
 
     human_name = spawn_humanoid_at(communicator, ucv, human_cell)
     robot_spawned = spawn_robot_at(ucv, robot_start_cell)
+    geh.report_spawn_state(ucv, {}, human_name)
+    if not human_name:
+        print("[Scenario] WARN: Humanoid missing or not on floor")
     if not robot_spawned:
         return PatrolResult(
             perimeter_ok=perimeter_ok,
             human_name=human_name,
+            humanoid_on_floor=False,
             robot_spawned=False,
             outbound_arrived=False,
             return_arrived=False,
@@ -769,13 +876,23 @@ def run_patrol_scenario(
 
     final_xy = get_pos2d(ucv, geh.ROBOT_ACTOR_NAME)
     return_dist = dist2d(final_xy, start_xy)
+
+    humanoid_on_floor, human_name, humanoid_xy, humanoid_feet_z = (
+        verify_humanoid_after_patrol(
+            ucv, communicator, human_cell, human_name
+        )
+    )
+    geh.report_spawn_state(ucv, {}, human_name)
+
     print(
         f"[Scenario] done outbound={outbound_arrived} return={return_arrived} "
-        f"final_dist_from_start={return_dist:.1f} cm"
+        f"final_dist_from_start={return_dist:.1f} cm "
+        f"humanoid_on_floor={humanoid_on_floor}"
     )
     return PatrolResult(
         perimeter_ok=perimeter_ok,
         human_name=human_name,
+        humanoid_on_floor=humanoid_on_floor,
         robot_spawned=True,
         outbound_arrived=outbound_arrived,
         return_arrived=return_arrived,
@@ -783,19 +900,29 @@ def run_patrol_scenario(
         goal_xy=goal_xy,
         final_xy=final_xy,
         return_dist_cm=return_dist,
+        humanoid_xy=humanoid_xy,
+        humanoid_feet_z_cm=humanoid_feet_z,
     )
 
 
 def main() -> int:
-    result = run_patrol_scenario()
-    ok = (
+    result = run_patrol_scenario(
+        skip_perimeter_if_already_solid=True,
+        skip_robot_probe=True,
+    )
+    ok = patrol_success(result)
+    return 0 if ok else 1
+
+
+def patrol_success(result: PatrolResult) -> bool:
+    return (
         result.perimeter_ok
         and result.robot_spawned
         and result.outbound_arrived
         and result.return_arrived
         and result.return_dist_cm <= RETURN_ARRIVE_TOLERANCE_CM
+        and result.humanoid_on_floor
     )
-    return 0 if ok else 1
 
 
 if __name__ == "__main__":

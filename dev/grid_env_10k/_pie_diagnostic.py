@@ -67,7 +67,12 @@ def main() -> int:
     print("\n--- Humanoid spawn probe ---")
     patrol.cleanup_runtime_agents(ucv)
     human = patrol.spawn_humanoid_at(communicator, ucv, patrol.HUMAN_CELL)
-    print(f"  {'OK' if human else 'FAIL'}: humanoid -> {human}")
+    if human and geh.actor_exists(ucv, human):
+        loc = geh.try_get_location_cm(ucv, human)
+        feet = geh.humanoid_feet_z_cm(loc[2]) if loc else None
+        print(f"  {'OK' if human else 'FAIL'}: humanoid -> {human} loc={loc} feet≈{feet}")
+    else:
+        print(f"  {'OK' if human else 'FAIL'}: humanoid -> {human}")
 
     print("\n--- SetBlocking probe (1 cube, max 80 actors) ---")
     t0 = time.monotonic()
