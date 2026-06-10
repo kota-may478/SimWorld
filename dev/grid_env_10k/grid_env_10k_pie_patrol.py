@@ -139,6 +139,9 @@ def world_cm_to_block_index(
     return None
 
 
+REGISTRY_LOCATION_BATCH_SIZE = 200
+
+
 def _map_cube_actor_to_cell(
     ucv: UnrealCV,
     name: str,
@@ -155,10 +158,33 @@ def _map_cube_actor_to_cell(
     loc = geh.try_get_location_cm(ucv, name)
     if loc is None:
         return None
-    cell = world_cm_to_block_index(loc[0], loc[1], grid_n=grid_n)
+    return _map_cube_actor_to_cell_from_xy(loc[0], loc[1], name, grid_n=grid_n)
+
+
+def _map_cube_actor_to_cell_from_xy(
+    x_cm: float,
+    y_cm: float,
+    name: str,
+    *,
+    grid_n: int,
+) -> Optional[Tuple[BlockIndex, str]]:
+    cell = world_cm_to_block_index(x_cm, y_cm, grid_n=grid_n)
     if cell is None:
         return None
     return cell, name
+
+
+def _register_mapped_cell(
+    registry: Dict[BlockIndex, str],
+    mapped: Tuple[BlockIndex, str],
+    needed: Optional[Set[BlockIndex]],
+) -> None:
+    cell, actor_name = mapped
+    if needed is not None and cell not in needed:
+        return
+    registry.setdefault(cell, actor_name)
+    if needed is not None and cell in needed:
+        needed.discard(cell)
 
 
 def _load_registry_cache() -> Dict[str, str]:
@@ -217,21 +243,46 @@ def build_pie_block_registry(
         f"{f' for {len(needed)} cells' if needed else ''} ..."
     )
 
-    for i, name in enumerate(cube_names, start=1):
+    # Batch location queries — much faster than per-actor RPC for 10k cubes.
+    scanned = 0
+    batch_size = REGISTRY_LOCATION_BATCH_SIZE
+    for batch_start in range(0, len(cube_names), batch_size):
         if needed is not None and not needed:
             break
-        mapped = _map_cube_actor_to_cell(ucv, name, grid_n=grid_n)
-        if mapped is None:
-            continue
-        cell, actor_name = mapped
-        if needed is not None and cell not in needed:
-            continue
-        registry.setdefault(cell, actor_name)
-        if needed is not None and cell in needed:
-            needed.discard(cell)
-        if i % 500 == 0 or i == len(cube_names):
+        batch = cube_names[batch_start : batch_start + batch_size]
+        locations: List[Optional[Tuple[float, float, float]]] = [None] * len(batch)
+        try:
+            loc_arrays = ucv.get_location_batch(batch)
+            for idx, loc_arr in enumerate(loc_arrays):
+                locations[idx] = (
+                    float(loc_arr[0]),
+                    float(loc_arr[1]),
+                    float(loc_arr[2]),
+                )
+        except Exception:
+            for idx, name in enumerate(batch):
+                locations[idx] = geh.try_get_location_cm(ucv, name)
+
+        for name, loc in zip(batch, locations):
+            scanned += 1
+            if loc is None:
+                continue
+            if name.startswith(g10k.BLOCK_ACTOR_PREFIX + "_"):
+                parsed = g10k.parse_block_actor_name(name)
+                mapped = (parsed, name) if parsed is not None else None
+            elif "TransparentCube" in name:
+                mapped = _map_cube_actor_to_cell_from_xy(
+                    loc[0], loc[1], name, grid_n=grid_n
+                )
+            else:
+                mapped = None
+            if mapped is None:
+                continue
+            _register_mapped_cell(registry, mapped, needed)
+
+        if scanned % 500 == 0 or scanned == len(cube_names):
             print(
-                f"[Registry] {i}/{len(cube_names)} mapped={len(registry)} "
+                f"[Registry] {scanned}/{len(cube_names)} mapped={len(registry)} "
                 f"elapsed={time.monotonic() - t0:.0f}s",
                 flush=True,
             )
