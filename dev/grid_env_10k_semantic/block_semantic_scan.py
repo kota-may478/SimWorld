@@ -1,96 +1,83 @@
 #!/usr/bin/env python3
-"""Collision-probe helpers for wall / floor / air semantic classification."""
+"""Semantic labeling for the elevated corner test (geometric AABB, PIE-safe).
+
+Labeling rule (per cell, before blocks are placed):
+
+1. ``z_initial`` = temp floor top + 0.15 m — intended block **bottom** height.
+2. Probe at ``z_initial``: collision → **wall** (existing geometry at placement height).
+3. Else probe at ``z_lower`` = ``z_initial`` − 0.30 m (one block height):
+   collision → **floor**; else → **air**.
+
+If ``z_initial`` is correct, the temp floor slab (top below ``z_initial``) cannot
+produce a wall label — only a lowered probe can hit it for floor.
+"""
 
 from __future__ import annotations
 
-import json
 import time
-from typing import Dict, Literal, Optional, Tuple
+from dataclasses import dataclass
+from typing import Dict, Iterable, List, Literal, Tuple
 
 BlockSemantic = Literal["wall", "floor", "air"]
 BlockIndex = Tuple[int, int]
-WorldXYZ = Tuple[float, float, float]
 
-PROBE_NAME = "sem_collision_probe"
-PROBE_BP_PATH = "/Game/CityDatabase/blueprints/BP_Box.BP_Box_C"
-PROBE_SCALE = (0.12, 0.12, 0.12)
-PROBE_SETTLE_S = 0.03
-
-SEMANTIC_COLORS: Dict[BlockSemantic, Tuple[float, float, float]] = {
-    "wall": (1.0, 0.15, 0.15),
-    "floor": (0.15, 0.85, 0.2),
-    "air": (0.25, 0.45, 1.0),
-}
+PROBE_RADIUS_CM = 10.0
 
 
-def classify_semantic(*, hit_at_z0: bool, hit_at_z_low: bool) -> BlockSemantic:
-    """Classify a column from probe hits at z0 and z0 - block_height."""
-    if hit_at_z0:
+@dataclass(frozen=True)
+class ObstacleBox:
+    """Axis-aligned obstacle volume in UE world cm."""
+
+    x_min: float
+    x_max: float
+    y_min: float
+    y_max: float
+    z_min: float
+    z_max: float
+    source: str = ""
+
+    def contains_probe(self, x: float, y: float, z: float, *, radius_cm: float) -> bool:
+        return (
+            self.x_min - radius_cm <= x <= self.x_max + radius_cm
+            and self.y_min - radius_cm <= y <= self.y_max + radius_cm
+            and self.z_min <= z <= self.z_max
+        )
+
+
+def classify_semantic(*, hit_at_z_initial: bool, hit_at_z_lower: bool) -> BlockSemantic:
+    if hit_at_z_initial:
         return "wall"
-    if hit_at_z_low:
+    if hit_at_z_lower:
         return "floor"
     return "air"
 
 
-def parse_collision_counts(raw_response: object) -> dict:
-    if isinstance(raw_response, dict):
-        return raw_response
-    if isinstance(raw_response, str):
-        text = raw_response.strip()
-        if not text or text.lower().startswith("error"):
-            return {}
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            return {}
-    return {}
-
-
-def collision_indicates_obstacle(counts: dict) -> bool:
-    building = int(counts.get("BuildingCollision", 0) or 0)
-    obj = int(counts.get("ObjectCollision", 0) or 0)
-    return (building + obj) > 0
-
-
-def spawn_collision_probe(ucv, location: WorldXYZ) -> None:
-    objects = {str(n) for n in ucv.get_objects().tolist()}
-    if PROBE_NAME not in objects:
-        ucv.spawn_bp_asset(PROBE_BP_PATH, PROBE_NAME)
-    ucv.set_scale(PROBE_SCALE, PROBE_NAME)
-    ucv.set_physics(PROBE_NAME, False)
-    ucv.set_collision(PROBE_NAME, True)
-    ucv.set_movable(PROBE_NAME, True)
-    ucv.set_location(location, PROBE_NAME)
-    ucv.set_orientation((0.0, 0.0, 0.0), PROBE_NAME)
-
-
-def destroy_collision_probe(ucv) -> None:
-    objects = {str(n) for n in ucv.get_objects().tolist()}
-    if PROBE_NAME in objects:
-        ucv.destroy(PROBE_NAME)
-
-
-def probe_hit_at(ucv, x_cm: float, y_cm: float, z_cm: float) -> bool:
-    """Return True when a static obstacle overlaps the probe at (x, y, z)."""
-    spawn_collision_probe(ucv, (x_cm, y_cm, z_cm))
-    if PROBE_SETTLE_S > 0:
-        time.sleep(PROBE_SETTLE_S)
-    counts = parse_collision_counts(ucv.get_collision_num(PROBE_NAME))
-    return collision_indicates_obstacle(counts)
+def probe_point_hits(
+    x_cm: float,
+    y_cm: float,
+    z_cm: float,
+    obstacles: Iterable[ObstacleBox],
+    *,
+    radius_cm: float = PROBE_RADIUS_CM,
+) -> bool:
+    for box in obstacles:
+        if box.contains_probe(x_cm, y_cm, z_cm, radius_cm=radius_cm):
+            return True
+    return False
 
 
 def classify_cell_at_heights(
-    ucv,
     x_cm: float,
     y_cm: float,
     *,
-    block_bottom_z_cm: float,
+    z_initial_bottom_cm: float,
     block_height_cm: float,
+    obstacles: List[ObstacleBox],
 ) -> BlockSemantic:
-    z_low_cm = block_bottom_z_cm - block_height_cm
-    hit_high = probe_hit_at(ucv, x_cm, y_cm, block_bottom_z_cm)
-    hit_low = probe_hit_at(ucv, x_cm, y_cm, z_low_cm)
-    return classify_semantic(hit_at_z0=hit_high, hit_at_z_low=hit_low)
+    z_lower_cm = z_initial_bottom_cm - block_height_cm
+    hit_initial = probe_point_hits(x_cm, y_cm, z_initial_bottom_cm, obstacles)
+    hit_lower = probe_point_hits(x_cm, y_cm, z_lower_cm, obstacles)
+    return classify_semantic(hit_at_z_initial=hit_initial, hit_at_z_lower=hit_lower)
 
 
 def scan_region_semantics(
@@ -98,32 +85,31 @@ def scan_region_semantics(
     cells: list[BlockIndex],
     *,
     cell_center_xy_cm_fn,
-    block_bottom_z_cm: float,
+    z_initial_bottom_cm: float,
     block_height_cm: float,
-    progress_every: int = 20,
+    obstacles: List[ObstacleBox],
+    progress_every: int = 10,
 ) -> Dict[BlockIndex, BlockSemantic]:
-    """Scan each grid cell and return semantic labels (probe must be destroyed after)."""
+    del ucv
     results: Dict[BlockIndex, BlockSemantic] = {}
     total = len(cells)
     t0 = time.monotonic()
-    try:
-        spawn_collision_probe(ucv, (0.0, 0.0, block_bottom_z_cm))
-        for i, (gx, gy) in enumerate(cells, start=1):
-            x_cm, y_cm = cell_center_xy_cm_fn(gx, gy)
-            sem = classify_cell_at_heights(
-                ucv,
-                x_cm,
-                y_cm,
-                block_bottom_z_cm=block_bottom_z_cm,
-                block_height_cm=block_height_cm,
+    for i, (gx, gy) in enumerate(cells, start=1):
+        x_cm, y_cm = cell_center_xy_cm_fn(gx, gy)
+        sem = classify_cell_at_heights(
+            x_cm,
+            y_cm,
+            z_initial_bottom_cm=z_initial_bottom_cm,
+            block_height_cm=block_height_cm,
+            obstacles=obstacles,
+        )
+        results[(gx, gy)] = sem
+        if progress_every > 0 and (i % progress_every == 0 or i == total):
+            elapsed = time.monotonic() - t0
+            print(
+                f"[SemanticScan] {i}/{total} "
+                f"last=({gx},{gy})->{sem} "
+                f"z0={z_initial_bottom_cm:.1f} z-={z_initial_bottom_cm - block_height_cm:.1f} "
+                f"elapsed={elapsed:.1f}s"
             )
-            results[(gx, gy)] = sem
-            if progress_every > 0 and (i % progress_every == 0 or i == total):
-                elapsed = time.monotonic() - t0
-                print(
-                    f"[SemanticScan] {i}/{total} "
-                    f"last=({gx},{gy})->{sem} elapsed={elapsed:.1f}s"
-                )
-    finally:
-        destroy_collision_probe(ucv)
     return results

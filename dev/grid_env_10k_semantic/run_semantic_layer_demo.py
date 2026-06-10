@@ -17,14 +17,9 @@ import grid_env_10k_semantic as sem  # noqa: E402
 def main() -> int:
     parser = argparse.ArgumentParser(description="Semantic block layer demo (grid_100x100 PIE)")
     parser.add_argument(
-        "--no-demo-wall",
-        action="store_true",
-        help="Skip elevated wall obstacle at (4,4)",
-    )
-    parser.add_argument(
-        "--blocking",
-        action="store_true",
-        help="Spawn blocks as solid (T) instead of translucent (F)",
+        "--uniform-mode",
+        choices=("F", "T"),
+        help="Use one mode for all blocks instead of floor=F / air=T",
     )
     parser.add_argument(
         "--no-cleanup-first",
@@ -36,7 +31,20 @@ def main() -> int:
         action="store_true",
         help="Remove sem_* actors and exit",
     )
+    parser.add_argument(
+        "--wait-ue-s",
+        type=float,
+        default=180.0,
+        help="Seconds to wait for UnrealCV port 9000 before failing (default 180)",
+    )
     args = parser.parse_args()
+
+    if not sem._wait_for_ue_port(args.wait_ue_s):
+        print(
+            f"FAIL: port 9000 not reachable after {args.wait_ue_s:.0f}s — start grid_100x100 PIE.",
+            file=sys.stderr,
+        )
+        return 1
 
     ucv, _ = sem.ensure_connection()
     if not ucv.client.isconnected():
@@ -49,11 +57,13 @@ def main() -> int:
 
     result = sem.run_semantic_layer_demo(
         ucv,
-        spawn_demo_wall=not args.no_demo_wall,
-        default_block_mode="T" if args.blocking else "F",
+        use_semantic_modes=args.uniform_mode is None,
+        default_block_mode=args.uniform_mode or sem.DEFAULT_BLOCK_MODE,
         cleanup_before=not args.no_cleanup_first,
     )
-    counts = sem.summarize_semantics(result.semantics)
+    counts = {"wall": 0, "floor": 0, "air": 0}
+    for s in result.semantics.values():
+        counts[s] += 1
     print(
         f"SUCCESS: placed={len(result.blocks)} "
         f"wall/floor/air={counts} registry={result.registry_path}"
