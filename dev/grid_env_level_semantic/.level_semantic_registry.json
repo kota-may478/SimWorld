@@ -1,0 +1,313 @@
+{
+  "source_map": "/Game/Maps/Level",
+  "save_map": "/Game/Maps/Level_semantic",
+  "region": {
+    "corner_a_xy_cm": [
+      -208.95,
+      -1620.88
+    ],
+    "corner_b_xy_cm": [
+      6029.27,
+      5552.99
+    ],
+    "outward_margin_m": 3.0,
+    "grid_origin_xy_cm": [
+      -510.0,
+      -1950.0
+    ],
+    "grid_nx": 228,
+    "grid_ny": 261,
+    "subgrid": [
+      1,
+      155,
+      4,
+      159
+    ]
+  },
+  "block_bottom_z_cm": 6470.0,
+  "height_adjust_steps": 3,
+  "semantics": {
+    "001_155": "air",
+    "001_156": "air",
+    "001_157": "air",
+    "001_158": "air",
+    "001_159": "air",
+    "002_155": "air",
+    "002_156": "air",
+    "002_157": "air",
+    "002_158": "air",
+    "002_159": "air",
+    "003_155": "floor",
+    "003_156": "floor",
+    "003_157": "floor",
+    "003_158": "floor",
+    "003_159": "floor",
+    "004_155": "floor",
+    "004_156": "floor",
+    "004_157": "floor",
+    "004_158": "floor",
+    "004_159": "floor"
+  },
+  "blocks": {
+    "level_sem_block_001_155": {
+      "gx": 1,
+      "gy": 155,
+      "semantic": "air",
+      "mode": "T",
+      "block_bottom_z_cm": 6470.0,
+      "actor_name": "level_sem_block_001_155",
+      "world_cm": [
+        6315.0,
+        1245.0,
+        6470.0
+      ]
+    },
+    "level_sem_block_001_156": {
+      "gx": 1,
+      "gy": 156,
+      "semantic": "air",
+      "mode": "T",
+      "block_bottom_z_cm": 6470.0,
+      "actor_name": "level_sem_block_001_156",
+      "world_cm": [
+        6315.0,
+        1215.0,
+        6470.0
+      ]
+    },
+    "level_sem_block_001_157": {
+      "gx": 1,
+      "gy": 157,
+      "semantic": "air",
+      "mode": "T",
+      "block_bottom_z_cm": 6470.0,
+      "actor_name": "level_sem_block_001_157",
+      "world_cm": [
+        6315.0,
+        1185.0,
+        6470.0
+      ]
+    },
+    "level_sem_block_001_158": {
+      "gx": 1,
+      "gy": 158,
+      "semantic": "air",
+      "mode": "T",
+      "block_bottom_z_cm": 6470.0,
+      "actor_name": "level_sem_block_001_158",
+      "world_cm": [
+        6315.0,
+        1155.0,
+        6470.0
+      ]
+    },
+    "level_sem_block_001_159": {
+      "gx": 1,
+      "gy": 159,
+      "semantic": "air",
+      "mode": "T",
+      "block_bottom_z_cm": 6470.0,
+      "actor_name": "level_sem_block_001_159",
+      "world_cm": [
+        6315.0,
+        1125.0,
+        6470.0
+      ]
+    },
+    "level_sem_block_002_155": {
+      "gx": 2,
+      "gy": 155,
+      "semantic": "air",
+      "mode": "T",
+      "block_bottom_z_cm": 6470.0,
+      "actor_name": "level_sem_block_002_155",
+      "world_cm": [
+        6285.0,
+        1245.0,
+        6470.0
+      ]
+    },
+    "level_sem_block_002_156": {
+      "gx": 2,
+      "gy": 156,
+      "semantic": "air",
+      "mode": "T",
+      "block_bottom_z_cm": 6470.0,
+      "actor_name": "level_sem_block_002_156",
+      "world_cm": [
+        6285.0,
+        1215.0,
+        6470.0
+      ]
+    },
+    "level_sem_block_002_157": {
+      "gx": 2,
+      "gy": 157,
+      "semantic": "air",
+      "mode": "T",
+      "block_bottom_z_cm": 6470.0,
+      "actor_name": "level_sem_block_002_157",
+      "world_cm": [
+        6285.0,
+        1185.0,
+        6470.0
+      ]
+    },
+    "level_sem_block_002_158": {
+      "gx": 2,
+      "gy": 158,
+      "semantic": "air",
+      "mode": "T",
+      "block_bottom_z_cm": 6470.0,
+      "actor_name": "level_sem_block_002_158",
+      "world_cm": [
+        6285.0,
+        1155.0,
+        6470.0
+      ]
+    },
+    "level_sem_block_002_159": {
+      "gx": 2,
+      "gy": 159,
+      "semantic": "air",
+      "mode": "T",
+      "block_bottom_z_cm": 6470.0,
+      "actor_name": "level_sem_block_002_159",
+      "world_cm": [
+        6285.0,
+        1125.0,
+        6470.0
+      ]
+    },
+    "level_sem_block_003_155": {
+      "gx": 3,
+      "gy": 155,
+      "semantic": "floor",
+      "mode": "F",
+      "block_bottom_z_cm": 6470.0,
+      "actor_name": "level_sem_block_003_155",
+      "world_cm": [
+        6255.0,
+        1245.0,
+        6470.0
+      ]
+    },
+    "level_sem_block_003_156": {
+      "gx": 3,
+      "gy": 156,
+      "semantic": "floor",
+      "mode": "F",
+      "block_bottom_z_cm": 6470.0,
+      "actor_name": "level_sem_block_003_156",
+      "world_cm": [
+        6255.0,
+        1215.0,
+        6470.0
+      ]
+    },
+    "level_sem_block_003_157": {
+      "gx": 3,
+      "gy": 157,
+      "semantic": "floor",
+      "mode": "F",
+      "block_bottom_z_cm": 6470.0,
+      "actor_name": "level_sem_block_003_157",
+      "world_cm": [
+        6255.0,
+        1185.0,
+        6470.0
+      ]
+    },
+    "level_sem_block_003_158": {
+      "gx": 3,
+      "gy": 158,
+      "semantic": "floor",
+      "mode": "F",
+      "block_bottom_z_cm": 6470.0,
+      "actor_name": "level_sem_block_003_158",
+      "world_cm": [
+        6255.0,
+        1155.0,
+        6470.0
+      ]
+    },
+    "level_sem_block_003_159": {
+      "gx": 3,
+      "gy": 159,
+      "semantic": "floor",
+      "mode": "F",
+      "block_bottom_z_cm": 6470.0,
+      "actor_name": "level_sem_block_003_159",
+      "world_cm": [
+        6255.0,
+        1125.0,
+        6470.0
+      ]
+    },
+    "level_sem_block_004_155": {
+      "gx": 4,
+      "gy": 155,
+      "semantic": "floor",
+      "mode": "F",
+      "block_bottom_z_cm": 6470.0,
+      "actor_name": "level_sem_block_004_155",
+      "world_cm": [
+        6225.0,
+        1245.0,
+        6470.0
+      ]
+    },
+    "level_sem_block_004_156": {
+      "gx": 4,
+      "gy": 156,
+      "semantic": "floor",
+      "mode": "F",
+      "block_bottom_z_cm": 6470.0,
+      "actor_name": "level_sem_block_004_156",
+      "world_cm": [
+        6225.0,
+        1215.0,
+        6470.0
+      ]
+    },
+    "level_sem_block_004_157": {
+      "gx": 4,
+      "gy": 157,
+      "semantic": "floor",
+      "mode": "F",
+      "block_bottom_z_cm": 6470.0,
+      "actor_name": "level_sem_block_004_157",
+      "world_cm": [
+        6225.0,
+        1185.0,
+        6470.0
+      ]
+    },
+    "level_sem_block_004_158": {
+      "gx": 4,
+      "gy": 158,
+      "semantic": "floor",
+      "mode": "F",
+      "block_bottom_z_cm": 6470.0,
+      "actor_name": "level_sem_block_004_158",
+      "world_cm": [
+        6225.0,
+        1155.0,
+        6470.0
+      ]
+    },
+    "level_sem_block_004_159": {
+      "gx": 4,
+      "gy": 159,
+      "semantic": "floor",
+      "mode": "F",
+      "block_bottom_z_cm": 6470.0,
+      "actor_name": "level_sem_block_004_159",
+      "world_cm": [
+        6225.0,
+        1125.0,
+        6470.0
+      ]
+    }
+  }
+}
