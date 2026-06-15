@@ -45,22 +45,25 @@ def main() -> int:
     gx, gy = world_xy_to_cell_index(region, *CENTER_XY)
     subgrid = subgrid_around_cell(gx, gy, half=2, region=region)
     gx0, gy0, gx1, gy1 = subgrid
-    from level_region import HEIGHT_STEP_CM  # noqa: WPS433
     from level_semantic_scan import (  # noqa: WPS433
         cube_center_z_cm,
         cube_inscribed_probe_radius_cm,
+        label_floor_probe_bottom_cm,
+        label_wall_probe_bottom_cm,
     )
 
     radius = cube_inscribed_probe_radius_cm(BLOCK_H)
     print(f"subgrid={subgrid} center_r={radius}cm block_h={BLOCK_H}cm")
-    print("wall: center@z0; floor/air: center@(z0-30cm)")
+    print("wall: center@(z_place+2m); floor/air: center@(z_place+2m-2.30m)")
     print()
     for z0 in HEIGHTS_CM:
-        z_center = cube_center_z_cm(z0, BLOCK_H)
-        z_low_center = cube_center_z_cm(z0 - HEIGHT_STEP_CM, BLOCK_H)
+        z_wall = label_wall_probe_bottom_cm(z0)
+        z_floor = label_floor_probe_bottom_cm(z0)
+        wall_ctr = cube_center_z_cm(z_wall, BLOCK_H)
+        floor_ctr = cube_center_z_cm(z_floor, BLOCK_H)
         print(
-            f"=== block_bottom_z={z0:.1f}cm  "
-            f"high_ctr={z_center:.1f} low_ctr={z_low_center:.1f} r={radius} ==="
+            f"=== z_place={z0:.1f}cm  "
+            f"wall_ctr={wall_ctr:.1f} floor_ctr={floor_ctr:.1f} r={radius} ==="
         )
         for gx_i in range(gx0, gx1 + 1):
             row = []
@@ -68,12 +71,12 @@ def main() -> int:
                 x, y = region.cell_center_xy_cm(gx_i, gy_i)
                 sem, _ = classify_cell_collision(
                     ucv, x, y,
-                    z_initial_bottom_cm=z0,
+                    z_place_bottom_cm=z0,
                     block_height_cm=BLOCK_H,
                     probe_actor=actor,
                 )
-                hi = _probe_detail(ucv, actor, x, y, z_center, radius)
-                lo = _probe_detail(ucv, actor, x, y, z_low_center, radius)
+                hi = _probe_detail(ucv, actor, x, y, wall_ctr, radius)
+                lo = _probe_detail(ucv, actor, x, y, floor_ctr, radius)
                 row.append(
                     f"({gx_i},{gy_i}) {sem} "
                     f"[hi={hi['hit']} lo={lo['hit']}]"
@@ -85,7 +88,7 @@ def main() -> int:
                 x, y = region.cell_center_xy_cm(gx_i, gy_i)
                 sem, _ = classify_cell_collision(
                     ucv, x, y,
-                    z_initial_bottom_cm=z0,
+                    z_place_bottom_cm=z0,
                     block_height_cm=BLOCK_H,
                     probe_actor=actor,
                 )

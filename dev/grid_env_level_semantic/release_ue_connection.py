@@ -15,7 +15,6 @@ Before CLI / a fresh notebook run:
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
@@ -25,33 +24,19 @@ if str(GEH_DIR) not in sys.path:
     sys.path.insert(0, str(GEH_DIR))
 
 import grid_env_hri_simulation as geh  # noqa: E402
-
-
-def _wsl_clients_on_9000() -> list[str]:
-    try:
-        out = subprocess.check_output(
-            ["ss", "-tnp", "state", "established", "(", "dport", "=", ":9000", ")"],
-            text=True,
-            stderr=subprocess.DEVNULL,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return []
-    lines = []
-    for line in out.strip().splitlines()[1:]:
-        if "python" in line.lower():
-            lines.append(line.strip())
-    return lines
+from ue_client_guard import (  # noqa: E402
+    terminate_stale_wsl_python_clients_on_port,
+    release_ue_client_lock,
+)
 
 
 def main() -> int:
-    clients = _wsl_clients_on_9000()
-    if clients:
-        print("[release] WSL Python still connected to :9000:")
-        for line in clients:
-            print(f"  {line}")
-        print("[release] → Restart Jupyter Kernel or close the notebook, then re-run.")
+    release_ue_client_lock()
+    killed = terminate_stale_wsl_python_clients_on_port()
+    if killed:
+        print(f"[release] terminated {killed} WSL Python client(s) on :9000")
     else:
-        print("[release] No WSL Python ESTABLISHED on :9000")
+        print("[release] No other WSL Python clients on :9000")
 
     geh.release_connection()
     print("[release] module-level UnrealCV session cleared")

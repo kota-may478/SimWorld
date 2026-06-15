@@ -14,6 +14,8 @@ from level_semantic_scan import (
     classify_semantic_from_center_tiers,
     cube_center_z_cm,
     cube_inscribed_probe_radius_cm,
+    label_floor_probe_bottom_cm,
+    label_wall_probe_bottom_cm,
     depth_band_hits,
 )
 
@@ -53,6 +55,8 @@ class TestCubeCollisionLabelRule(unittest.TestCase):
         self.assertAlmostEqual(cube_inscribed_probe_radius_cm(30.0), 15.0)
         self.assertAlmostEqual(cube_center_z_cm(6500.0, 30.0), 6515.0)
         self.assertAlmostEqual(cube_center_z_cm(6470.0, 30.0), 6485.0)
+        self.assertAlmostEqual(label_wall_probe_bottom_cm(6470.0), 6670.0)
+        self.assertAlmostEqual(label_floor_probe_bottom_cm(6470.0), 6440.0)
 
     def test_classify_semantic_from_center_tiers(self) -> None:
         self.assertEqual(

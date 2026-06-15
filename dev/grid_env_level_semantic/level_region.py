@@ -16,7 +16,12 @@ CORNER_A_XY_CM = (-208.95, -1620.88)
 CORNER_B_XY_CM = (6029.27, 5552.99)
 # Default block bottom Z [cm] before per-site depth calibration (legacy 65 m).
 BLOCK_BOTTOM_Z_CM = 6500.0
-# Height-scan step when all cells are air [cm].
+# Block placement bottom Z [cm] (locked after calibration).
+LOCKED_BLOCK_BOTTOM_Z_CM = 6470.0
+# Label probes: wall tier = placement + 2 m; floor/air tier = wall tier − 2.30 m.
+LABEL_PROBE_ABOVE_PLACE_CM = 200.0
+LABEL_PROBE_LOWER_STEP_CM = 230.0
+# Height-scan step when all cells are air [cm] (legacy auto-height only).
 HEIGHT_STEP_CM = 30.0
 OUTWARD_MARGIN_M = 3.0
 OUTWARD_MARGIN_CM = OUTWARD_MARGIN_M * 100.0
@@ -70,8 +75,9 @@ class LevelRegionConfig:
 
     @property
     def grid_origin_xy_cm(self) -> Tuple[float, float]:
-        ox = math.floor(self.expanded_x_min_cm / self.cell_size_cm) * self.cell_size_cm
-        oy = math.floor(self.expanded_y_min_cm / self.cell_size_cm) * self.cell_size_cm
+        """Snap grid origin to corner A (core min XY); cell (1,1) anchors at corner A."""
+        ox = math.floor(self.core_x_min_cm / self.cell_size_cm) * self.cell_size_cm
+        oy = math.floor(self.core_y_min_cm / self.cell_size_cm) * self.cell_size_cm
         return ox, oy
 
     @property
@@ -103,17 +109,10 @@ class LevelRegionConfig:
             for gy in range(1, self.grid_ny + 1):
                 yield gx, gy
 
-    def _world_gx_gy(self, gx: int, gy: int) -> Tuple[int, int]:
-        """Map logical (gx, gy) to origin-based grid indices (both axes flipped)."""
-        gx_w = self.grid_nx - gx + 1
-        gy_w = self.grid_ny - gy + 1
-        return gx_w, gy_w
-
     def cell_center_xy_cm(self, gx: int, gy: int) -> Tuple[float, float]:
         ox, oy = self.grid_origin_xy_cm
-        gx_w, gy_w = self._world_gx_gy(gx, gy)
-        x = ox + (gx_w - 1) * self.cell_size_cm + CELL_HALF_CM
-        y = oy + (gy_w - 1) * self.cell_size_cm + CELL_HALF_CM
+        x = ox + (gx - 1) * self.cell_size_cm + CELL_HALF_CM
+        y = oy + (gy - 1) * self.cell_size_cm + CELL_HALF_CM
         return x, y
 
 
@@ -150,12 +149,10 @@ def world_xy_to_cell_index(
 ) -> BlockIndex:
     """Nearest gx/gy (1-based) for a world XY [cm]."""
     ox, oy = region.grid_origin_xy_cm
-    gx_w = int(round((x_cm - ox - CELL_HALF_CM) / region.cell_size_cm)) + 1
-    gy_w = int(round((y_cm - oy - CELL_HALF_CM) / region.cell_size_cm)) + 1
-    gx_w = max(1, min(region.grid_nx, gx_w))
-    gy_w = max(1, min(region.grid_ny, gy_w))
-    gx = region.grid_nx - gx_w + 1
-    gy = region.grid_ny - gy_w + 1
+    gx = int(round((x_cm - ox - CELL_HALF_CM) / region.cell_size_cm)) + 1
+    gy = int(round((y_cm - oy - CELL_HALF_CM) / region.cell_size_cm)) + 1
+    gx = max(1, min(region.grid_nx, gx))
+    gy = max(1, min(region.grid_ny, gy))
     return gx, gy
 
 

@@ -56,16 +56,13 @@ class TestLevelRegion(unittest.TestCase):
         region = default_level_region()
         x1, y1 = region.cell_center_xy_cm(1, 1)
         x2, y2 = region.cell_center_xy_cm(2, 1)
-        self.assertAlmostEqual(x2 - x1, -30.0)
+        self.assertAlmostEqual(x2 - x1, CELL_SIZE_CM)
         ox, oy = region.grid_origin_xy_cm
-        self.assertAlmostEqual(
-            x1,
-            ox + (region.grid_nx - 1) * CELL_SIZE_CM + CELL_SIZE_CM / 2.0,
-        )
-        self.assertAlmostEqual(
-            y1,
-            oy + (region.grid_ny - 1) * CELL_SIZE_CM + CELL_SIZE_CM / 2.0,
-        )
+        self.assertAlmostEqual(x1, ox + CELL_SIZE_CM / 2.0)
+        self.assertAlmostEqual(y1, oy + CELL_SIZE_CM / 2.0)
+        ax, ay = region.cell_center_xy_cm(*world_xy_to_cell_index(region, *CORNER_A_XY_CM))
+        self.assertLess(abs(ax - CORNER_A_XY_CM[0]), CELL_SIZE_CM)
+        self.assertLess(abs(ay - CORNER_A_XY_CM[1]), CELL_SIZE_CM)
 
     def test_world_xy_cell_roundtrip(self) -> None:
         region = default_level_region()

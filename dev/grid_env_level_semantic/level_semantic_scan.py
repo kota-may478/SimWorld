@@ -4,10 +4,12 @@
 **Approach C (preferred):** ``BP_SemanticCollisionProbe.ProbePointHit(X,Y,Z,RadiusCm)``
 sphere sweep (radius = half cube edge = 15 cm for 0.3 m cells):
 
-1. At initial block bottom: cube center, r = 0.15 m → wall if hit.
-2. Else same (gx, gy) with bottom −0.30 m: cube center, r = 0.15 m → floor if hit, else air.
+Block placement bottom = ``z_place``. Label probes (cube center, r = 0.15 m):
 
-Height scan: lower −30 cm while all air; on first wall → initial bottom = that height + 30 cm.
+1. Bottom at ``z_place + 2 m`` → wall if hit.
+2. Else bottom at ``z_place + 2 m − 2.30 m`` → floor if hit, else air.
+
+Legacy height scan (−30 cm steps) only when placement Z is not fixed.
 
 **Depth fallback:** nadir camera when the collision probe BP is unavailable.
 """
@@ -33,8 +35,16 @@ if str(_SEM_DIR) not in sys.path:
 
 from block_semantic_scan import BlockSemantic, classify_semantic  # noqa: E402
 
+ProgressCallback = Callable[
+    [int, int, BlockIndex, BlockSemantic, Dict[BlockIndex, BlockSemantic]],
+    None,
+]
+
 import level_collision_probe as lcp  # noqa: E402
-from level_region import HEIGHT_STEP_CM  # noqa: E402
+from level_region import (  # noqa: E402
+    LABEL_PROBE_ABOVE_PLACE_CM,
+    LABEL_PROBE_LOWER_STEP_CM,
+)
 
 DEPTH_CAMERA_ID = 0
 DEPTH_CAPTURE_SETTLE_S = 0.18
@@ -319,6 +329,16 @@ def cube_center_z_cm(z_bottom_cm: float, block_height_cm: float) -> float:
     return z_bottom_cm + block_height_cm / 2.0
 
 
+def label_wall_probe_bottom_cm(z_place_bottom_cm: float) -> float:
+    """Label tier 1 block bottom: placement + 2 m."""
+    return z_place_bottom_cm + LABEL_PROBE_ABOVE_PLACE_CM
+
+
+def label_floor_probe_bottom_cm(z_place_bottom_cm: float) -> float:
+    """Label tier 2 block bottom: wall tier − 2.30 m."""
+    return label_wall_probe_bottom_cm(z_place_bottom_cm) - LABEL_PROBE_LOWER_STEP_CM
+
+
 def classify_semantic_from_center_tiers(
     *,
     hit_at_initial_center: bool,
@@ -336,29 +356,36 @@ def classify_cell_collision(
     x_cm: float,
     y_cm: float,
     *,
-    z_initial_bottom_cm: float,
     block_height_cm: float,
     probe_actor: str = PROBE_ACTOR,
+    z_place_bottom_cm: Optional[float] = None,
+    z_initial_bottom_cm: Optional[float] = None,
 ) -> Tuple[BlockSemantic, bool]:
+    """Label from placement bottom ``z_place_bottom_cm`` (alias: ``z_initial_bottom_cm``)."""
+    z_bottom = z_place_bottom_cm if z_place_bottom_cm is not None else z_initial_bottom_cm
+    if z_bottom is None:
+        raise ValueError("z_place_bottom_cm or z_initial_bottom_cm required")
+    z_place_bottom_cm = z_bottom
     radius_cm = cube_inscribed_probe_radius_cm(block_height_cm)
-    center_z = cube_center_z_cm(z_initial_bottom_cm, block_height_cm)
+    wall_bottom = label_wall_probe_bottom_cm(z_place_bottom_cm)
+    wall_center_z = cube_center_z_cm(wall_bottom, block_height_cm)
     hit_high = lcp.probe_point_hit(
         ucv,
         x_cm,
         y_cm,
-        center_z,
+        wall_center_z,
         actor=probe_actor,
         radius_cm=radius_cm,
     )
     if hit_high:
         return "wall", True
-    lower_bottom = z_initial_bottom_cm - HEIGHT_STEP_CM
-    lower_center_z = cube_center_z_cm(lower_bottom, block_height_cm)
+    floor_bottom = label_floor_probe_bottom_cm(z_place_bottom_cm)
+    floor_center_z = cube_center_z_cm(floor_bottom, block_height_cm)
     hit_low = lcp.probe_point_hit(
         ucv,
         x_cm,
         y_cm,
-        lower_center_z,
+        floor_center_z,
         actor=probe_actor,
         radius_cm=radius_cm,
     )
@@ -381,6 +408,8 @@ def scan_region_collision(
     manage_probe: bool = True,
     probe_actor: str = PROBE_ACTOR,
     use_collision_probe: Optional[bool] = None,
+    on_progress: Optional[ProgressCallback] = None,
+    initial_results: Optional[Dict[BlockIndex, BlockSemantic]] = None,
 ) -> Tuple[Dict[BlockIndex, BlockSemantic], int]:
     """Scan cells; return (semantics, geometry_hit_count).
 
@@ -412,6 +441,8 @@ def scan_region_collision(
                 block_height_cm=block_height_cm,
                 progress_every=progress_every,
                 probe_actor=probe_actor,
+                on_progress=on_progress,
+                initial_results=initial_results,
             )
         return _scan_region_depth(
             ucv,
@@ -436,8 +467,10 @@ def _scan_region_collision_probe(
     block_height_cm: float,
     progress_every: int,
     probe_actor: str,
+    on_progress: Optional[ProgressCallback] = None,
+    initial_results: Optional[Dict[BlockIndex, BlockSemantic]] = None,
 ) -> Tuple[Dict[BlockIndex, BlockSemantic], int]:
-    results: Dict[BlockIndex, BlockSemantic] = {}
+    results: Dict[BlockIndex, BlockSemantic] = dict(initial_results or {})
     geometry_hits = 0
     total = len(cells)
     t0 = time.monotonic()
@@ -454,12 +487,19 @@ def _scan_region_collision_probe(
         results[(gx, gy)] = sem
         if had_hit:
             geometry_hits += 1
+        if on_progress is not None and (
+            progress_every > 0 and (i % progress_every == 0 or i == total)
+        ):
+            on_progress(i, total, (gx, gy), sem, results)
         if progress_every > 0 and (i % progress_every == 0 or i == total):
             elapsed = time.monotonic() - t0
+            z_wall = label_wall_probe_bottom_cm(z_initial_bottom_cm)
+            z_floor = label_floor_probe_bottom_cm(z_initial_bottom_cm)
             print(
                 f"[LevelSemanticScan/collision] {i}/{total} "
                 f"last=({gx},{gy})->{sem} "
-                f"z0={z_initial_bottom_cm:.1f} "
+                f"z_place={z_initial_bottom_cm:.1f} "
+                f"wall_bot={z_wall:.1f} floor_bot={z_floor:.1f} "
                 f"geom_hits={geometry_hits} "
                 f"elapsed={elapsed:.1f}s"
             )
