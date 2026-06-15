@@ -374,6 +374,56 @@ def release_connection(
     print("[UE] session released")
 
 
+def reconnect_if_needed(
+    *,
+    ucv: Optional[UnrealCV] = None,
+    communicator: Optional[Communicator] = None,
+    force_new: bool = False,
+) -> Tuple[UnrealCV, Communicator]:
+    """Reuse a live client; reconnect only when ping fails or ``force_new``."""
+    if force_new:
+        release_connection(ucv, communicator=communicator)
+        return ensure_connection(force_new=True)
+
+    if ucv is not None and _ping_ucv(ucv):
+        comm = communicator if communicator is not None else Communicator(ucv)
+        host = _UE_SESSION_HOST or getattr(ucv, "ip", None) or "127.0.0.1"
+        return _store_ue_session(ucv, comm, host)
+
+    if not force_new and _UE_SESSION_UCV is not None and _ping_ucv(_UE_SESSION_UCV):
+        if _UE_SESSION_COMM is None:
+            _UE_SESSION_COMM = Communicator(_UE_SESSION_UCV)
+        return _UE_SESSION_UCV, _UE_SESSION_COMM
+
+    if ucv is not None or _UE_SESSION_UCV is not None:
+        print("[UE] UnrealCV session not responding — reconnecting")
+    release_connection(ucv, communicator=communicator)
+    return ensure_connection(force_new=True)
+
+
+def settle_after_actor_destroy(
+    ucv: UnrealCV,
+    *,
+    settle_s: float = 2.0,
+    run_clean_garbage: bool = False,
+) -> None:
+    """Let UE finish destroy/GC before the next spawn.
+
+    Avoid ``clean_garbage`` here — forcing GC right after pawn destroy has crashed
+  PIE on /Game/Maps/Level (SpotDog Character + camera + controller).
+    """
+    for _ in range(3):
+        try:
+            ucv.tick()
+        except Exception:
+            break
+        time.sleep(0.1)
+    if run_clean_garbage:
+        _prepare_ue_spawn(ucv)
+    if settle_s > 0:
+        time.sleep(settle_s)
+
+
 def adopt_ue_session(
     ucv: UnrealCV,
     communicator: Optional[Communicator] = None,
@@ -836,16 +886,58 @@ def _disable_actor_for_destroy(ucv: UnrealCV, name: str) -> None:
     _ue_request(ucv, f"vset /object/{name}/collision 0", timeout_s=15.0)
 
 
+def prepare_pawn_for_destroy(
+    ucv: UnrealCV,
+    name: str,
+    *,
+    stash_xyz: Optional[Tuple[float, float, float]] = None,
+) -> None:
+    """Shut down SpotDog / Character pawn before destroy (reduces PIE crashes)."""
+    _disable_actor_for_destroy(ucv, name)
+    try:
+        ucv.set_movable(name, True)
+    except Exception:
+        pass
+    if stash_xyz is not None:
+        try:
+            ucv.set_location(list(stash_xyz), name)
+        except Exception:
+            pass
+    try:
+        ucv.tick()
+    except Exception:
+        pass
+    time.sleep(0.35)
+
+
 def destroy_actor_safely(
     ucv: UnrealCV,
     name: str,
     *,
     timeout_s: float = 12.0,
     max_attempts: int = 4,
+    profile: str = "default",
 ) -> bool:
-    """Destroy ``name`` with retries and GC; return True when absent or gone."""
+    """Destroy ``name`` with retries and GC; return True when absent or gone.
+
+    ``profile='pawn'``: single destroy attempt, no clean_garbage retries — for
+    SpotDog / Character actors that have crashed UE when hammered with GC.
+    """
     if not actor_exists(ucv, name):
         return True
+
+    if profile == "pawn":
+        print(f"[UE] destroy pawn {name!r} (single attempt, no clean_garbage) ...")
+        prepare_pawn_for_destroy(ucv, name)
+        _ue_request(ucv, f"vset /object/{name}/destroy", timeout_s=30.0)
+        gone = wait_until_actor_gone(ucv, name, timeout_s=max(3.0, timeout_s))
+        if not gone:
+            print(
+                f"[UE] warn: pawn {name!r} still present after destroy "
+                "(reuse via teleport instead of respawn)"
+            )
+        return gone
+
     per_attempt_timeout = max(2.0, timeout_s / max_attempts)
     for attempt in range(1, max_attempts + 1):
         if not actor_exists(ucv, name):
@@ -863,6 +955,11 @@ def destroy_actor_safely(
             "(reuse/teleport instead of respawn)"
         )
     return gone
+
+
+def destroy_pawn_safely(ucv: UnrealCV, name: str, *, timeout_s: float = 12.0) -> bool:
+    """Destroy a Character / SpotDog pawn with the crash-safe profile."""
+    return destroy_actor_safely(ucv, name, timeout_s=timeout_s, profile="pawn")
 
 
 def destroy_if_exists(ucv: UnrealCV, name: str) -> None:
@@ -890,6 +987,9 @@ def spawn_bp(
     *,
     timeout_s: Optional[float] = None,
 ) -> bool:
+    if not _ping_ucv(ucv):
+        print(f"[UE] spawn_bp {name!r}: UnrealCV client not connected (call reconnect_if_needed)")
+        return False
     timeout = UE_SPAWN_TIMEOUT_S if timeout_s is None else timeout_s
     class_path = _spawn_bp_class_path(bp_path)
     spawn_cmds: list[tuple[str, str]] = [
@@ -902,10 +1002,16 @@ def spawn_bp(
         print(f"[UE] {label} {name!r} (timeout={timeout:g}s) ...")
         res = _ue_request(ucv, cmd, timeout_s=timeout)
         if res is None:
-            print(
-                f"[UE] {label}: no response within {timeout:g}s — "
-                "SimWorld を前面に出す / pakchunk9002 / BP パスを確認"
-            )
+            if not _ping_ucv(ucv):
+                print(
+                    f"[UE] {label}: connection lost during spawn "
+                    "(UE may still be processing destroy — wait and reconnect_if_needed)"
+                )
+            else:
+                print(
+                    f"[UE] {label}: no response within {timeout:g}s — "
+                    "SimWorld を前面に出す / pakchunk9002 / BP パスを確認"
+                )
             return False
         res_text = str(res).strip()
         if res_text.lower().startswith("error"):
@@ -1322,7 +1428,7 @@ def spawn_robot(ucv: UnrealCV) -> bool:
     loc = agent_spawn_xyz_cm(
         ROBOT_MAP_XY_M, agent_kind="robot", floor_top_z_cm=floor_z
     )
-    destroy_if_exists(ucv, ROBOT_ACTOR_NAME)
+    destroy_pawn_safely(ucv, ROBOT_ACTOR_NAME)
     if not spawn_bp(ucv, ROBOT_BP, ROBOT_ACTOR_NAME):
         print("[Robot] spawn failed")
         return False
