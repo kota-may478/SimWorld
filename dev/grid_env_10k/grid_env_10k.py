@@ -133,12 +133,17 @@ def adopt_ue_session(
 
 
 def reconnect_if_needed(
-    ucv: Optional[UnrealCV],
+    ucv: Optional[UnrealCV] = None,
     *,
     communicator: Optional[Communicator] = None,
+    force_new: bool = False,
 ) -> Tuple[UnrealCV, Communicator]:
-    """Reuse live UnrealCV; otherwise reconnect (notebook / long spawn safe)."""
-    return geh.ensure_connection(ucv=ucv, communicator=communicator)
+    """Reuse live UnrealCV; reconnect only when ping fails."""
+    return geh.reconnect_if_needed(
+        ucv=ucv,
+        communicator=communicator,
+        force_new=force_new,
+    )
 
 
 def prepare_ue_session(ucv: UnrealCV) -> None:

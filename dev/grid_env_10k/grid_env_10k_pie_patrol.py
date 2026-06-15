@@ -400,7 +400,7 @@ def humanoid_bp_setup_hint() -> str:
 
 def cleanup_runtime_agents(ucv: UnrealCV) -> None:
     """Remove SpotDog / probe actors; keep Humanoid for safe reposition on re-run."""
-    geh.destroy_actor_safely(ucv, geh.ROBOT_ACTOR_NAME)
+    geh.destroy_pawn_safely(ucv, geh.ROBOT_ACTOR_NAME)
     geh.destroy_actor_safely(ucv, ROBOT_PROBE_NAME)
     geh._prepare_ue_spawn(ucv)
 
@@ -551,7 +551,7 @@ def spawn_robot_at(ucv: UnrealCV, cell: BlockIndex) -> bool:
     )
     robot_name = geh.ROBOT_ACTOR_NAME
 
-    gone = geh.destroy_actor_safely(ucv, robot_name)
+    gone = geh.destroy_pawn_safely(ucv, robot_name)
     if not gone and geh.actor_exists(ucv, robot_name):
         print(
             f"[Robot] reuse existing {robot_name!r} at goal/start "
