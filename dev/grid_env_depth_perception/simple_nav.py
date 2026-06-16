@@ -20,6 +20,9 @@ ROBOT_ROTATE_SLICE_S = 0.22
 ROTATE_THR_DEG = 6.0
 GOAL_TOLERANCE_CM = 90.0
 MAX_TURN_DEG_PER_STEP = 22.0
+STUCK_MOVE_THRESHOLD_CM = 8.0
+STUCK_CHECK_INTERVAL = 8
+UNSTUCK_TURN_DEG = 75.0
 
 
 @dataclass
@@ -80,6 +83,8 @@ def navigate_to_target(
     result = NavigationRunResult(target_prop_type_id=target_prop_type_id)
     last_sample_t = -1e9
     leg_start = time.time()
+    stuck_checks = 0
+    last_stuck_xy: Optional[WorldXY] = None
 
     for _ in range(max_steps):
         if connection_check is not None and not connection_check():
@@ -124,6 +129,14 @@ def navigate_to_target(
             if move_cm > 2.0:
                 ucv.dog_move(robot_name, [ROBOT_SPEED, ROBOT_MOVE_SLICE_S, 0])
                 time.sleep(ROBOT_MOVE_SLICE_S * 0.4)
+
+        stuck_checks += 1
+        if stuck_checks >= STUCK_CHECK_INTERVAL:
+            stuck_checks = 0
+            if last_stuck_xy is not None and dist2d(pos_xy, last_stuck_xy) < STUCK_MOVE_THRESHOLD_CM:
+                ucv.dog_rotate(robot_name, [ROBOT_ROTATE_SLICE_S, UNSTUCK_TURN_DEG, 1])
+                time.sleep(ROBOT_ROTATE_SLICE_S * 0.4)
+            last_stuck_xy = pos_xy
 
     if connection_check is None or connection_check():
         pos_xy, yaw_deg = get_pose_fn()
