@@ -455,5 +455,9 @@ output*/
 # **/.ipynb_checkpoints/
 # *.ipynb
 
+# SimWorld dev: ephemeral cache (registries / mask npz in cache/ stay tracked)
+dev/**/cache/runs/
+dev/**/cache/debug_*.png
+
 # Claude Code
 .claude/
