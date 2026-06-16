@@ -37,16 +37,8 @@
         206,
         66
       ],
-      "mask_color_observed_bgr": [
-        72,
-        72,
-        72
-      ],
-      "lit_color_observed_bgr": [
-        72,
-        48,
-        32
-      ]
+      "mask_color_observed_bgr": null,
+      "lit_color_observed_bgr": null
     },
     {
       "slot_id": "depth_test_prop_001",
@@ -75,16 +67,8 @@
         153,
         195
       ],
-      "mask_color_observed_bgr": [
-        72,
-        72,
-        72
-      ],
-      "lit_color_observed_bgr": [
-        80,
-        56,
-        40
-      ]
+      "mask_color_observed_bgr": null,
+      "lit_color_observed_bgr": null
     },
     {
       "slot_id": "depth_test_prop_003",
@@ -113,16 +97,8 @@
         59,
         137
       ],
-      "mask_color_observed_bgr": [
-        72,
-        72,
-        72
-      ],
-      "lit_color_observed_bgr": [
-        96,
-        64,
-        48
-      ]
+      "mask_color_observed_bgr": null,
+      "lit_color_observed_bgr": null
     },
     {
       "slot_id": "depth_test_prop_005",
@@ -151,16 +127,8 @@
         165,
         79
       ],
-      "mask_color_observed_bgr": [
-        72,
-        72,
-        72
-      ],
-      "lit_color_observed_bgr": [
-        96,
-        64,
-        40
-      ]
+      "mask_color_observed_bgr": null,
+      "lit_color_observed_bgr": null
     },
     {
       "slot_id": "depth_test_prop_004",
@@ -189,16 +157,8 @@
         112,
         208
       ],
-      "mask_color_observed_bgr": [
-        72,
-        72,
-        72
-      ],
-      "lit_color_observed_bgr": [
-        168,
-        160,
-        144
-      ]
+      "mask_color_observed_bgr": null,
+      "lit_color_observed_bgr": null
     }
   ]
 }
