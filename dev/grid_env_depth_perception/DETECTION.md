@@ -6,52 +6,47 @@ See also `README.md` for run instructions.
 
 | Stream | UnrealCV mode | Purpose |
 |--------|---------------|---------|
-| **object_mask** | `vget /camera/{id}/object_mask png` | **Identity** — which registered prop is visible |
-| **depth** | `vget /camera/{id}/depth npy` | **Distance** — range to masked region |
-| lit (RGB) | not used | — |
+| **object_mask** | `FusionCamSensor` (head, cam 2) | **Identity** — segmentation buffer with stencil colors |
+| **depth** | `FusionCamSensor` (same camera) | **Distance** — robot-mounted depth |
+| **lit** | `FusionCamSensor` (optional fallback) | Deprecated RGB fallback only (`--allow-lit-fallback`) |
 
-This is **not** lit-texture color matching. We do **not** classify objects by their mesh paint color in the RGB camera.
+`resolve_mask_camera_id()` prefers **FusionCam** when segmentation is active; ThirdPerson is fallback only.
 
-Instead we use UnrealCV's **segmentation buffer** (`object_mask`). Each actor can be assigned a unique flat color via `vset /object/{name}/color R G B`. In the mask image, pixels belonging to that actor appear as that color (decoded as **BGR** after PNG load).
+Each actor gets a unique flat color via `vset /object/{name}/color R G B`. Mask pixels use that color (decoded as **BGR** after PNG load).
 
-## Color registry (pre-acquired data)
+## Color registry (Approach C)
 
-> **Note:** One-pose mask calibration (`mask_calibration.py`) is deprecated for
-> identity. See `VISION_APPROACHES.md`. Use `vget /object/{name}/color` per
-> [UnrealCV GT tutorial](https://docs.unrealcv.org/en/latest/tutorials/generate_images_tutorial.html).
+Per [UnrealCV GT tutorial](https://docs.unrealcv.org/en/latest/tutorials/generate_images_tutorial.html):
 
-`cache/prop_placement_registry.json` stores per prop:
+1. At spawn: `vset /object/{slot_id}/color` with intended RGB.
+2. Query **`vget /object/{slot_id}/color`** → store as `mask_color_canonical_rgb`.
+3. Match mask pixels with per-channel tolerance (default ±6).
+
+`cache/prop_placement_registry.json` fields:
 
 | Field | Meaning |
 |-------|---------|
-| `mask_color_set_rgb` | Color written at spawn (`set_color`) — intended segmentation ID |
-| `mask_color_observed_bgr` | Dominant BGR measured in `object_mask` during calibration |
-| `mask_color_rgb` | After calibration: observed color as RGB (human-readable); used as fallback |
+| `mask_color_canonical_rgb` | **Primary ID** from `vget /object/{name}/color` |
+| `mask_color_set_rgb` | Color written at spawn (`set_color`) |
+| `mask_color_rgb` | Mirror of canonical (human-readable) |
+| `mask_color_observed_bgr` | Deprecated — cleared on color sync |
+| `lit_color_observed_bgr` | Deprecated — lit fallback only |
 
-**Detection uses `mask_color_observed_bgr` when present**, else reverses `mask_color_rgb` to BGR.
-
-### Calibration (once after spawn)
-
-1. Soft-teleport SpotDog ~4.5 m from each prop, facing it.
-2. Sync camera pose to robot head.
-3. Capture `object_mask`.
-4. Take dominant non-background BGR in the image center ROI.
-5. Save to registry as `mask_color_observed_bgr`.
-
-This compensates for UE/UnrealCV not always rendering `set_color` exactly as requested.
+**Detection uses `mask_color_canonical_rgb` (as BGR)**. One-pose standoff calibration (`mask_calibration.py`, `prop_signature.py`) is deprecated and not run by default.
 
 ## Per-frame detection pipeline
 
 For each prop in the registry:
 
-1. **Segmentation match** — threshold mask pixels where `|pixel_BGR - detection_bgr| ≤ tolerance` (default ±24).
+1. **Segmentation match** — threshold mask pixels where `|pixel_BGR - detection_bgr| ≤ tolerance`.
 2. **Pixel count** — skip if `< 48` pixels (not reliably in FOV).
-3. **BBox** — axis-aligned box of matched pixels.
-4. **Bearing** — horizontal angle from bbox center: `(cx - W/2) / (W/2) * (FOV/2)` (relative to camera forward).
-5. **Depth** — 35th percentile of valid depth in a small ROI around bbox center (60% height); convert npy to metres (cm if value ≥ 20).
-6. **Horizontal distance** — approximate ground distance from slant range + bearing + fixed camera pitch (−5°).
+3. **BBox + centroid** — axis-aligned box; bearing from mask **centroid** x.
+4. **Bearing** — `(cx - W/2) / (W/2) * (FOV/2)` relative to camera forward.
+5. **Depth** — 35th percentile of valid depth in ROI around bbox center (60% height).
+6. **Horizontal distance** — slant range → ground distance using camera pitch; add forward camera offset to robot frame.
+7. **Conflict resolution** — if two props share similar bearing (< 8°), keep higher `mask_pixels`.
 
-Output per detected prop: `prop_type_id`, `distance_m`, `bearing_deg`, `confidence` (from mask pixel count).
+Output per detected prop: `prop_type_id`, `distance_m`, `bearing_deg`, `confidence`.
 
 ## Ground truth (for RMSE)
 
@@ -74,20 +69,25 @@ Observed sequence:
 
 | Factor | Mechanism |
 |--------|-----------|
-| **Destroy → immediate spawn** | Level PIE is fragile after batch `vset .../destroy`; GC / render thread still busy. `spawn_bp` during teardown stresses UE (documented in `level_nav_robot` / `spawn_construction_vol1_props_pie`). |
-| **Aggressive reconnect** | On connection loss, `reconnect_if_needed(force_new=True)` kept sending commands while UE was crashing, masking failure. |
-| **Open-loop navigation** | `turn-then-go` without NavMesh / obstacle avoidance; SpotDog can hit geometry, stressing Character movement on Level. |
-| **High UnrealCV rate** | Perception every 0.25 s × 2 heavy requests (depth npy + mask png) + camera teleport each sample → sustained load ~9 min. |
-| **No leg timeout** | Up to 400 steps × 5 legs; long hammering even when stuck. |
-| **Hard destroy SpotDog** | Not used, but pawn destroy + `clean_garbage` is known to crash Level PIE. |
+| **Destroy → immediate spawn** | Level PIE is fragile after batch `vset .../destroy`; GC / render thread still busy. |
+| **Aggressive reconnect** | On connection loss, reconnect during teardown stresses crashing UE. |
+| **Open-loop navigation** | `turn-then-go` without NavMesh; SpotDog can hit geometry. **Mitigation:** `--nav-mode navmesh` (Phase 4). |
+
+### FusionCam object_mask gray (UE fix pending rebuild)
+
+Output Log smoking gun:
+
+    LogRenderer: Scene Capture has ShowOnlyComponents ... ignored by the PrimitiveRenderMode setting!
+    ...FusionCamSensor.FusionCamSensor_2_AnnotationCamSensor
+
+BP instances can serialize `PRM_RenderScenePrimitives`, which ignores `ShowOnlyComponents`. Fix: set **Annotation Cam Sensor → Use Show Only List** in `BP_SpotRobot`, plus `AnnotationCamSensor.cpp` guard. After fix, FusionCam (`mask_cam=2`) carries segmentation; Python restores editor viewport to **Lit** after each `object_mask` fetch.
+| **High UnrealCV rate** | Perception every 0.45 s × depth + mask per sample. |
+| **Hard destroy SpotDog** | Known to crash Level PIE. |
 
 ### Implemented mitigations (`pie_safety.py`)
 
-- **Fail-fast** on connection loss (`PieSessionLost`) instead of reconnect during spawn/destroy.
-- **Longer destroy settle** (6 s + ticks, no `clean_garbage`).
-- **Batch pauses** every 2 spawns (2.5 s).
+- **Fail-fast** on connection loss (`PieSessionLost`).
 - **Reuse mode** — if all 5 `depth_test_prop_*` exist at registry poses, skip destroy/spawn.
 - **`--force-respawn`** only when intentional re-layout is needed.
-- **Soft teleport** for calibration (controller off → move → on).
-- **Navigation**: slower perception (0.45 s), leg timeout 180 s, max 280 steps, speed 120, connection check aborts test.
+- **Navigation**: perception interval 0.45 s, leg timeout 240 s, connection check aborts test.
 - **`ue_client_guard.exclusive_ue_client_lock()`** — single TCP client during test.
