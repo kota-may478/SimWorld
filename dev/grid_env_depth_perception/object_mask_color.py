@@ -106,6 +106,8 @@ def sync_registry_mask_colors(
                 prop,
                 mask_color_canonical_rgb=canonical,
                 mask_color_rgb=canonical,
+                mask_color_observed_bgr=None,
+                lit_color_observed_bgr=None,
             )
         )
     out = PlacementRegistry(

@@ -41,6 +41,21 @@ def test_detection_bgr_from_canonical():
     assert prop.detection_bgr() == (200, 150, 120)
 
 
+def test_detection_bgr_prefers_canonical_over_observed():
+    prop = PropPlacement(
+        slot_id="depth_test_prop_001",
+        catalog_index=0,
+        prop_type_id="boxes_03a",
+        bp_name="BP_Boxes_03a",
+        bp_path="/Game/x.BP_x",
+        mask_color_rgb=(115, 153, 195),
+        local_xy_cm=(100.0, 200.0),
+        mask_color_canonical_rgb=(120, 150, 200),
+        mask_color_observed_bgr=(99, 88, 77),
+    )
+    assert prop.detection_bgr() == (200, 150, 120)
+
+
 def test_mask_match_per_channel_tolerance():
     mask = np.zeros((4, 4, 3), dtype=np.uint8)
     mask[1:3, 1:3] = (66, 206, 152)  # BGR for RGB 152,206,66

@@ -95,9 +95,7 @@ class PropPlacement:
         )
 
     def detection_bgr(self) -> Tuple[int, int, int]:
-        """BGR tuple used to match object_mask pixels."""
-        if self.mask_color_observed_bgr is not None:
-            return self.mask_color_observed_bgr
+        """BGR tuple used to match object_mask pixels (Approach C: canonical first)."""
         if self.mask_color_canonical_rgb is not None:
             r, g, b = self.mask_color_canonical_rgb
             return (b, g, r)

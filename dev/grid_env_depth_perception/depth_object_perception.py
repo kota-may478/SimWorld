@@ -14,7 +14,7 @@ from prop_placement import PlacementRegistry, PropPlacement
 
 DEFAULT_FOV_DEG = 90.0
 DEFAULT_MIN_MASK_PIXELS = 48
-DEFAULT_COLOR_TOLERANCE = 8
+DEFAULT_COLOR_TOLERANCE = 6
 DEFAULT_LIT_COLOR_TOLERANCE = 20
 LIT_DEPTH_MIN_M = 0.8
 LIT_DEPTH_MAX_M = 25.0
@@ -27,6 +27,7 @@ class PerceptionConfig:
     min_mask_pixels: int = DEFAULT_MIN_MASK_PIXELS
     color_tolerance: int = DEFAULT_COLOR_TOLERANCE
     lit_color_tolerance: int = DEFAULT_LIT_COLOR_TOLERANCE
+    allow_lit_fallback: bool = False
     camera_offset_forward_cm: float = 22.0
     camera_height_cm: float = 45.0
     camera_pitch_deg: float = -5.0
@@ -89,6 +90,13 @@ def _bbox_from_mask(mask: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
     return x0, y0, x1 - x0 + 1, y1 - y0 + 1
 
 
+def _centroid_x_from_mask(mask: np.ndarray) -> Optional[float]:
+    ys, xs = np.where(mask)
+    if xs.size == 0:
+        return None
+    return float(xs.mean())
+
+
 def estimate_depth_m_at_bbox(depth_m: np.ndarray, bbox: Tuple[int, int, int, int]) -> Optional[float]:
     x, y, w, h = bbox
     if w <= 0 or h <= 0:
@@ -113,15 +121,16 @@ def slant_range_to_horizontal_m(
     bearing_deg: float,
     *,
     camera_height_m: float,
+    camera_pitch_deg: float,
 ) -> float:
     """Approximate horizontal ground distance from camera slant range."""
+    pitch_rad = math.radians(camera_pitch_deg)
     bearing_rad = math.radians(bearing_deg)
-    pitch_rad = math.radians(-5.0)
-    # Pinhole ray on ground: horizontal ≈ slant * cos(pitch) projected in XY
-    horiz = slant_m * math.cos(pitch_rad) * math.cos(bearing_rad)
+    along_ray = slant_m * math.cos(pitch_rad)
+    horiz = along_ray * math.cos(bearing_rad)
     if horiz <= 0.05:
-        return slant_m
-    return max(horiz, 0.05)
+        return max(slant_m * 0.5, 0.05)
+    return horiz
 
 
 def _center_roi_mask(h: int, w: int) -> np.ndarray:
@@ -149,13 +158,13 @@ def _estimate_from_region(
     if bbox is None:
         return None
     x, y, bw, bh = bbox
-    center_x = x + 0.5 * bw
+    center_x = _centroid_x_from_mask(region)
+    if center_x is None:
+        center_x = x + 0.5 * bw
     bearing = pixel_bearing_deg(center_x, w, cfg.fov_deg)
     if abs(bearing) > cfg.fov_deg * 0.5 + 0.5:
         return None
     if max_frame_fraction is not None:
-        x, y, bw, bh = bbox
-        center_x = x + 0.5 * bw
         if abs(center_x - 0.5 * w) > 0.38 * w:
             return None
     slant_m = estimate_depth_m_at_bbox(depth_m, bbox)
@@ -165,7 +174,12 @@ def _estimate_from_region(
         slant_m,
         bearing,
         camera_height_m=cfg.camera_height_cm / 100.0,
+        camera_pitch_deg=cfg.camera_pitch_deg,
     )
+    # Camera is forward of robot center; adjust to robot-frame ground distance.
+    bearing_rad = math.radians(bearing)
+    horiz_m += (cfg.camera_offset_forward_cm / 100.0) * math.cos(bearing_rad)
+    horiz_m = max(horiz_m, 0.05)
     confidence = min(1.0, pixels / max(cfg.min_mask_pixels * 4, 1))
     return ObjectEstimate(
         prop_type_id=prop.prop_type_id,
@@ -197,6 +211,8 @@ def detect_objects(
         if est is not None:
             estimates.append(est)
             continue
+        if not cfg.allow_lit_fallback:
+            continue
         lit_color = prop.detection_lit_bgr()
         if lit_bgr is None or lit_color is None:
             continue
@@ -211,7 +227,27 @@ def detect_objects(
         )
         if est_lit is not None:
             estimates.append(est_lit)
-    return estimates
+    return _resolve_detection_conflicts(estimates)
+
+
+def _resolve_detection_conflicts(
+    estimates: List[ObjectEstimate],
+    *,
+    bearing_sep_deg: float = 8.0,
+) -> List[ObjectEstimate]:
+    """When two props share similar bearing, keep the higher mask-pixel match."""
+    if len(estimates) < 2:
+        return estimates
+    kept: List[ObjectEstimate] = []
+    for est in sorted(estimates, key=lambda e: e.mask_pixels, reverse=True):
+        conflict = False
+        for other in kept:
+            if abs(est.bearing_deg - other.bearing_deg) < bearing_sep_deg:
+                conflict = True
+                break
+        if not conflict:
+            kept.append(est)
+    return kept
 
 
 def estimates_by_prop_type(estimates: Sequence[ObjectEstimate]) -> Dict[str, ObjectEstimate]:
