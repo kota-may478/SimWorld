@@ -1,0 +1,204 @@
+{
+  "version": 1,
+  "seed": 42,
+  "prop_count": 5,
+  "region_x_max_cm": 3000.0,
+  "region_y_max_cm": 3000.0,
+  "exclusion_cm": 500.0,
+  "spotdog_spawn_local_cm": [
+    100.0,
+    100.0
+  ],
+  "props": [
+    {
+      "slot_id": "depth_test_prop_002",
+      "catalog_index": 14,
+      "prop_type_id": "cinderstack_01a",
+      "bp_name": "BP_CinderStack_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_CinderStack_01a.BP_CinderStack_01a",
+      "mask_color_rgb": [
+        152,
+        206,
+        66
+      ],
+      "local_xy_cm": [
+        597.945340019455,
+        1634.2395097204746
+      ],
+      "world_xyz_cm": [
+        -402.055,
+        -565.76,
+        6455.0
+      ],
+      "visit_order": 1,
+      "mask_color_set_rgb": null,
+      "mask_color_canonical_rgb": [
+        152,
+        206,
+        66
+      ],
+      "mask_color_observed_bgr": [
+        72,
+        72,
+        72
+      ],
+      "lit_color_observed_bgr": [
+        72,
+        48,
+        32
+      ]
+    },
+    {
+      "slot_id": "depth_test_prop_001",
+      "catalog_index": 3,
+      "prop_type_id": "boxes_03a",
+      "bp_name": "BP_Boxes_03a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Boxes_03a.BP_Boxes_03a",
+      "mask_color_rgb": [
+        115,
+        153,
+        195
+      ],
+      "local_xy_cm": [
+        1804.5816192887974,
+        1742.503405294912
+      ],
+      "world_xyz_cm": [
+        804.582,
+        -457.497,
+        6455.0
+      ],
+      "visit_order": 2,
+      "mask_color_set_rgb": null,
+      "mask_color_canonical_rgb": [
+        115,
+        153,
+        195
+      ],
+      "mask_color_observed_bgr": [
+        72,
+        72,
+        72
+      ],
+      "lit_color_observed_bgr": [
+        80,
+        56,
+        40
+      ]
+    },
+    {
+      "slot_id": "depth_test_prop_003",
+      "catalog_index": 28,
+      "prop_type_id": "constructionpylons_01a",
+      "bp_name": "BP_ConstructionPylons_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_ConstructionPylons_01a.BP_ConstructionPylons_01a",
+      "mask_color_rgb": [
+        189,
+        59,
+        137
+      ],
+      "local_xy_cm": [
+        1894.978762588967,
+        2182.3533124167807
+      ],
+      "world_xyz_cm": [
+        894.979,
+        -17.647,
+        6455.0
+      ],
+      "visit_order": 3,
+      "mask_color_set_rgb": null,
+      "mask_color_canonical_rgb": [
+        189,
+        59,
+        137
+      ],
+      "mask_color_observed_bgr": [
+        72,
+        72,
+        72
+      ],
+      "lit_color_observed_bgr": [
+        96,
+        64,
+        48
+      ]
+    },
+    {
+      "slot_id": "depth_test_prop_005",
+      "catalog_index": 35,
+      "prop_type_id": "crate_01a",
+      "bp_name": "BP_Crate_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Crate_01a.BP_Crate_01a",
+      "mask_color_rgb": [
+        63,
+        165,
+        79
+      ],
+      "local_xy_cm": [
+        869.4159133809355,
+        2800.0
+      ],
+      "world_xyz_cm": [
+        -130.584,
+        600.0,
+        6480.157
+      ],
+      "visit_order": 4,
+      "mask_color_set_rgb": null,
+      "mask_color_canonical_rgb": [
+        63,
+        165,
+        79
+      ],
+      "mask_color_observed_bgr": [
+        72,
+        72,
+        72
+      ],
+      "lit_color_observed_bgr": [
+        96,
+        64,
+        40
+      ]
+    },
+    {
+      "slot_id": "depth_test_prop_004",
+      "catalog_index": 31,
+      "prop_type_id": "constructionpylons_01d",
+      "bp_name": "BP_ConstructionPylons_01d",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_ConstructionPylons_01d.BP_ConstructionPylons_01d",
+      "mask_color_rgb": [
+        226,
+        112,
+        208
+      ],
+      "local_xy_cm": [
+        2750.0,
+        2280.654943576339
+      ],
+      "world_xyz_cm": [
+        1750.0,
+        80.655,
+        6455.0
+      ],
+      "visit_order": 5,
+      "mask_color_set_rgb": null,
+      "mask_color_canonical_rgb": [
+        226,
+        112,
+        208
+      ],
+      "mask_color_observed_bgr": [
+        72,
+        72,
+        72
+      ],
+      "lit_color_observed_bgr": [
+        168,
+        160,
+        144
+      ]
+    }
+  ]
+}
