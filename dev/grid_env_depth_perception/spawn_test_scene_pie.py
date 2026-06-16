@@ -37,7 +37,6 @@ import level_coords as lc  # noqa: E402
 import level_nav_robot as lnr  # noqa: E402
 import nav_query as nq  # noqa: E402
 from object_mask_color import sync_registry_mask_colors  # noqa: E402
-from prop_signature import sync_registry_detection_signatures  # noqa: E402
 from pie_safety import (  # noqa: E402
     BATCH_PAUSE_S,
     DESTROY_BETWEEN_S,
@@ -63,7 +62,6 @@ from robot_sensor import (  # noqa: E402
     configure_sensor_camera,
     resolve_sensor_camera_id,
 )
-from simworld.communicator.communicator import Communicator  # noqa: E402
 
 
 def _bp_path_exists(bp_path: str) -> bool:
@@ -253,9 +251,9 @@ def main() -> int:
         help="vset mask colors before vget (avoid unless colors are wrong)",
     )
     parser.add_argument(
-        "--skip-signatures",
+        "--capture-deprecated-signatures",
         action="store_true",
-        help="skip per-prop standoff lit signature capture",
+        help="run one-pose standoff mask/lit calibration (deprecated; avoid on Level PIE)",
     )
     args = parser.parse_args()
 
@@ -300,7 +298,10 @@ def main() -> int:
         if not args.skip_spotdog:
             ok, name = lnr.soft_reset_level_spotdog(ucv, registry.spotdog_spawn_local_cm)
             print(f"[DepthSpawn] SpotDog soft-reset ok={ok} name={name}")
-            if ok and not args.skip_signatures:
+            if ok and args.capture_deprecated_signatures:
+                from prop_signature import sync_registry_detection_signatures  # noqa: WPS433
+                from simworld.communicator.communicator import Communicator  # noqa: WPS433
+
                 camera_id = resolve_sensor_camera_id(ucv)
                 configure_sensor_camera(ucv, camera_id)
                 communicator = Communicator(ucv)
@@ -308,7 +309,7 @@ def main() -> int:
                     ucv, communicator, camera_id, name, registry
                 )
                 lnr.soft_reset_level_spotdog(ucv, registry.spotdog_spawn_local_cm)
-                print("[DepthSpawn] lit/depth signatures captured at standoff")
+                print("[DepthSpawn] deprecated standoff signatures captured")
 
         print("[DepthSpawn] done")
         return 0

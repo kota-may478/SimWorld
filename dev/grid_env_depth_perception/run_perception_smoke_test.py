@@ -47,7 +47,9 @@ from robot_sensor import (  # noqa: E402
     fetch_mask_rgb,
     get_pos2d,
     get_yaw_deg,
+    resolve_mask_camera_id,
     resolve_sensor_camera_id,
+    restore_editor_viewmode_lit,
     update_sensor_camera_pose,
 )
 from simworld.communicator.communicator import Communicator  # noqa: E402
@@ -69,16 +71,17 @@ def _bearing_to_target_deg(
 def _perceive(
     ucv,
     communicator: Communicator,
-    camera_id: int,
+    fusion_camera_id: int,
+    mask_camera_id: int,
     registry,
     robot_name: str,
     cfg: PerceptionConfig,
 ) -> Dict[str, Dict[str, float]]:
-    update_sensor_camera_pose(ucv, robot_name, camera_id)
+    update_sensor_camera_pose(ucv, robot_name, fusion_camera_id)
     tick_settle(ucv, settle_s=0.35, ticks=1)
-    mask = fetch_mask_rgb(communicator, camera_id)
-    lit = fetch_lit_bgr(communicator, camera_id)
-    depth_raw = fetch_depth_npy(ucv, camera_id)
+    mask = fetch_mask_rgb(communicator, mask_camera_id)
+    lit = fetch_lit_bgr(communicator, fusion_camera_id)
+    depth_raw = fetch_depth_npy(ucv, fusion_camera_id)
     if depth_raw is None or mask is None:
         return {}
     depth_m = depth_npy_to_meters(depth_raw)
@@ -114,14 +117,19 @@ def _rotate_toward(
 def main() -> int:
     parser = argparse.ArgumentParser(description="Perception smoke test (PIE)")
     parser.add_argument(
-        "--sync-colors",
+        "--no-sync-colors",
         action="store_true",
-        help="vget canonical mask colors from UE before sampling",
+        help="skip vget canonical mask colors from UE before sampling",
     )
     parser.add_argument(
         "--reapply-colors",
         action="store_true",
         help="vset intended colors before vget (only if IDs are wrong)",
+    )
+    parser.add_argument(
+        "--allow-lit-fallback",
+        action="store_true",
+        help="enable deprecated lit-RGB fallback when object_mask fails",
     )
     args = parser.parse_args()
 
@@ -135,54 +143,69 @@ def main() -> int:
     try:
         with ue_client_guard.exclusive_ue_client_lock():
             ucv, _ = g10k.ensure_connection()
-            require_live_ucv(ucv, context="smoke start")
+            try:
+                require_live_ucv(ucv, context="smoke start")
 
-            ok, robot_name = lnr.soft_reset_level_spotdog(ucv, registry.spotdog_spawn_local_cm)
-            if not ok:
-                print("[Smoke] SpotDog not available")
-                return 1
-            tick_settle(ucv, settle_s=1.0, ticks=2)
+                ok, robot_name = lnr.soft_reset_level_spotdog(ucv, registry.spotdog_spawn_local_cm)
+                if not ok:
+                    print("[Smoke] SpotDog not available")
+                    return 1
+                tick_settle(ucv, settle_s=1.0, ticks=2)
 
-            if args.sync_colors or args.reapply_colors:
-                registry = sync_registry_mask_colors(
-                    ucv, registry, reapply_colors=args.reapply_colors
+                if not args.no_sync_colors or args.reapply_colors:
+                    registry = sync_registry_mask_colors(
+                        ucv, registry, reapply_colors=args.reapply_colors
+                    )
+                    save_registry(registry)
+
+                fusion_camera_id = resolve_sensor_camera_id(ucv)
+                configure_sensor_camera(ucv, fusion_camera_id)
+                communicator = Communicator(ucv)
+                mask_camera_id = resolve_mask_camera_id(communicator, ucv, fusion_camera_id)
+                configure_sensor_camera(ucv, mask_camera_id)
+                print(f"[Smoke] fusion_cam={fusion_camera_id} mask_cam={mask_camera_id}")
+                cfg = PerceptionConfig(
+                    fov_deg=SENSOR_FOV_DEG,
+                    allow_lit_fallback=args.allow_lit_fallback,
+                    camera_offset_forward_cm=22.0,
+                    camera_pitch_deg=-5.0,
                 )
-                save_registry(registry)
 
-            camera_id = resolve_sensor_camera_id(ucv)
-            configure_sensor_camera(ucv, camera_id)
-            communicator = Communicator(ucv)
-            cfg = PerceptionConfig(fov_deg=SENSOR_FOV_DEG)
+                est0 = _perceive(
+                    ucv, communicator, fusion_camera_id, mask_camera_id, registry, robot_name, cfg
+                )
+                print(f"[Smoke] initial detections ({len(est0)}): {list(est0.keys())}")
 
-            est0 = _perceive(ucv, communicator, camera_id, registry, robot_name, cfg)
-            print(f"[Smoke] initial detections ({len(est0)}): {list(est0.keys())}")
-
-            nearest = registry.visit_order_props()[0]
-            goal_xy = (nearest.world_xyz_cm[0], nearest.world_xyz_cm[1])  # type: ignore[index]
-            robot_xy = get_pos2d(ucv, robot_name)
-            robot_yaw = get_yaw_deg(ucv, robot_name)
-            delta = _bearing_to_target_deg(robot_xy, robot_yaw, goal_xy)
-            print(
-                f"[Smoke] aiming at {nearest.prop_type_id} "
-                f"delta_yaw={delta:.1f}° robot={robot_xy} goal={goal_xy}"
-            )
-            _rotate_toward(ucv, robot_name, delta)
-
-            est1 = _perceive(ucv, communicator, camera_id, registry, robot_name, cfg)
-            print(f"[Smoke] after aim detections ({len(est1)}): {est1}")
-
-            if not est1:
-                print("[Smoke] FAIL: no detections after aiming")
-                return 1
-
-            if nearest.prop_type_id not in est1:
+                nearest = registry.visit_order_props()[0]
+                goal_xy = (nearest.world_xyz_cm[0], nearest.world_xyz_cm[1])  # type: ignore[index]
+                robot_xy = get_pos2d(ucv, robot_name)
+                robot_yaw = get_yaw_deg(ucv, robot_name)
+                delta = _bearing_to_target_deg(robot_xy, robot_yaw, goal_xy)
                 print(
-                    f"[Smoke] WARN: nearest target {nearest.prop_type_id} not in detections; "
-                    f"got {list(est1.keys())}"
+                    f"[Smoke] aiming at {nearest.prop_type_id} "
+                    f"delta_yaw={delta:.1f}° robot={robot_xy} goal={goal_xy}"
                 )
+                _rotate_toward(ucv, robot_name, delta)
 
-            print("[Smoke] PASS")
-            return 0
+                est1 = _perceive(
+                    ucv, communicator, fusion_camera_id, mask_camera_id, registry, robot_name, cfg
+                )
+                print(f"[Smoke] after aim detections ({len(est1)}): {est1}")
+
+                if not est1:
+                    print("[Smoke] FAIL: no detections after aiming")
+                    return 1
+
+                if nearest.prop_type_id not in est1:
+                    print(
+                        f"[Smoke] WARN: nearest target {nearest.prop_type_id} not in detections; "
+                        f"got {list(est1.keys())}"
+                    )
+
+                print("[Smoke] PASS")
+                return 0
+            finally:
+                restore_editor_viewmode_lit(ucv)
     except PieSessionLost as exc:
         print(f"[Smoke] ABORT: {exc}")
         return 2

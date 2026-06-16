@@ -40,6 +40,7 @@ from robot_sensor import (  # noqa: E402
     configure_sensor_camera,
     fetch_mask_rgb,
     resolve_sensor_camera_id,
+    restore_editor_viewmode_lit,
     update_sensor_camera_pose,
 )
 from simworld.communicator.communicator import Communicator  # noqa: E402
@@ -65,6 +66,13 @@ def main() -> int:
     registry = load_registry()
     prop = registry.visit_order_props()[0]
     ucv, _ = g10k.ensure_connection()
+    try:
+        return _run_probe(ucv, registry, prop)
+    finally:
+        restore_editor_viewmode_lit(ucv)
+
+
+def _run_probe(ucv, registry, prop) -> int:
     ok, robot = lnr.soft_reset_level_spotdog(ucv, registry.spotdog_spawn_local_cm)
     if not ok:
         print("no robot")
@@ -87,25 +95,30 @@ def main() -> int:
             print(f"cam {try_cam} raw RGB top: {tops[:3]}")
         except Exception as exc:
             print(f"cam {try_cam} mask err: {exc}")
+        finally:
+            restore_editor_viewmode_lit(ucv)
     configure_sensor_camera(ucv, camera_id)
     update_sensor_camera_pose(ucv, robot, camera_id)
     tick_settle(ucv, settle_s=0.4, ticks=1)
 
     def _raw_mask_rgb():
         cmd = f"vget /camera/{camera_id}/object_mask png"
-        with ucv.lock:
-            payload = ucv.client.request(cmd)
-        import PIL.Image
+        try:
+            with ucv.lock:
+                payload = ucv.client.request(cmd)
+            import PIL.Image
 
-        img = np.asarray(PIL.Image.open(BytesIO(payload)))
-        if img.shape[2] == 4:
-            img = img[:, :, :3]
-        return img
+            img = np.asarray(PIL.Image.open(BytesIO(payload)))
+            if img.shape[2] == 4:
+                img = img[:, :, :3]
+            return img
+        finally:
+            restore_editor_viewmode_lit(ucv)
 
     try:
         geh._ue_request(ucv, "vset /viewmode object_mask", timeout_s=10.0)  # noqa: SLF001
         tick_settle(ucv, settle_s=0.3, ticks=1)
-        print("set viewmode object_mask")
+        print("set viewmode object_mask (diagnostic only)")
     except Exception as exc:
         print(f"viewmode failed: {exc}")
 
