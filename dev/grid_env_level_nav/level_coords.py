@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Local ↔ world coordinates for /Game/Maps/Level work region."""
+"""Local ↔ world coordinates for /Game/Maps/Level work region.
+
+Convention (matches L0 costmap / UE top-down plots):
+  - **local X** aligns with **UE world Y** (north); UE Y increase → local X increase
+  - **local Y** aligns with **UE world X** (east); UE X increase → local Y increase
+  - Signs are preserved; axes are swapped vs naive (local_x = wx - ox).
+"""
 
 from __future__ import annotations
 
@@ -19,13 +25,15 @@ NAV_PROJECT_PROBE_Z_CM = FLOOR_REF_Z_CM + 10.0
 
 
 def local_xy_to_world(lx: float, ly: float) -> WorldXY:
+    """local (X∥UE Y, Y∥UE X) → UE world (X, Y)."""
     ox, oy = REGION_ORIGIN_WORLD_XY
-    return ox + lx, oy + ly
+    return ox + ly, oy + lx
 
 
 def world_xy_to_local(wx: float, wy: float) -> LocalXY:
+    """UE world (X, Y) → local (X∥UE Y, Y∥UE X)."""
     ox, oy = REGION_ORIGIN_WORLD_XY
-    return wx - ox, wy - oy
+    return wy - oy, wx - ox
 
 
 def local_xyz_to_world(lx: float, ly: float, lz: float) -> WorldXYZ:
