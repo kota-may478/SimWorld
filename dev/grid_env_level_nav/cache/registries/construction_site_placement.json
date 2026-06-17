@@ -1,0 +1,366 @@
+{
+  "version": 1,
+  "seed": 20260617,
+  "min_corridor_width_cm": 200.0,
+  "robot_start_local_cm": [
+    1200.0,
+    1200.0
+  ],
+  "home_local_cm": [
+    1200.0,
+    1200.0
+  ],
+  "material_pickup_local_cm": [
+    6100.0,
+    5300.0
+  ],
+  "material_actor_name": "csite_material",
+  "carry_actor_name": "csite_carry",
+  "props": [
+    {
+      "slot_id": "csite_prop_000",
+      "bp_name": "BP_woodenpalette_01",
+      "cluster_id": "staging_sw",
+      "role": "wooden_pallet",
+      "local_xy_cm": [
+        750.0,
+        850.0
+      ],
+      "yaw_deg": 15.0,
+      "is_transport_target": false,
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_woodenpalette_01.BP_woodenpalette_01",
+      "prop_type_id": "woodenpalette_01",
+      "world_xyz_cm": null
+    },
+    {
+      "slot_id": "csite_prop_001",
+      "bp_name": "BP_Boxes_03a",
+      "cluster_id": "staging_sw",
+      "role": "cardboard_boxes",
+      "local_xy_cm": [
+        950.0,
+        650.0
+      ],
+      "yaw_deg": -10.0,
+      "is_transport_target": false,
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Boxes_03a.BP_Boxes_03a",
+      "prop_type_id": "boxes_03a",
+      "world_xyz_cm": null
+    },
+    {
+      "slot_id": "csite_prop_002",
+      "bp_name": "BP_Dumpster",
+      "cluster_id": "equipment_west",
+      "role": "waste_dumpster",
+      "local_xy_cm": [
+        1350.0,
+        4300.0
+      ],
+      "yaw_deg": 0.0,
+      "is_transport_target": false,
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Dumpster.BP_Dumpster",
+      "prop_type_id": "dumpster",
+      "world_xyz_cm": null
+    },
+    {
+      "slot_id": "csite_prop_003",
+      "bp_name": "BP_LightGenerator_01a",
+      "cluster_id": "equipment_west",
+      "role": "portable_light_tower",
+      "local_xy_cm": [
+        1050.0,
+        4850.0
+      ],
+      "yaw_deg": 25.0,
+      "is_transport_target": false,
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_LightGenerator_01a.BP_LightGenerator_01a",
+      "prop_type_id": "lightgenerator_01a",
+      "world_xyz_cm": null
+    },
+    {
+      "slot_id": "csite_prop_004",
+      "bp_name": "BP_CableReel",
+      "cluster_id": "equipment_west",
+      "role": "cable_spool",
+      "local_xy_cm": [
+        1650.0,
+        4550.0
+      ],
+      "yaw_deg": 40.0,
+      "is_transport_target": false,
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_CableReel.BP_CableReel",
+      "prop_type_id": "cablereel",
+      "world_xyz_cm": null
+    },
+    {
+      "slot_id": "csite_prop_005",
+      "bp_name": "BP_Drywall_01a",
+      "cluster_id": "equipment_west",
+      "role": "drywall_sheets",
+      "local_xy_cm": [
+        1950.0,
+        5150.0
+      ],
+      "yaw_deg": -5.0,
+      "is_transport_target": false,
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Drywall_01a.BP_Drywall_01a",
+      "prop_type_id": "drywall_01a",
+      "world_xyz_cm": null
+    },
+    {
+      "slot_id": "csite_prop_006",
+      "bp_name": "BP_ConstructionPylons_01a",
+      "cluster_id": "traffic_mid",
+      "role": "safety_pylon",
+      "local_xy_cm": [
+        1750.0,
+        3950.0
+      ],
+      "yaw_deg": 0.0,
+      "is_transport_target": false,
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_ConstructionPylons_01a.BP_ConstructionPylons_01a",
+      "prop_type_id": "constructionpylons_01a",
+      "world_xyz_cm": null
+    },
+    {
+      "slot_id": "csite_prop_007",
+      "bp_name": "BP_ConstructionPylons_01d",
+      "cluster_id": "traffic_mid",
+      "role": "safety_pylon",
+      "local_xy_cm": [
+        1950.0,
+        4150.0
+      ],
+      "yaw_deg": 0.0,
+      "is_transport_target": false,
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_ConstructionPylons_01d.BP_ConstructionPylons_01d",
+      "prop_type_id": "constructionpylons_01d",
+      "world_xyz_cm": null
+    },
+    {
+      "slot_id": "csite_prop_008",
+      "bp_name": "BP_Roadblock_01a",
+      "cluster_id": "traffic_mid",
+      "role": "road_barrier",
+      "local_xy_cm": [
+        2150.0,
+        3750.0
+      ],
+      "yaw_deg": 90.0,
+      "is_transport_target": false,
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_01a.BP_Roadblock_01a",
+      "prop_type_id": "roadblock_01a",
+      "world_xyz_cm": null
+    },
+    {
+      "slot_id": "csite_prop_009",
+      "bp_name": "BP_Trafficbarrier_01",
+      "cluster_id": "traffic_mid",
+      "role": "traffic_barrier",
+      "local_xy_cm": [
+        2350.0,
+        3550.0
+      ],
+      "yaw_deg": 0.0,
+      "is_transport_target": false,
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Trafficbarrier_01.BP_Trafficbarrier_01",
+      "prop_type_id": "trafficbarrier_01",
+      "world_xyz_cm": null
+    },
+    {
+      "slot_id": "csite_prop_010",
+      "bp_name": "BP_CinderStack_01a",
+      "cluster_id": "cinder_wall",
+      "role": "cinder_blocks",
+      "local_xy_cm": [
+        2500.0,
+        4300.0
+      ],
+      "yaw_deg": 0.0,
+      "is_transport_target": false,
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_CinderStack_01a.BP_CinderStack_01a",
+      "prop_type_id": "cinderstack_01a",
+      "world_xyz_cm": null
+    },
+    {
+      "slot_id": "csite_prop_011",
+      "bp_name": "BP_CinderStack_01a",
+      "cluster_id": "cinder_wall",
+      "role": "cinder_blocks",
+      "local_xy_cm": [
+        2700.0,
+        4300.0
+      ],
+      "yaw_deg": 0.0,
+      "is_transport_target": false,
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_CinderStack_01a.BP_CinderStack_01a",
+      "prop_type_id": "cinderstack_01a",
+      "world_xyz_cm": null
+    },
+    {
+      "slot_id": "csite_prop_012",
+      "bp_name": "BP_CinderStack_01a",
+      "cluster_id": "cinder_wall",
+      "role": "cinder_blocks",
+      "local_xy_cm": [
+        2900.0,
+        4300.0
+      ],
+      "yaw_deg": 0.0,
+      "is_transport_target": false,
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_CinderStack_01a.BP_CinderStack_01a",
+      "prop_type_id": "cinderstack_01a",
+      "world_xyz_cm": null
+    },
+    {
+      "slot_id": "csite_prop_013",
+      "bp_name": "BP_construction_fence_01a",
+      "cluster_id": "fence_north",
+      "role": "site_fence_panel",
+      "local_xy_cm": [
+        3100.0,
+        7050.0
+      ],
+      "yaw_deg": 0.0,
+      "is_transport_target": false,
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_construction_fence_01a.BP_construction_fence_01a",
+      "prop_type_id": "construction_fence_01a",
+      "world_xyz_cm": null
+    },
+    {
+      "slot_id": "csite_prop_014",
+      "bp_name": "BP_construction_fence_01a",
+      "cluster_id": "fence_north",
+      "role": "site_fence_panel",
+      "local_xy_cm": [
+        3600.0,
+        7050.0
+      ],
+      "yaw_deg": 0.0,
+      "is_transport_target": false,
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_construction_fence_01a.BP_construction_fence_01a",
+      "prop_type_id": "construction_fence_01a",
+      "world_xyz_cm": null
+    },
+    {
+      "slot_id": "csite_prop_015",
+      "bp_name": "BP_construction_fence_connectors_01a",
+      "cluster_id": "fence_north",
+      "role": "fence_connector",
+      "local_xy_cm": [
+        3350.0,
+        7050.0
+      ],
+      "yaw_deg": 0.0,
+      "is_transport_target": false,
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_construction_fence_connectors_01a.BP_construction_fence_connectors_01a",
+      "prop_type_id": "construction_fence_connectors_01a",
+      "world_xyz_cm": null
+    },
+    {
+      "slot_id": "csite_prop_016",
+      "bp_name": "BP_construction_fence_support_01a",
+      "cluster_id": "fence_north",
+      "role": "fence_support",
+      "local_xy_cm": [
+        3850.0,
+        7050.0
+      ],
+      "yaw_deg": 0.0,
+      "is_transport_target": false,
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_construction_fence_support_01a.BP_construction_fence_support_01a",
+      "prop_type_id": "construction_fence_support_01a",
+      "world_xyz_cm": null
+    },
+    {
+      "slot_id": "csite_prop_017",
+      "bp_name": "BP_Crate_01a",
+      "cluster_id": "material_yard",
+      "role": "shipping_crate",
+      "local_xy_cm": [
+        6100.0,
+        5300.0
+      ],
+      "yaw_deg": 20.0,
+      "is_transport_target": true,
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Crate_01a.BP_Crate_01a",
+      "prop_type_id": "crate_01a",
+      "world_xyz_cm": null
+    },
+    {
+      "slot_id": "csite_prop_018",
+      "bp_name": "BP_BrickPaletteStack_01a",
+      "cluster_id": "material_yard",
+      "role": "brick_pallet",
+      "local_xy_cm": [
+        5800.0,
+        5450.0
+      ],
+      "yaw_deg": 0.0,
+      "is_transport_target": false,
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_BrickPaletteStack_01a.BP_BrickPaletteStack_01a",
+      "prop_type_id": "brickpalettestack_01a",
+      "world_xyz_cm": null
+    },
+    {
+      "slot_id": "csite_prop_019",
+      "bp_name": "BP_ConcreteBag_01a",
+      "cluster_id": "material_yard",
+      "role": "bagged_concrete",
+      "local_xy_cm": [
+        6350.0,
+        5480.0
+      ],
+      "yaw_deg": 0.0,
+      "is_transport_target": false,
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_ConcreteBag_01a.BP_ConcreteBag_01a",
+      "prop_type_id": "concretebag_01a",
+      "world_xyz_cm": null
+    },
+    {
+      "slot_id": "csite_prop_020",
+      "bp_name": "BP_Rebar_01a",
+      "cluster_id": "material_yard",
+      "role": "rebar_bundle",
+      "local_xy_cm": [
+        6450.0,
+        5200.0
+      ],
+      "yaw_deg": 45.0,
+      "is_transport_target": false,
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Rebar_01a.BP_Rebar_01a",
+      "prop_type_id": "rebar_01a",
+      "world_xyz_cm": null
+    },
+    {
+      "slot_id": "csite_prop_021",
+      "bp_name": "BP_Portapotty_01",
+      "cluster_id": "facilities_se",
+      "role": "portable_toilet",
+      "local_xy_cm": [
+        5950.0,
+        3950.0
+      ],
+      "yaw_deg": -30.0,
+      "is_transport_target": false,
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Portapotty_01.BP_Portapotty_01",
+      "prop_type_id": "portapotty_01",
+      "world_xyz_cm": null
+    },
+    {
+      "slot_id": "csite_prop_022",
+      "bp_name": "BP_WaterTank_01a",
+      "cluster_id": "facilities_se",
+      "role": "water_tank",
+      "local_xy_cm": [
+        5750.0,
+        4250.0
+      ],
+      "yaw_deg": 0.0,
+      "is_transport_target": false,
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_WaterTank_01a.BP_WaterTank_01a",
+      "prop_type_id": "watertank_01a",
+      "world_xyz_cm": null
+    }
+  ]
+}

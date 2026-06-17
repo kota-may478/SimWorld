@@ -12,7 +12,9 @@ OUT_DIR = "/Game/SimWorld/LevelProps/Generated/Construction_VOL1"
 MESH_DIR = "/Game/Construction_VOL1/Meshes"
 
 CACHE_DIR = Path(__file__).resolve().parent / "cache"
-DEFAULT_CATALOG_PATH = CACHE_DIR / "prop_catalog_construction_vol1.json"
+from paths import PROP_CATALOG_CONSTRUCTION  # noqa: E402
+
+DEFAULT_CATALOG_PATH = PROP_CATALOG_CONSTRUCTION
 CONTENT_ROOT = Path("/mnt/c/UEProjects/SimWorld/Content")
 EXPECTED_MESH_COUNT = 73
 
