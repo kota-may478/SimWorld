@@ -27,7 +27,8 @@ if str(_GEH_DIR) not in sys.path:
 import grid_env_hri_simulation as geh  # noqa: E402
 
 # Destroy batch on Level: longer than grid_env defaults.
-POST_DESTROY_SETTLE_S = 6.0
+POST_DESTROY_SETTLE_S = 8.0
+PRE_SPAWN_COOLDOWN_S = 6.0
 DESTROY_BETWEEN_S = 0.55
 SPAWN_SETTLE_S = 0.65
 BATCH_PAUSE_EVERY = 2
@@ -75,6 +76,14 @@ def tick_settle(ucv, *, settle_s: float = 0.0, ticks: int = 2) -> None:
 def settle_after_destroy_batch(ucv) -> None:
     """Post-destroy idle — never run clean_garbage here on Level."""
     tick_settle(ucv, settle_s=POST_DESTROY_SETTLE_S, ticks=3)
+
+
+def cooldown_before_spawn_batch(ucv, *, reason: str = "pre-spawn") -> None:
+    """Extra idle after destroys — UE Editor often crashes if spawn_bp follows too soon."""
+    require_live_ucv(ucv, context=f"{reason} cooldown")
+    print(f"[PieSafety] pre-spawn cooldown ({reason}) {PRE_SPAWN_COOLDOWN_S}s ...")
+    tick_settle(ucv, settle_s=PRE_SPAWN_COOLDOWN_S, ticks=2)
+    require_live_ucv(ucv, context=f"{reason} after cooldown")
 
 
 def pause_between_spawns(spawned_count: int) -> bool:
