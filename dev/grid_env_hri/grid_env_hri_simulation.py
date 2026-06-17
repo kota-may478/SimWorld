@@ -564,6 +564,20 @@ def ensure_connection(
     candidates = _ue_host_candidates()
     print(f"[UE] Probing UnrealCV on {candidates} (timeout={UE_TCP_PROBE_TIMEOUT_S:g}s each) ...")
 
+    try:
+        import ue_client_guard as _guard
+
+        _guard.install_graceful_ue_shutdown()
+        busy = _guard.describe_port_9000_conflicts(except_pid=os.getpid())
+        if busy:
+            print(f"[UE] WARN: {len(busy)} other Python socket(s) on :{UE_PORT} before connect")
+            for line in busy[:3]:
+                print(f"  {line}")
+            _guard.terminate_stale_wsl_python_clients_on_port(except_pid=os.getpid())
+            _guard.wait_for_tcp_port_idle(except_pid=os.getpid(), timeout_s=2.0)
+    except Exception:
+        pass
+
     errors: List[str] = []
     reachable: List[str] = []
     for host in candidates:

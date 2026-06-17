@@ -3,10 +3,15 @@
 
 from __future__ import annotations
 
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+
+_HRI_DIR = Path(__file__).resolve().parent
+if str(_HRI_DIR) not in sys.path:
+    sys.path.insert(0, str(_HRI_DIR))
 
 import ue_client_guard as guard
 
@@ -31,6 +36,21 @@ class UeClientGuardTest(unittest.TestCase):
                 with guard.exclusive_ue_client_lock():
                     self.assertIsNotNone(guard._lock_fd)
                 self.assertIsNone(guard._lock_fd)
+
+    def test_wait_for_tcp_port_idle_no_ss(self) -> None:
+        with mock.patch.object(guard, "_wsl_tcp_lines_on_port", return_value=[]):
+            self.assertTrue(guard.wait_for_tcp_port_idle(timeout_s=0.1))
+
+    def test_describe_port_conflicts_filters_pid(self) -> None:
+        my_pid = 99999
+        with mock.patch.object(
+            guard,
+            "_python_tcp_lines_on_port",
+            return_value=["line-a"],
+        ) as mock_lines:
+            out = guard.describe_port_9000_conflicts(except_pid=my_pid)
+            mock_lines.assert_called_once()
+            self.assertEqual(out, ["line-a"])
 
 
 if __name__ == "__main__":

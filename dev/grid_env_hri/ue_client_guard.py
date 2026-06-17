@@ -17,6 +17,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional, Tuple
@@ -26,6 +27,9 @@ from simworld.communicator.unrealcv import UnrealCV
 
 UE_PORT = 9000
 _LOCK_PATH = Path(os.environ.get("SIMWORLD_UE_LOCK", "/tmp/simworld_ue9000.lock"))
+_PORT_IDLE_WAIT_S = float(os.environ.get("UE_PORT_IDLE_WAIT_S", "8.0"))
+_PORT_IDLE_POLL_S = 0.35
+_shutdown_installed = False
 _lock_fd: Optional[int] = None
 
 
@@ -53,6 +57,88 @@ def _wsl_tcp_lines_on_port(*states: str, port: int = UE_PORT) -> list[str]:
         if "python" in line.lower():
             lines.append(line.strip())
     return lines
+
+
+def _python_tcp_lines_on_port(
+    *states: str,
+    port: int = UE_PORT,
+    except_pid: Optional[int] = None,
+) -> list[str]:
+    lines = _wsl_tcp_lines_on_port(*states, port=port)
+    if except_pid is None:
+        return lines
+    filtered: list[str] = []
+    for line in lines:
+        if "pid=" not in line:
+            continue
+        pid_part = line.split("pid=")[1].split(",")[0]
+        try:
+            pid = int(pid_part)
+        except ValueError:
+            filtered.append(line)
+            continue
+        if pid != except_pid:
+            filtered.append(line)
+    return filtered
+
+
+def wait_for_tcp_port_idle(
+    port: int = UE_PORT,
+    *,
+    timeout_s: float = _PORT_IDLE_WAIT_S,
+    except_pid: Optional[int] = None,
+) -> bool:
+    """Wait until no other WSL Python holds :port in non-idle TCP states."""
+    deadline = time.time() + max(0.0, timeout_s)
+    while time.time() < deadline:
+        busy = _python_tcp_lines_on_port(
+            "established",
+            "close-wait",
+            "fin-wait-1",
+            "fin-wait-2",
+            "syn-sent",
+            port=port,
+            except_pid=except_pid,
+        )
+        if not busy:
+            return True
+        time.sleep(_PORT_IDLE_POLL_S)
+    return False
+
+
+def describe_port_9000_conflicts(*, except_pid: Optional[int] = None) -> list[str]:
+    return _python_tcp_lines_on_port(
+        "established",
+        "close-wait",
+        "fin-wait-1",
+        "fin-wait-2",
+        "syn-sent",
+        port=UE_PORT,
+        except_pid=except_pid,
+    )
+
+
+def install_graceful_ue_shutdown() -> None:
+    """Release UnrealCV on SIGINT/SIGTERM/atexit so :9000 does not stay CLOSE-WAIT."""
+    global _shutdown_installed
+    if _shutdown_installed:
+        return
+    import grid_env_hri_simulation as geh
+
+    def _shutdown(*_args) -> None:
+        try:
+            geh.release_connection()
+        except Exception:
+            pass
+        try:
+            release_ue_client_lock()
+        except Exception:
+            pass
+
+    signal.signal(signal.SIGINT, _shutdown)
+    signal.signal(signal.SIGTERM, _shutdown)
+    atexit.register(_shutdown)
+    _shutdown_installed = True
 
 
 def terminate_stale_wsl_python_clients_on_port(
@@ -151,26 +237,63 @@ def exclusive_ue_client_lock() -> Iterator[None]:
         release_ue_client_lock()
 
 
+def prepare_ue_connection(
+    *,
+    force_new: bool = True,
+    kill_stale_clients: bool = True,
+    acquire_lock: bool = True,
+    wait_port_idle: bool = True,
+    ucv: Optional[UnrealCV] = None,
+    communicator: Optional[Communicator] = None,
+) -> Tuple[UnrealCV, Communicator]:
+    """Acquire lock, clear stale :9000 clients, release old session, then connect once."""
+    return ensure_exclusive_ue_session(
+        force_new=force_new,
+        kill_stale_clients=kill_stale_clients,
+        acquire_lock=acquire_lock,
+        wait_port_idle=wait_port_idle,
+        ucv=ucv,
+        communicator=communicator,
+    )
+
+
 def ensure_exclusive_ue_session(
     *,
     force_new: bool = False,
     kill_stale_clients: bool = True,
     acquire_lock: bool = True,
+    wait_port_idle: bool = True,
     ucv: Optional[UnrealCV] = None,
     communicator: Optional[Communicator] = None,
 ) -> Tuple[UnrealCV, Communicator]:
     """One client on :9000: optional stale kill, file lock, then connect."""
     import grid_env_hri_simulation as geh
 
-    if kill_stale_clients:
-        n = terminate_stale_wsl_python_clients_on_port(except_pid=os.getpid())
-        if n:
-            print(f"[UE guard] cleared {n} stale WSL Python client(s) on :{UE_PORT}")
+    install_graceful_ue_shutdown()
+
     if acquire_lock and not acquire_ue_client_lock(blocking=True):
         raise RuntimeError(
             "Another SimWorld script holds the UE client lock. "
             "Restart Jupyter kernels or wait for the other script to finish."
         )
-    if force_new:
-        geh.release_connection(ucv, communicator=communicator)
-    return geh.reconnect_if_needed(ucv=ucv, communicator=communicator)
+
+    if kill_stale_clients:
+        n = terminate_stale_wsl_python_clients_on_port(except_pid=os.getpid())
+        if n:
+            print(f"[UE guard] cleared {n} stale WSL Python client(s) on :{UE_PORT}")
+
+    # Always drop any module/notebook session before opening a new TCP client.
+    geh.release_connection(ucv, communicator=communicator)
+
+    if wait_port_idle:
+        idle = wait_for_tcp_port_idle(except_pid=os.getpid())
+        if not idle:
+            conflicts = describe_port_9000_conflicts(except_pid=os.getpid())
+            print(
+                f"[UE guard] WARN: :{UE_PORT} still busy after wait "
+                f"({len(conflicts)} foreign python socket(s))"
+            )
+            for line in conflicts[:4]:
+                print(f"  {line}")
+
+    return geh.ensure_connection(force_new=True)
