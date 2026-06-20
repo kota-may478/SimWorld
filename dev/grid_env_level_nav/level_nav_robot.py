@@ -16,12 +16,24 @@ for _p in (_GEH_DIR, _THIS_DIR):
         sys.path.insert(0, str(_p))
 
 import grid_env_hri_simulation as geh  # noqa: E402
-from level_coords import FLOOR_REF_Z_CM, foot_world_xyz_from_local_xy  # noqa: E402
+import nav_query as nq  # noqa: E402
+from level_coords import (  # noqa: E402
+    FLOOR_REF_Z_CM,
+    NAV_PROJECT_PROBE_Z_CM,
+    foot_world_xyz_from_local_xy,
+    world_xy_to_local,
+)
 from simworld.communicator.unrealcv import UnrealCV  # noqa: E402
 
 LocalXY = Tuple[float, float]
 LEVEL_ROBOT_NAME = geh.ROBOT_ACTOR_NAME
+SPOTDOG_AI_CONTROLLER_BP = (
+    "/Game/Robot_Dog/Blueprint/BP_SpotDogAIController.BP_SpotDogAIController_C"
+)
+SIGHT_AI_CONTROLLER_NAME = "SpotDogSightAI"
 ROBOT_SETTLE_S = 0.5
+ROBOT_NAV_XY_TOLERANCE_CM = 120.0
+ROBOT_FOOT_Z_OFFSET_CM = 50.0
 # Pawn destroy + UE GC on Level needs longer idle (no clean_garbage).
 ROBOT_DESTROY_SETTLE_S = 3.0
 # Stash far below floor before destroy (keeps camera/controller away from NavMesh).
@@ -33,40 +45,241 @@ def _configure_robot_at(
     loc: Tuple[float, float, float],
     *,
     actor_name: str = LEVEL_ROBOT_NAME,
+    yaw_deg: float = 0.0,
 ) -> None:
     """Match grid_env_10k_pie_patrol SpotDog settings (controller required for dog_move)."""
     ucv.set_physics(actor_name, False)
     ucv.set_movable(actor_name, True)
     ucv.set_location(list(loc), actor_name)
-    ucv.set_orientation((0.0, 0.0, 0.0), actor_name)
+    ucv.set_orientation((0.0, yaw_deg, 0.0), actor_name)
     ucv.set_collision(actor_name, True)
     ucv.enable_controller(actor_name, True)
     time.sleep(geh.PHYSICS_ENABLE_DELAY_S)
 
 
-def find_spotdog_actor(ucv: UnrealCV) -> Optional[str]:
-    """Return only the Python-managed SpotDog label (not level-placed BP_SpotRobot_C_*)."""
-    if LEVEL_ROBOT_NAME in geh.actor_names(ucv):
-        return LEVEL_ROBOT_NAME
+def get_robot_orientation_deg(ucv: UnrealCV, actor_name: str) -> Tuple[float, float, float]:
+    ori = ucv.get_orientation(actor_name)
+    return float(ori[0]), float(ori[1]), float(ori[2])
+
+
+def is_robot_tipped(
+    ucv: UnrealCV,
+    actor_name: str,
+    *,
+    pitch_roll_thr_deg: float = 18.0,
+) -> bool:
+    pitch, _yaw, roll = get_robot_orientation_deg(ucv, actor_name)
+    return abs(pitch) > pitch_roll_thr_deg or abs(roll) > pitch_roll_thr_deg
+
+
+def recover_robot_upright(
+    ucv: UnrealCV,
+    actor_name: str,
+    target_world_xy: Tuple[float, float],
+    *,
+    nav_actor: Optional[str] = None,
+    yaw_deg: Optional[float] = None,
+) -> Tuple[bool, Tuple[float, float]]:
+    """Teleport robot upright onto NavMesh without destroy (fallen / wedged recovery)."""
+    wx, wy = float(target_world_xy[0]), float(target_world_xy[1])
+    wz = FLOOR_REF_Z_CM + ROBOT_FOOT_Z_OFFSET_CM
+    if nav_actor:
+        try:
+            raw = nq.nav_project_point(ucv, nav_actor, wx, wy, NAV_PROJECT_PROBE_Z_CM)
+        except Exception:
+            raw = {"ok": False}
+        if raw.get("ok"):
+            px, py, pz = float(raw["x"]), float(raw["y"]), float(raw["z"])
+            wx, wy, wz = px, py, pz + ROBOT_FOOT_Z_OFFSET_CM
+    if yaw_deg is None:
+        try:
+            _pitch, yaw_deg_val, _roll = get_robot_orientation_deg(ucv, actor_name)
+            yaw_deg = yaw_deg_val
+        except Exception:
+            yaw_deg = 0.0
+    try:
+        _configure_robot_at(ucv, (wx, wy, wz), actor_name=actor_name, yaw_deg=yaw_deg)
+        lx, ly = world_xy_to_local(wx, wy)
+        print(
+            f"[LevelRobot] upright-recover {actor_name!r} world=({wx:.1f}, {wy:.1f}, {wz:.1f}) "
+            f"local=({lx:.1f}, {ly:.1f}) yaw={yaw_deg:.1f}"
+        )
+        return True, (wx, wy)
+    except Exception as exc:
+        print(f"[LevelRobot] upright-recover failed for {actor_name!r}: {exc}")
+        return False, (wx, wy)
+
+
+def _spotdog_ai_controller_names(ucv: UnrealCV) -> list[str]:
+    return sorted(
+        n for n in geh.actor_names(ucv) if "SpotDogAIController" in n
+    )
+
+
+def _vbp_ok(raw: Optional[str]) -> bool:
+    if raw is None:
+        return False
+    text = str(raw).strip().lower()
+    return bool(text) and not text.startswith("error")
+
+
+def _try_possess_pawn(ucv: UnrealCV, controller_name: str, pawn_name: str) -> bool:
+    for cmd in (
+        f"vbp {controller_name} Possess {pawn_name}",
+        f"vbp {controller_name} K2_Possess {pawn_name}",
+    ):
+        try:
+            raw = geh._ue_request(ucv, cmd, timeout_s=30.0)  # noqa: SLF001
+        except (ConnectionError, OSError, RuntimeError, ValueError):
+            continue
+        print(f"[LevelRobot] possess probe {cmd!r} -> {str(raw).strip()[:120]}")
+        if _vbp_ok(raw):
+            return True
+    return False
+
+
+def ensure_spotdog_sight_controller(
+    ucv: UnrealCV,
+    robot_name: str = LEVEL_ROBOT_NAME,
+    *,
+    perception_warmup_s: float = 2.0,
+    allow_spawn_controller: bool = False,
+) -> Optional[str]:
+    """Attach ``BP_SpotDogAIController`` to the robot (required for AI Sight vbp).
+
+    Level-placed ``GridEnv_SpotRobot`` often keeps a generic ``AIController_0`` from an
+    earlier session. ``GetVisibleSightTargetsJson`` on the Pawn casts to
+    ``BP_SpotDogAIController``; when that fails, UE returns ``{"targets":[]}`` even
+    though geom FOV would see props.
+    """
+    controllers = _spotdog_ai_controller_names(ucv)
+    for ctrl in controllers:
+        if _try_possess_pawn(ucv, ctrl, robot_name):
+            print(f"[LevelRobot] sight AI possess OK via {ctrl!r}")
+            if perception_warmup_s > 0:
+                time.sleep(perception_warmup_s)
+            for _ in range(5):
+                try:
+                    ucv.tick()
+                except Exception:
+                    break
+                time.sleep(0.15)
+            return ctrl
+
+    if not allow_spawn_controller:
+        print(
+            "[LevelRobot] WARN: existing BP_SpotDogAIController could not Possess "
+            f"{robot_name!r}; skipping controller spawn for PIE stability"
+        )
+        return None
+
+    spawn_name = SIGHT_AI_CONTROLLER_NAME
+    existing = set(geh.actor_names(ucv))
+    if spawn_name in existing:
+        spawn_name = f"{SIGHT_AI_CONTROLLER_NAME}_{len(controllers)}"
+    if not geh.spawn_bp(ucv, SPOTDOG_AI_CONTROLLER_BP, spawn_name):
+        print("[LevelRobot] WARN: spawn BP_SpotDogAIController failed")
+        return None
+    if _try_possess_pawn(ucv, spawn_name, robot_name):
+        print(f"[LevelRobot] spawned+possessed sight AI {spawn_name!r}")
+        if perception_warmup_s > 0:
+            time.sleep(perception_warmup_s)
+        for _ in range(8):
+            try:
+                ucv.tick()
+            except Exception:
+                break
+            time.sleep(0.15)
+        return spawn_name
+
+    print(
+        "[LevelRobot] WARN: BP_SpotDogAIController could not Possess "
+        f"{robot_name!r} — check Auto Possess AI / vbp Possess support"
+    )
     return None
+
+
+def _spotdog_actor_names(ucv: UnrealCV) -> list[str]:
+    """Managed label first, then level-placed BP_SpotRobot* actors."""
+    names = sorted(geh.actor_names(ucv))
+    ordered: list[str] = []
+    if LEVEL_ROBOT_NAME in names:
+        ordered.append(LEVEL_ROBOT_NAME)
+    for name in names:
+        if name == LEVEL_ROBOT_NAME:
+            continue
+        if "SpotRobot" in name:
+            ordered.append(name)
+    return ordered
+
+
+def find_spotdog_actor(ucv: UnrealCV) -> Optional[str]:
+    actors = _spotdog_actor_names(ucv)
+    return actors[0] if actors else None
+
+
+def _park_spotdog_offmap(ucv: UnrealCV, actor_name: str) -> None:
+    """Hide duplicate pawns without destroy (destroy often crashes Level PIE)."""
+    loc = geh.try_get_location_cm(ucv, actor_name)
+    if loc is None:
+        return
+    stash = (float(loc[0]), float(loc[1]), ROBOT_STASH_WORLD_Z_CM)
+    try:
+        ucv.enable_controller(actor_name, False)
+    except Exception:
+        pass
+    ucv.set_physics(actor_name, False)
+    ucv.set_location(list(stash), actor_name)
+    ucv.set_collision(actor_name, False)
+    print(f"[LevelRobot] parked duplicate {actor_name!r} off-map")
+
+
+def _resolve_robot_world_xyz(
+    ucv: UnrealCV,
+    start_local_xy: LocalXY,
+    *,
+    nav_actor: Optional[str] = None,
+) -> Tuple[float, float, float]:
+    wx, wy, wz = foot_world_xyz_from_local_xy(*start_local_xy)
+    if not nav_actor:
+        return wx, wy, wz
+    try:
+        raw = nq.nav_project_point(ucv, nav_actor, wx, wy, NAV_PROJECT_PROBE_Z_CM)
+    except Exception:
+        return wx, wy, wz
+    if not raw.get("ok"):
+        return wx, wy, wz
+    px, py, pz = float(raw["x"]), float(raw["y"]), float(raw["z"])
+    if abs(px - wx) > ROBOT_NAV_XY_TOLERANCE_CM or abs(py - wy) > ROBOT_NAV_XY_TOLERANCE_CM:
+        return wx, wy, wz
+    return px, py, pz + ROBOT_FOOT_Z_OFFSET_CM
 
 
 def soft_reset_level_spotdog(
     ucv: UnrealCV,
     start_local_xy: LocalXY,
+    *,
+    nav_actor: Optional[str] = None,
 ) -> Tuple[bool, str]:
     """Teleport + reconfigure at start — no destroy (safe on Level PIE)."""
-    wx, wy, wz = foot_world_xyz_from_local_xy(*start_local_xy)
-    existing = find_spotdog_actor(ucv)
-    if existing:
+    wx, wy, wz = _resolve_robot_world_xyz(ucv, start_local_xy, nav_actor=nav_actor)
+    actors = _spotdog_actor_names(ucv)
+    if actors:
+        primary = actors[0]
+        for duplicate in actors[1:]:
+            _park_spotdog_offmap(ucv, duplicate)
         try:
-            _configure_robot_at(ucv, (wx, wy, wz), actor_name=existing)
-            print(f"[LevelRobot] soft-reset {existing!r} @ ({wx:.1f}, {wy:.1f}, {wz:.1f})")
-            return True, existing
+            _configure_robot_at(ucv, (wx, wy, wz), actor_name=primary)
+            lx, ly = world_xy_to_local(wx, wy)
+            print(
+                f"[LevelRobot] soft-reset {primary!r} world=({wx:.1f}, {wy:.1f}, {wz:.1f}) "
+                f"local=({lx:.1f}, {ly:.1f})"
+            )
+            return True, primary
         except Exception as exc:
-            print(f"[LevelRobot] soft-reset failed for {existing!r}: {exc}")
-            return False, existing
-    ok, name, _ = _spawn_spotdog_at(ucv, start_local_xy)
+            print(f"[LevelRobot] soft-reset failed for {primary!r}: {exc}")
+            return False, primary
+    ok, name, _ = _spawn_spotdog_at(ucv, start_local_xy, nav_actor=nav_actor)
     return ok, name
 
 
@@ -89,8 +302,9 @@ def _spawn_spotdog_at(
     start_local_xy: LocalXY,
     *,
     actor_name: str = LEVEL_ROBOT_NAME,
+    nav_actor: Optional[str] = None,
 ) -> Tuple[bool, str, UnrealCV]:
-    wx, wy, wz = foot_world_xyz_from_local_xy(*start_local_xy)
+    wx, wy, wz = _resolve_robot_world_xyz(ucv, start_local_xy, nav_actor=nav_actor)
     geh._prepare_ue_spawn(ucv)
     spawned = geh.spawn_bp(ucv, geh.ROBOT_BP, actor_name)
     if not spawned:
