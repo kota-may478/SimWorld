@@ -1,9 +1,9 @@
 {
   "version": 1,
-  "seed": 20260618,
-  "prop_count": 3,
-  "region_x_max_cm": 3000.0,
-  "region_y_max_cm": 3000.0,
+  "seed": 20260619,
+  "prop_count": 29,
+  "region_x_max_cm": 2000.0,
+  "region_y_max_cm": 2000.0,
   "exclusion_cm": 0.0,
   "spotdog_spawn_local_cm": [
     100.0,
@@ -11,91 +11,871 @@
   ],
   "props": [
     {
-      "slot_id": "compact_prop_000",
+      "slot_id": "site20_prop_000",
       "catalog_index": 0,
-      "prop_type_id": "boxes_03a",
-      "bp_name": "BP_Boxes_03a",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Boxes_03a.BP_Boxes_03a",
+      "prop_type_id": "dumpster",
+      "bp_name": "BP_Dumpster",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Dumpster.BP_Dumpster",
       "mask_color_rgb": [
-        171,
-        41,
-        69
+        145,
+        165,
+        87
       ],
       "local_xy_cm": [
-        1500.0,
-        1500.0
+        400.0,
+        450.0
       ],
       "world_xyz_cm": [
-        500.0,
-        -700.0,
+        -550.0,
+        -1800.0,
         6455.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
       "mask_color_canonical_rgb": [
-        171,
-        41,
-        69
+        145,
+        165,
+        87
       ],
       "mask_color_observed_bgr": null,
       "lit_color_observed_bgr": null
     },
     {
-      "slot_id": "compact_prop_001",
+      "slot_id": "site20_prop_001",
       "catalog_index": 1,
-      "prop_type_id": "constructionpylons_01a",
-      "bp_name": "BP_ConstructionPylons_01a",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_ConstructionPylons_01a.BP_ConstructionPylons_01a",
+      "prop_type_id": "lightgenerator_01a",
+      "bp_name": "BP_LightGenerator_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_LightGenerator_01a.BP_LightGenerator_01a",
       "mask_color_rgb": [
-        212,
-        100,
-        136
+        188,
+        36,
+        158
       ],
       "local_xy_cm": [
-        1300.0,
-        1700.0
+        550.0,
+        600.0
       ],
       "world_xyz_cm": [
-        700.0,
-        -900.0,
+        -400.0,
+        -1650.0,
         6455.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
       "mask_color_canonical_rgb": [
-        212,
-        100,
-        136
+        188,
+        36,
+        158
       ],
       "mask_color_observed_bgr": null,
       "lit_color_observed_bgr": null
     },
     {
-      "slot_id": "compact_prop_002",
+      "slot_id": "site20_prop_002",
       "catalog_index": 2,
+      "prop_type_id": "cablereel",
+      "bp_name": "BP_CableReel",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_CableReel.BP_CableReel",
+      "mask_color_rgb": [
+        41,
+        97,
+        39
+      ],
+      "local_xy_cm": [
+        650.0,
+        400.0
+      ],
+      "world_xyz_cm": [
+        -600.0,
+        -1550.0,
+        6455.0
+      ],
+      "visit_order": null,
+      "mask_color_set_rgb": null,
+      "mask_color_canonical_rgb": [
+        41,
+        97,
+        39
+      ],
+      "mask_color_observed_bgr": null,
+      "lit_color_observed_bgr": null
+    },
+    {
+      "slot_id": "site20_prop_003",
+      "catalog_index": 3,
+      "prop_type_id": "portapotty_01",
+      "bp_name": "BP_Portapotty_01",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Portapotty_01.BP_Portapotty_01",
+      "mask_color_rgb": [
+        84,
+        158,
+        110
+      ],
+      "local_xy_cm": [
+        350.0,
+        750.0
+      ],
+      "world_xyz_cm": [
+        -250.0,
+        -1850.0,
+        6455.0
+      ],
+      "visit_order": null,
+      "mask_color_set_rgb": null,
+      "mask_color_canonical_rgb": [
+        84,
+        158,
+        110
+      ],
+      "mask_color_observed_bgr": null,
+      "lit_color_observed_bgr": null
+    },
+    {
+      "slot_id": "site20_prop_004",
+      "catalog_index": 4,
+      "prop_type_id": "watertank_01a",
+      "bp_name": "BP_WaterTank_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_WaterTank_01a.BP_WaterTank_01a",
+      "mask_color_rgb": [
+        127,
+        219,
+        181
+      ],
+      "local_xy_cm": [
+        500.0,
+        850.0
+      ],
+      "world_xyz_cm": [
+        -150.0,
+        -1700.0,
+        6455.0
+      ],
+      "visit_order": null,
+      "mask_color_set_rgb": null,
+      "mask_color_canonical_rgb": [
+        127,
+        219,
+        181
+      ],
+      "mask_color_observed_bgr": null,
+      "lit_color_observed_bgr": null
+    },
+    {
+      "slot_id": "site20_prop_005",
+      "catalog_index": 5,
       "prop_type_id": "barrel_01",
       "bp_name": "BP_Barrel_01",
       "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Barrel_01.BP_Barrel_01",
       "mask_color_rgb": [
-        63,
-        159,
-        203
+        170,
+        90,
+        62
       ],
       "local_xy_cm": [
-        1700.0,
-        1300.0
+        900.0,
+        700.0
       ],
       "world_xyz_cm": [
-        300.0,
-        -500.0,
+        -300.0,
+        -1300.0,
         6455.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
       "mask_color_canonical_rgb": [
-        63,
+        170,
+        90,
+        62
+      ],
+      "mask_color_observed_bgr": null,
+      "lit_color_observed_bgr": null
+    },
+    {
+      "slot_id": "site20_prop_006",
+      "catalog_index": 6,
+      "prop_type_id": "drywall_01a",
+      "bp_name": "BP_Drywall_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Drywall_01a.BP_Drywall_01a",
+      "mask_color_rgb": [
+        213,
+        151,
+        133
+      ],
+      "local_xy_cm": [
+        1100.0,
+        550.0
+      ],
+      "world_xyz_cm": [
+        -450.0,
+        -1100.0,
+        6455.0
+      ],
+      "visit_order": null,
+      "mask_color_set_rgb": null,
+      "mask_color_canonical_rgb": [
+        213,
+        151,
+        133
+      ],
+      "mask_color_observed_bgr": null,
+      "lit_color_observed_bgr": null
+    },
+    {
+      "slot_id": "site20_prop_007",
+      "catalog_index": 7,
+      "prop_type_id": "cinderstack_01a",
+      "bp_name": "BP_CinderStack_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_CinderStack_01a.BP_CinderStack_01a",
+      "mask_color_rgb": [
+        66,
+        212,
+        204
+      ],
+      "local_xy_cm": [
+        750.0,
+        1100.0
+      ],
+      "world_xyz_cm": [
+        100.0,
+        -1450.0,
+        6455.0
+      ],
+      "visit_order": null,
+      "mask_color_set_rgb": null,
+      "mask_color_canonical_rgb": [
+        66,
+        212,
+        204
+      ],
+      "mask_color_observed_bgr": null,
+      "lit_color_observed_bgr": null
+    },
+    {
+      "slot_id": "site20_prop_008",
+      "catalog_index": 8,
+      "prop_type_id": "cinderstack_01a",
+      "bp_name": "BP_CinderStack_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_CinderStack_01a.BP_CinderStack_01a",
+      "mask_color_rgb": [
+        109,
+        83,
+        85
+      ],
+      "local_xy_cm": [
+        850.0,
+        1200.0
+      ],
+      "world_xyz_cm": [
+        200.0,
+        -1350.0,
+        6455.0
+      ],
+      "visit_order": null,
+      "mask_color_set_rgb": null,
+      "mask_color_canonical_rgb": [
+        109,
+        83,
+        85
+      ],
+      "mask_color_observed_bgr": null,
+      "lit_color_observed_bgr": null
+    },
+    {
+      "slot_id": "site20_prop_009",
+      "catalog_index": 9,
+      "prop_type_id": "woodenpalette_01",
+      "bp_name": "BP_woodenpalette_01",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_woodenpalette_01.BP_woodenpalette_01",
+      "mask_color_rgb": [
+        152,
+        144,
+        156
+      ],
+      "local_xy_cm": [
+        1200.0,
+        300.0
+      ],
+      "world_xyz_cm": [
+        -700.0,
+        -1000.0,
+        6455.0
+      ],
+      "visit_order": null,
+      "mask_color_set_rgb": null,
+      "mask_color_canonical_rgb": [
+        152,
+        144,
+        156
+      ],
+      "mask_color_observed_bgr": null,
+      "lit_color_observed_bgr": null
+    },
+    {
+      "slot_id": "site20_prop_010",
+      "catalog_index": 10,
+      "prop_type_id": "constructionpylons_01d",
+      "bp_name": "BP_ConstructionPylons_01d",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_ConstructionPylons_01d.BP_ConstructionPylons_01d",
+      "mask_color_rgb": [
+        195,
+        205,
+        37
+      ],
+      "local_xy_cm": [
+        1000.0,
+        950.0
+      ],
+      "world_xyz_cm": [
+        -50.0,
+        -1200.0,
+        6455.0
+      ],
+      "visit_order": null,
+      "mask_color_set_rgb": null,
+      "mask_color_canonical_rgb": [
+        195,
+        205,
+        37
+      ],
+      "mask_color_observed_bgr": null,
+      "lit_color_observed_bgr": null
+    },
+    {
+      "slot_id": "site20_prop_011",
+      "catalog_index": 11,
+      "prop_type_id": "woodenpalette_01",
+      "bp_name": "BP_woodenpalette_01",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_woodenpalette_01.BP_woodenpalette_01",
+      "mask_color_rgb": [
+        48,
+        76,
+        108
+      ],
+      "local_xy_cm": [
+        1720.0,
+        1780.0
+      ],
+      "world_xyz_cm": [
+        780.0,
+        -480.0,
+        6455.0
+      ],
+      "visit_order": null,
+      "mask_color_set_rgb": null,
+      "mask_color_canonical_rgb": [
+        48,
+        76,
+        108
+      ],
+      "mask_color_observed_bgr": null,
+      "lit_color_observed_bgr": null
+    },
+    {
+      "slot_id": "site20_prop_012",
+      "catalog_index": 12,
+      "prop_type_id": "boxes_03a",
+      "bp_name": "BP_Boxes_03a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Boxes_03a.BP_Boxes_03a",
+      "mask_color_rgb": [
+        91,
+        137,
+        179
+      ],
+      "local_xy_cm": [
+        1780.0,
+        1920.0
+      ],
+      "world_xyz_cm": [
+        920.0,
+        -420.0,
+        6455.0
+      ],
+      "visit_order": null,
+      "mask_color_set_rgb": null,
+      "mask_color_canonical_rgb": [
+        91,
+        137,
+        179
+      ],
+      "mask_color_observed_bgr": null,
+      "lit_color_observed_bgr": null
+    },
+    {
+      "slot_id": "site20_prop_013",
+      "catalog_index": 13,
+      "prop_type_id": "brickpalettestack_01a",
+      "bp_name": "BP_BrickPaletteStack_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_BrickPaletteStack_01a.BP_BrickPaletteStack_01a",
+      "mask_color_rgb": [
+        134,
+        198,
+        60
+      ],
+      "local_xy_cm": [
+        1920.0,
+        1720.0
+      ],
+      "world_xyz_cm": [
+        720.0,
+        -280.0,
+        6455.0
+      ],
+      "visit_order": null,
+      "mask_color_set_rgb": null,
+      "mask_color_canonical_rgb": [
+        134,
+        198,
+        60
+      ],
+      "mask_color_observed_bgr": null,
+      "lit_color_observed_bgr": null
+    },
+    {
+      "slot_id": "site20_prop_014",
+      "catalog_index": 14,
+      "prop_type_id": "concretebag_01a",
+      "bp_name": "BP_ConcreteBag_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_ConcreteBag_01a.BP_ConcreteBag_01a",
+      "mask_color_rgb": [
+        177,
+        69,
+        131
+      ],
+      "local_xy_cm": [
+        1680.0,
+        1880.0
+      ],
+      "world_xyz_cm": [
+        880.0,
+        -520.0,
+        6455.0
+      ],
+      "visit_order": null,
+      "mask_color_set_rgb": null,
+      "mask_color_canonical_rgb": [
+        177,
+        69,
+        131
+      ],
+      "mask_color_observed_bgr": null,
+      "lit_color_observed_bgr": null
+    },
+    {
+      "slot_id": "site20_prop_015",
+      "catalog_index": 15,
+      "prop_type_id": "rebar_01a",
+      "bp_name": "BP_Rebar_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Rebar_01a.BP_Rebar_01a",
+      "mask_color_rgb": [
+        220,
+        130,
+        202
+      ],
+      "local_xy_cm": [
+        1900.0,
+        1900.0
+      ],
+      "world_xyz_cm": [
+        900.0,
+        -300.0,
+        6455.0
+      ],
+      "visit_order": null,
+      "mask_color_set_rgb": null,
+      "mask_color_canonical_rgb": [
+        220,
+        130,
+        202
+      ],
+      "mask_color_observed_bgr": null,
+      "lit_color_observed_bgr": null
+    },
+    {
+      "slot_id": "site20_material",
+      "catalog_index": 16,
+      "prop_type_id": "crate_01a",
+      "bp_name": "BP_Crate_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Crate_01a.BP_Crate_01a",
+      "mask_color_rgb": [
+        73,
+        191,
+        83
+      ],
+      "local_xy_cm": [
+        1850.0,
+        1850.0
+      ],
+      "world_xyz_cm": [
+        850.0,
+        -350.0,
+        6455.0
+      ],
+      "visit_order": null,
+      "mask_color_set_rgb": null,
+      "mask_color_canonical_rgb": [
+        73,
+        191,
+        83
+      ],
+      "mask_color_observed_bgr": null,
+      "lit_color_observed_bgr": null
+    },
+    {
+      "slot_id": "site20_prop_017",
+      "catalog_index": 17,
+      "prop_type_id": "roadblock_03b",
+      "bp_name": "BP_Roadblock_03b",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_03b.BP_Roadblock_03b",
+      "mask_color_rgb": [
+        116,
+        62,
+        154
+      ],
+      "local_xy_cm": [
+        1330.0,
+        910.0
+      ],
+      "world_xyz_cm": [
+        -90.0,
+        -870.0,
+        6455.0
+      ],
+      "visit_order": null,
+      "mask_color_set_rgb": null,
+      "mask_color_canonical_rgb": [
+        116,
+        62,
+        154
+      ],
+      "mask_color_observed_bgr": null,
+      "lit_color_observed_bgr": null
+    },
+    {
+      "slot_id": "site20_prop_018",
+      "catalog_index": 18,
+      "prop_type_id": "roadblock_03b",
+      "bp_name": "BP_Roadblock_03b",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_03b.BP_Roadblock_03b",
+      "mask_color_rgb": [
         159,
-        203
+        123,
+        35
+      ],
+      "local_xy_cm": [
+        1330.0,
+        1270.0
+      ],
+      "world_xyz_cm": [
+        270.0,
+        -870.0,
+        6455.0
+      ],
+      "visit_order": null,
+      "mask_color_set_rgb": null,
+      "mask_color_canonical_rgb": [
+        159,
+        123,
+        35
+      ],
+      "mask_color_observed_bgr": null,
+      "lit_color_observed_bgr": null
+    },
+    {
+      "slot_id": "site20_prop_019",
+      "catalog_index": 19,
+      "prop_type_id": "roadblock_03b",
+      "bp_name": "BP_Roadblock_03b",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_03b.BP_Roadblock_03b",
+      "mask_color_rgb": [
+        202,
+        184,
+        106
+      ],
+      "local_xy_cm": [
+        1270.0,
+        970.0
+      ],
+      "world_xyz_cm": [
+        -30.0,
+        -930.0,
+        6455.0
+      ],
+      "visit_order": null,
+      "mask_color_set_rgb": null,
+      "mask_color_canonical_rgb": [
+        202,
+        184,
+        106
+      ],
+      "mask_color_observed_bgr": null,
+      "lit_color_observed_bgr": null
+    },
+    {
+      "slot_id": "site20_prop_020",
+      "catalog_index": 20,
+      "prop_type_id": "roadblock_03b",
+      "bp_name": "BP_Roadblock_03b",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_03b.BP_Roadblock_03b",
+      "mask_color_rgb": [
+        55,
+        55,
+        177
+      ],
+      "local_xy_cm": [
+        1630.0,
+        970.0
+      ],
+      "world_xyz_cm": [
+        -30.0,
+        -570.0,
+        6455.0
+      ],
+      "visit_order": null,
+      "mask_color_set_rgb": null,
+      "mask_color_canonical_rgb": [
+        55,
+        55,
+        177
+      ],
+      "mask_color_observed_bgr": null,
+      "lit_color_observed_bgr": null
+    },
+    {
+      "slot_id": "site20_prop_021",
+      "catalog_index": 21,
+      "prop_type_id": "roadblock_03b",
+      "bp_name": "BP_Roadblock_03b",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_03b.BP_Roadblock_03b",
+      "mask_color_rgb": [
+        98,
+        116,
+        58
+      ],
+      "local_xy_cm": [
+        1450.0,
+        910.0
+      ],
+      "world_xyz_cm": [
+        -90.0,
+        -750.0,
+        6455.0
+      ],
+      "visit_order": null,
+      "mask_color_set_rgb": null,
+      "mask_color_canonical_rgb": [
+        98,
+        116,
+        58
+      ],
+      "mask_color_observed_bgr": null,
+      "lit_color_observed_bgr": null
+    },
+    {
+      "slot_id": "site20_prop_022",
+      "catalog_index": 22,
+      "prop_type_id": "roadblock_03b",
+      "bp_name": "BP_Roadblock_03b",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_03b.BP_Roadblock_03b",
+      "mask_color_rgb": [
+        141,
+        177,
+        129
+      ],
+      "local_xy_cm": [
+        1450.0,
+        1270.0
+      ],
+      "world_xyz_cm": [
+        270.0,
+        -750.0,
+        6455.0
+      ],
+      "visit_order": null,
+      "mask_color_set_rgb": null,
+      "mask_color_canonical_rgb": [
+        141,
+        177,
+        129
+      ],
+      "mask_color_observed_bgr": null,
+      "lit_color_observed_bgr": null
+    },
+    {
+      "slot_id": "site20_prop_023",
+      "catalog_index": 23,
+      "prop_type_id": "roadblock_03b",
+      "bp_name": "BP_Roadblock_03b",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_03b.BP_Roadblock_03b",
+      "mask_color_rgb": [
+        184,
+        48,
+        200
+      ],
+      "local_xy_cm": [
+        1270.0,
+        1090.0
+      ],
+      "world_xyz_cm": [
+        90.0,
+        -930.0,
+        6455.0
+      ],
+      "visit_order": null,
+      "mask_color_set_rgb": null,
+      "mask_color_canonical_rgb": [
+        184,
+        48,
+        200
+      ],
+      "mask_color_observed_bgr": null,
+      "lit_color_observed_bgr": null
+    },
+    {
+      "slot_id": "site20_prop_024",
+      "catalog_index": 24,
+      "prop_type_id": "roadblock_03b",
+      "bp_name": "BP_Roadblock_03b",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_03b.BP_Roadblock_03b",
+      "mask_color_rgb": [
+        37,
+        109,
+        81
+      ],
+      "local_xy_cm": [
+        1630.0,
+        1090.0
+      ],
+      "world_xyz_cm": [
+        90.0,
+        -570.0,
+        6455.0
+      ],
+      "visit_order": null,
+      "mask_color_set_rgb": null,
+      "mask_color_canonical_rgb": [
+        37,
+        109,
+        81
+      ],
+      "mask_color_observed_bgr": null,
+      "lit_color_observed_bgr": null
+    },
+    {
+      "slot_id": "site20_prop_025",
+      "catalog_index": 25,
+      "prop_type_id": "roadblock_03b",
+      "bp_name": "BP_Roadblock_03b",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_03b.BP_Roadblock_03b",
+      "mask_color_rgb": [
+        80,
+        170,
+        152
+      ],
+      "local_xy_cm": [
+        1570.0,
+        910.0
+      ],
+      "world_xyz_cm": [
+        -90.0,
+        -630.0,
+        6455.0
+      ],
+      "visit_order": null,
+      "mask_color_set_rgb": null,
+      "mask_color_canonical_rgb": [
+        80,
+        170,
+        152
+      ],
+      "mask_color_observed_bgr": null,
+      "lit_color_observed_bgr": null
+    },
+    {
+      "slot_id": "site20_prop_026",
+      "catalog_index": 26,
+      "prop_type_id": "roadblock_03b",
+      "bp_name": "BP_Roadblock_03b",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_03b.BP_Roadblock_03b",
+      "mask_color_rgb": [
+        123,
+        41,
+        223
+      ],
+      "local_xy_cm": [
+        1570.0,
+        1270.0
+      ],
+      "world_xyz_cm": [
+        270.0,
+        -630.0,
+        6455.0
+      ],
+      "visit_order": null,
+      "mask_color_set_rgb": null,
+      "mask_color_canonical_rgb": [
+        123,
+        41,
+        223
+      ],
+      "mask_color_observed_bgr": null,
+      "lit_color_observed_bgr": null
+    },
+    {
+      "slot_id": "site20_prop_027",
+      "catalog_index": 27,
+      "prop_type_id": "roadblock_03b",
+      "bp_name": "BP_Roadblock_03b",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_03b.BP_Roadblock_03b",
+      "mask_color_rgb": [
+        166,
+        102,
+        104
+      ],
+      "local_xy_cm": [
+        1270.0,
+        1210.0
+      ],
+      "world_xyz_cm": [
+        210.0,
+        -930.0,
+        6455.0
+      ],
+      "visit_order": null,
+      "mask_color_set_rgb": null,
+      "mask_color_canonical_rgb": [
+        166,
+        102,
+        104
+      ],
+      "mask_color_observed_bgr": null,
+      "lit_color_observed_bgr": null
+    },
+    {
+      "slot_id": "site20_prop_028",
+      "catalog_index": 28,
+      "prop_type_id": "roadblock_03b",
+      "bp_name": "BP_Roadblock_03b",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_03b.BP_Roadblock_03b",
+      "mask_color_rgb": [
+        209,
+        163,
+        175
+      ],
+      "local_xy_cm": [
+        1630.0,
+        1210.0
+      ],
+      "world_xyz_cm": [
+        210.0,
+        -570.0,
+        6455.0
+      ],
+      "visit_order": null,
+      "mask_color_set_rgb": null,
+      "mask_color_canonical_rgb": [
+        209,
+        163,
+        175
       ],
       "mask_color_observed_bgr": null,
       "lit_color_observed_bgr": null
