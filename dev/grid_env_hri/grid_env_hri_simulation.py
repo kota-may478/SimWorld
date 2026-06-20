@@ -228,6 +228,9 @@ UE_PORT = 9000
 UE_TCP_PROBE_TIMEOUT_S = float(os.environ.get("UE_TCP_PROBE_TIMEOUT_S", "3"))
 UE_UNREALCV_MAX_ATTEMPTS = int(os.environ.get("UE_UNREALCV_MAX_ATTEMPTS", "5"))
 UE_UNREALCV_RETRY_INTERVAL_S = float(os.environ.get("UE_UNREALCV_RETRY_INTERVAL_S", "0.5"))
+UE_CONNECT_RETRIES = int(os.environ.get("UE_CONNECT_RETRIES", "10"))
+UE_CONNECT_RETRY_WAIT_S = float(os.environ.get("UE_CONNECT_RETRY_WAIT_S", "3.0"))
+UE_RELEASE_SETTLE_S = float(os.environ.get("UE_RELEASE_SETTLE_S", "1.5"))
 UE_PING_TIMEOUT_S = float(os.environ.get("UE_PING_TIMEOUT_S", "2.0"))
 # When 1, TCP connect without UnrealCV banner still counts as reachable (PIE busy).
 UE_PROBE_RELAXED_TCP = os.environ.get("UE_PROBE_RELAXED_TCP", "1") not in {
@@ -371,6 +374,8 @@ def release_connection(
     _UE_SESSION_UCV = None
     _UE_SESSION_COMM = None
     _UE_SESSION_HOST = None
+    if UE_RELEASE_SETTLE_S > 0:
+        time.sleep(UE_RELEASE_SETTLE_S)
     print("[UE] session released")
 
 
@@ -606,14 +611,32 @@ def ensure_connection(
         )
     else:
         for host in reachable:
-            try:
-                ucv = _connect_unrealcv(host)
-                communicator = Communicator(ucv)
-                print(f"[UE] Connected via UnrealCV at {host}:{UE_PORT}")
-                return _store_ue_session(ucv, communicator, host)
-            except Exception as exc:
-                errors.append(f"{host}:{UE_PORT} — {exc}")
-                print(f"[UE] connect failed on {host}:{UE_PORT}: {exc}")
+            for attempt in range(1, UE_CONNECT_RETRIES + 1):
+                if attempt > 1:
+                    wait_s = UE_CONNECT_RETRY_WAIT_S * (attempt - 1)
+                    print(
+                        f"[UE] connect retry {attempt}/{UE_CONNECT_RETRIES} "
+                        f"on {host}:{UE_PORT} (wait {wait_s:.0f}s) ..."
+                    )
+                    time.sleep(wait_s)
+                    try:
+                        import ue_client_guard as _guard
+
+                        _guard.wait_for_tcp_port_idle(
+                            except_pid=os.getpid(),
+                            timeout_s=min(wait_s + 2.0, 15.0),
+                        )
+                    except Exception:
+                        pass
+                try:
+                    ucv = _connect_unrealcv(host)
+                    communicator = Communicator(ucv)
+                    print(f"[UE] Connected via UnrealCV at {host}:{UE_PORT}")
+                    return _store_ue_session(ucv, communicator, host)
+                except Exception as exc:
+                    err = f"{host}:{UE_PORT} attempt {attempt} — {exc}"
+                    errors.append(err)
+                    print(f"[UE] connect failed: {err}")
 
     shadow_hint = _port_listener_hint(UE_PORT)
     shadow_note = ""

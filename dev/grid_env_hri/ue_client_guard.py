@@ -29,6 +29,7 @@ UE_PORT = 9000
 _LOCK_PATH = Path(os.environ.get("SIMWORLD_UE_LOCK", "/tmp/simworld_ue9000.lock"))
 _PORT_IDLE_WAIT_S = float(os.environ.get("UE_PORT_IDLE_WAIT_S", "8.0"))
 _PORT_IDLE_POLL_S = 0.35
+_LOCK_WAIT_TIMEOUT_S = float(os.environ.get("UE_LOCK_WAIT_TIMEOUT_S", "6.0"))
 _shutdown_installed = False
 _lock_fd: Optional[int] = None
 
@@ -180,6 +181,89 @@ def terminate_stale_wsl_python_clients_on_port(
     return killed
 
 
+def _pid_command(pid: int) -> str:
+    try:
+        return Path(f"/proc/{pid}/cmdline").read_text(encoding="utf-8").replace("\x00", " ").strip()
+    except OSError:
+        return ""
+
+
+def _terminate_pid(pid: int, *, reason: str) -> bool:
+    if pid <= 0 or pid == os.getpid():
+        return False
+    cmd = _pid_command(pid)
+    try:
+        os.kill(pid, signal.SIGTERM)
+        print(f"[UE guard] SIGTERM {reason} pid={pid} cmd={cmd[:96]!r}")
+        return True
+    except OSError as exc:
+        print(f"[UE guard] SIGTERM {reason} pid={pid} failed: {exc}")
+        return False
+
+
+def _lock_holder_pid() -> Optional[int]:
+    try:
+        raw = _LOCK_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def _cleanup_stale_lock_holder() -> bool:
+    holder = _lock_holder_pid()
+    if holder is None or holder == os.getpid():
+        return False
+    cmd = _pid_command(holder)
+    if not cmd:
+        return False
+    cmd_lower = cmd.lower()
+    if "simworld" not in cmd_lower and "run_site_transport" not in cmd_lower:
+        return False
+    return _terminate_pid(holder, reason="UE lock holder")
+
+
+def _windows_tcp_rows_on_port(port: int = UE_PORT) -> list[str]:
+    """Return Windows Get-NetTCPConnection rows for :port when running under WSL."""
+    try:
+        out = subprocess.check_output(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-Command",
+                (
+                    f"Get-NetTCPConnection -LocalPort {port} -ErrorAction SilentlyContinue "
+                    "| Select-Object LocalAddress,LocalPort,State,OwningProcess "
+                    "| ConvertTo-Csv -NoTypeInformation"
+                ),
+            ],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=4.0,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+        return []
+    return [line.strip() for line in out.splitlines()[1:] if line.strip()]
+
+
+def diagnose_windows_port_9000_state() -> None:
+    rows = _windows_tcp_rows_on_port()
+    if not rows:
+        return
+    states = [row.split(",")[2].strip('"').lower() for row in rows if len(row.split(",")) >= 3]
+    if "closewait" in states or states.count("established") > 1:
+        print(f"[UE guard] Windows :{UE_PORT} TCP state before connect:")
+        for row in rows:
+            print(f"  {row}")
+        print(
+            "[UE guard] cleaning WSL Python clients before opening a new UnrealCV session"
+        )
+        terminate_stale_wsl_python_clients_on_port(except_pid=os.getpid())
+        wait_for_tcp_port_idle(except_pid=os.getpid(), timeout_s=2.0)
+
+
 def acquire_ue_client_lock(*, blocking: bool = True) -> bool:
     """Process-wide file lock so only one script owns the UE client at a time."""
     global _lock_fd
@@ -187,21 +271,23 @@ def acquire_ue_client_lock(*, blocking: bool = True) -> bool:
         return True
     _LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(str(_LOCK_PATH), os.O_CREAT | os.O_RDWR, 0o644)
-    flags = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
-    try:
-        fcntl.flock(fd, flags)
-    except BlockingIOError:
-        os.close(fd)
-        holder = ""
+    deadline = time.time() + (_LOCK_WAIT_TIMEOUT_S if blocking else 0.0)
+    while True:
         try:
-            holder = _LOCK_PATH.read_text(encoding="utf-8").strip()
-        except OSError:
-            pass
-        print(
-            f"[UE guard] another process holds {_LOCK_PATH}"
-            f"{f' (pid={holder})' if holder else ''}"
-        )
-        return False
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            holder = _lock_holder_pid()
+            print(
+                f"[UE guard] another process holds {_LOCK_PATH}"
+                f"{f' (pid={holder})' if holder else ''}"
+            )
+            terminate_stale_wsl_python_clients_on_port(except_pid=os.getpid())
+            _cleanup_stale_lock_holder()
+            if not blocking or time.time() >= deadline:
+                os.close(fd)
+                return False
+            time.sleep(0.5)
     os.ftruncate(fd, 0)
     os.write(fd, str(os.getpid()).encode())
     _lock_fd = fd
@@ -281,6 +367,7 @@ def ensure_exclusive_ue_session(
         n = terminate_stale_wsl_python_clients_on_port(except_pid=os.getpid())
         if n:
             print(f"[UE guard] cleared {n} stale WSL Python client(s) on :{UE_PORT}")
+        diagnose_windows_port_9000_state()
 
     # Always drop any module/notebook session before opening a new TCP client.
     geh.release_connection(ucv, communicator=communicator)
