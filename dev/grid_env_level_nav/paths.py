@@ -12,6 +12,7 @@ REGISTRY_DIR = CACHE_DIR / "registries"
 RUNS_DIR = CACHE_DIR / "runs"
 COMPACT_NAV_RUN_DIR = RUNS_DIR / "compact_nav"
 CONSTRUCTION_SITE_RUN_DIR = RUNS_DIR / "construction_site"
+SITE_TRANSPORT_20M_RUN_DIR = RUNS_DIR / "site_transport_20m"
 
 L0_MASK_STRICT = L0_CACHE_DIR / "l0_mask_30cm_strict.npz"
 L0_MASK_DEFAULT = L0_CACHE_DIR / "l0_mask_30cm.npz"
@@ -19,6 +20,7 @@ L0_VIZ_STRICT = L0_CACHE_DIR / "l0_viz_30cm_strict.png"
 
 COMPACT_NAV_REGISTRY = REGISTRY_DIR / "compact_nav_placement.json"
 CONSTRUCTION_SITE_REGISTRY = REGISTRY_DIR / "construction_site_placement.json"
+SITE_TRANSPORT_20M_REGISTRY = REGISTRY_DIR / "site_transport_20m_layout_01.json"
 PROP_CATALOG_CONSTRUCTION = REGISTRY_DIR / "prop_catalog_construction_vol1.json"
 
 ZONE_CATALOG_TEMPLATE = REGISTRY_DIR / "zone_catalog.template.json"
