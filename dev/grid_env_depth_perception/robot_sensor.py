@@ -128,6 +128,9 @@ def yaw_to_unit_vec(yaw_deg: float) -> Tuple[float, float]:
 
 
 def configure_sensor_camera(ucv: UnrealCV, camera_id: int) -> None:
+    """Set resolution/FOV only on external cameras (not pawn-mounted FusionCam)."""
+    if uses_engine_follow_camera(ucv, camera_id):
+        return
     ucv.set_camera_resolution(camera_id, SENSOR_RESOLUTION)
     ucv.set_camera_fov(camera_id, SENSOR_FOV_DEG)
 
@@ -152,5 +155,5 @@ def fetch_lit_bgr(communicator: Communicator, camera_id: int):
     return communicator.get_camera_observation(camera_id, "lit", mode="direct")
 
 
-def fetch_mask_rgb(communicator: Communicator, camera_id: int):
-    return communicator.get_camera_observation(camera_id, "object_mask", mode="direct")
+def fetch_mask_rgb(communicator: Communicator, camera_id: int, mode: str = "direct"):
+    return communicator.get_camera_observation(camera_id, "object_mask", mode=mode)
