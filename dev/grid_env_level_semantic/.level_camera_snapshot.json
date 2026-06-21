@@ -1,0 +1,20 @@
+{
+  "map": "/Game/Maps/Level",
+  "unit": "cm",
+  "cameras": [
+    {
+      "camera_id": 0,
+      "name": "PawnSensor",
+      "location_cm": [
+        6272.468,
+        1164.16,
+        6488.923
+      ],
+      "rotation_deg": [
+        -6.448,
+        174.761,
+        0.0
+      ]
+    }
+  ]
+}

@@ -1,0 +1,980 @@
+#!/usr/bin/env python3
+"""grid_100x100 PIE patrol: perimeter solidification, A* navigation, SpotDog round trip.
+
+Prerequisites:
+  - UE Editor: open grid_100x100 and start PIE
+  - Map already contains floor + block_* actors (initially translucent)
+  - WSL: conda activate simworld
+
+Grid cell indices (gx, gy) are 1-based (see grid_env_10k).
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import sys
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence, Set, Tuple
+
+BlockIndex = Tuple[int, int]
+WorldXY = Tuple[float, float]
+
+
+def _find_project_root() -> Path:
+    here = Path(__file__).resolve().parent
+    for candidate in (here, *here.parents):
+        if (candidate / "setup.py").exists() and (candidate / "simworld").is_dir():
+            return candidate
+    return here.parent.parent
+
+
+ROOT = _find_project_root()
+GEH_DIR = ROOT / "dev" / "grid_env_hri"
+G10K_DIR = ROOT / "dev" / "grid_env_10k"
+MT_DIR = ROOT / "dev" / "llm_material_transport"
+for p in (ROOT, GEH_DIR, G10K_DIR, MT_DIR):
+    if str(p) not in sys.path:
+        sys.path.insert(0, str(p))
+
+import grid_env_10k as g10k  # noqa: E402
+import grid_env_hri_simulation as geh  # noqa: E402
+from path_planning_costmap import (  # noqa: E402
+    COSTMAP_LETHAL_COST,
+    AStarPlanResult,
+    Costmap2D,
+    build_uniform_costmap,
+    plan_waypoints_grid_astar,
+)
+from simworld.agent.humanoid import Humanoid  # noqa: E402
+from simworld.communicator.communicator import Communicator  # noqa: E402
+from simworld.communicator.unrealcv import UnrealCV  # noqa: E402
+from simworld.utils.vector import Vector  # noqa: E402
+
+# ---- Scenario defaults ----
+GRID_N = 100
+# Costmap cell size matches block width (0.30 m) for 1:1 grid alignment.
+COSTMAP_RESOLUTION_CM = geh.CUBE_SIZE_CM
+HUMAN_CELL: BlockIndex = (5, 5)
+ROBOT_START_CELL: BlockIndex = (10, 5)
+ROBOT_GOAL_CELL: BlockIndex = (50, 50)
+GOAL_DWELL_S = 5.0
+
+# ---- Robot control (same family as llm_material_transport) ----
+ROBOT_SPEED = 200.0
+ROBOT_MOVE_SLICE_S = 0.2
+ROBOT_TURN_DUR_S = 1.0
+ROTATE_THR_DEG = 20.0
+ARRIVE_TOLERANCE_CM = 100.0
+PATH_WP_SPACING_CM = 300.0
+PATH_WP_REACH_TOLERANCE_CM = 80.0
+PATH_MAX_OPEN_LOOP_MOVE_CM = 350.0
+PATH_MAX_STEPS_PER_WP = 50
+PATH_REPLAN_STUCK_STEPS = 14
+PATH_MAX_TOTAL_STEPS = 1200
+RETURN_ARRIVE_TOLERANCE_CM = 120.0
+ROBOT_BP = geh.ROBOT_BP
+REGISTRY_CACHE_PATH = G10K_DIR / ".pie_block_registry.json"
+ROBOT_PROBE_NAME = "__GridEnv_SpotRobot_probe__"
+HUMAN_BP_CANDIDATES: Tuple[str, ...] = (
+    geh.HUMAN_BP,
+    "/Game/TrafficSystem/Pedestrian/Base_Pedestrian.Base_Pedestrian_C",
+    # Editor loose TrafficSystem may lack compiled _C; Human_Avatar fallback (PIE spawn OK).
+    "/Game/Human_Avatar/DefaultCharacter/Blueprint/BP_Default_Character.BP_Default_Character_C",
+)
+HUMANOID_CELL_XY_TOLERANCE_CM = 120.0
+
+
+@dataclass(frozen=True)
+class SegmentCommand:
+    turn_deg: float
+    turn_clockwise: int
+    move_cm: float
+
+
+@dataclass
+class PatrolResult:
+    perimeter_ok: bool
+    human_name: Optional[str]
+    humanoid_on_floor: bool
+    robot_spawned: bool
+    outbound_arrived: bool
+    return_arrived: bool
+    start_xy: WorldXY
+    goal_xy: WorldXY
+    final_xy: WorldXY
+    return_dist_cm: float
+    humanoid_xy: Optional[WorldXY] = None
+    humanoid_feet_z_cm: Optional[float] = None
+
+
+def block_index_to_map_xy_m(gx: int, gy: int) -> Tuple[float, float]:
+    """Return cell-center map coordinates [m] (lower-left origin) for (gx, gy)."""
+    g10k.validate_block_index(gx, gy, grid_n=GRID_N)
+    col = gx - 1
+    row = gy - 1
+    return (col + 0.5) * geh.CUBE_SIZE_M, (row + 0.5) * geh.CUBE_SIZE_M
+
+
+def block_index_to_world_xy_cm(gx: int, gy: int) -> WorldXY:
+    mx, my = block_index_to_map_xy_m(gx, gy)
+    return geh.map_xy_m_to_world_cm((mx, my))
+
+
+def world_cm_to_block_index(
+    x_cm: float,
+    y_cm: float,
+    *,
+    grid_n: int = GRID_N,
+) -> Optional[BlockIndex]:
+    """Map UE world XY [cm] to nearest cell (gx, gy); None if out of range."""
+    ox, oy = geh.MAP_ORIGIN_XY_CM
+    col = int(round((x_cm - ox - geh.CUBE_HALF_CM) / geh.CUBE_SIZE_CM))
+    row = int(round((y_cm - oy - geh.CUBE_HALF_CM) / geh.CUBE_SIZE_CM))
+    gx, gy = col + 1, row + 1
+    if 1 <= gx <= grid_n and 1 <= gy <= grid_n:
+        return gx, gy
+    return None
+
+
+REGISTRY_LOCATION_BATCH_SIZE = 200
+
+
+def _map_cube_actor_to_cell(
+    ucv: UnrealCV,
+    name: str,
+    *,
+    grid_n: int,
+) -> Optional[Tuple[BlockIndex, str]]:
+    if name.startswith(g10k.BLOCK_ACTOR_PREFIX + "_"):
+        parsed = g10k.parse_block_actor_name(name)
+        if parsed is not None:
+            return parsed, name
+        return None
+    if "TransparentCube" not in name:
+        return None
+    loc = geh.try_get_location_cm(ucv, name)
+    if loc is None:
+        return None
+    return _map_cube_actor_to_cell_from_xy(loc[0], loc[1], name, grid_n=grid_n)
+
+
+def _map_cube_actor_to_cell_from_xy(
+    x_cm: float,
+    y_cm: float,
+    name: str,
+    *,
+    grid_n: int,
+) -> Optional[Tuple[BlockIndex, str]]:
+    cell = world_cm_to_block_index(x_cm, y_cm, grid_n=grid_n)
+    if cell is None:
+        return None
+    return cell, name
+
+
+def _register_mapped_cell(
+    registry: Dict[BlockIndex, str],
+    mapped: Tuple[BlockIndex, str],
+    needed: Optional[Set[BlockIndex]],
+) -> None:
+    cell, actor_name = mapped
+    if needed is not None and cell not in needed:
+        return
+    registry.setdefault(cell, actor_name)
+    if needed is not None and cell in needed:
+        needed.discard(cell)
+
+
+def _load_registry_cache() -> Dict[str, str]:
+    if not REGISTRY_CACHE_PATH.is_file():
+        return {}
+    try:
+        raw = json.loads(REGISTRY_CACHE_PATH.read_text(encoding="utf-8"))
+        return {str(k): str(v) for k, v in raw.items()}
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return {}
+
+
+def _save_registry_cache(registry: Dict[BlockIndex, str]) -> None:
+    payload = {f"{gx:03d}_{gy:03d}": name for (gx, gy), name in registry.items()}
+    try:
+        REGISTRY_CACHE_PATH.write_text(
+            json.dumps(payload, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        print(f"[Registry] cache saved: {REGISTRY_CACHE_PATH}")
+    except OSError as exc:
+        print(f"[Registry] warn: cache save failed: {exc}")
+
+
+def build_pie_block_registry(
+    ucv: UnrealCV,
+    *,
+    grid_n: int = GRID_N,
+    cells: Optional[Set[BlockIndex]] = None,
+    use_cache: bool = True,
+) -> Dict[BlockIndex, str]:
+    """Map PIE actor names to (gx, gy); vget /objects returns UAID names only."""
+    needed = set(cells) if cells is not None else None
+    registry: Dict[BlockIndex, str] = {}
+    cache = _load_registry_cache() if use_cache else {}
+
+    if needed is not None and cache:
+        for cell in list(needed):
+            key = f"{cell[0]:03d}_{cell[1]:03d}"
+            name = cache.get(key)
+            if name and geh.actor_exists(ucv, name):
+                registry[cell] = name
+                needed.discard(cell)
+        if needed:
+            print(f"[Registry] cache hit {len(registry)}, still need {len(needed)} cells")
+
+    names = geh.actor_names(ucv)
+    cube_names = [
+        n
+        for n in names
+        if n.startswith(g10k.BLOCK_ACTOR_PREFIX + "_") or "TransparentCube" in n
+    ]
+    t0 = time.monotonic()
+    print(
+        f"[Registry] scanning {len(cube_names)} cube actors"
+        f"{f' for {len(needed)} cells' if needed else ''} ..."
+    )
+
+    # Batch location queries — much faster than per-actor RPC for 10k cubes.
+    scanned = 0
+    batch_size = REGISTRY_LOCATION_BATCH_SIZE
+    for batch_start in range(0, len(cube_names), batch_size):
+        if needed is not None and not needed:
+            break
+        batch = cube_names[batch_start : batch_start + batch_size]
+        locations: List[Optional[Tuple[float, float, float]]] = [None] * len(batch)
+        try:
+            loc_arrays = ucv.get_location_batch(batch)
+            for idx, loc_arr in enumerate(loc_arrays):
+                locations[idx] = (
+                    float(loc_arr[0]),
+                    float(loc_arr[1]),
+                    float(loc_arr[2]),
+                )
+        except Exception:
+            for idx, name in enumerate(batch):
+                locations[idx] = geh.try_get_location_cm(ucv, name)
+
+        for name, loc in zip(batch, locations):
+            scanned += 1
+            if loc is None:
+                continue
+            if name.startswith(g10k.BLOCK_ACTOR_PREFIX + "_"):
+                parsed = g10k.parse_block_actor_name(name)
+                mapped = (parsed, name) if parsed is not None else None
+            elif "TransparentCube" in name:
+                mapped = _map_cube_actor_to_cell_from_xy(
+                    loc[0], loc[1], name, grid_n=grid_n
+                )
+            else:
+                mapped = None
+            if mapped is None:
+                continue
+            _register_mapped_cell(registry, mapped, needed)
+
+        if scanned % 500 == 0 or scanned == len(cube_names):
+            print(
+                f"[Registry] {scanned}/{len(cube_names)} mapped={len(registry)} "
+                f"elapsed={time.monotonic() - t0:.0f}s",
+                flush=True,
+            )
+
+    if cache:
+        merged = dict(cache)
+        merged.update(
+            {f"{gx:03d}_{gy:03d}": name for (gx, gy), name in registry.items()}
+        )
+        registry_full: Dict[BlockIndex, str] = {}
+        for key, name in merged.items():
+            parts = key.split("_")
+            if len(parts) == 2:
+                registry_full[(int(parts[0]), int(parts[1]))] = name
+        _save_registry_cache(registry_full)
+    elif registry:
+        _save_registry_cache(registry)
+
+    expected = len(cells) if cells is not None else grid_n * grid_n
+    print(
+        f"[Registry] mapped {len(registry)}/{expected} blocks "
+        f"in {time.monotonic() - t0:.1f}s"
+    )
+    if cells is None and len(registry) < grid_n * grid_n:
+        print(
+            "[Registry] warn: incomplete map — World Partition で未ロードのセルがあると "
+            "apply_scenario が失敗します。Editor で grid 領域をロードしてください。"
+        )
+    return registry
+
+
+def resolve_block_actor_name(
+    registry: Dict[BlockIndex, str],
+    gx: int,
+    gy: int,
+) -> str:
+    return registry.get((gx, gy), g10k.block_actor_name(gx, gy))
+
+
+def set_block_mode_pie(
+    ucv: UnrealCV,
+    registry: Dict[BlockIndex, str],
+    gx: int,
+    gy: int,
+    mode: g10k.BlockMode,
+) -> bool:
+    name = resolve_block_actor_name(registry, gx, gy)
+    if not geh.actor_exists(ucv, name):
+        return False
+    blocking = g10k.mode_to_set_blocking(mode)
+    return geh.set_cube_blocking_mode(
+        ucv, name, blocking=blocking, apply_tint=blocking
+    )
+
+
+def set_blocks_mode_pie(
+    ucv: UnrealCV,
+    registry: Dict[BlockIndex, str],
+    cells: Iterable[BlockIndex],
+    mode: g10k.BlockMode,
+    *,
+    progress_every: int = 100,
+    label: str = "",
+) -> Tuple[int, int]:
+    ok_n = 0
+    fail_n = 0
+    cells_list = list(cells)
+    total = len(cells_list)
+    t0 = time.monotonic()
+    prefix = f"[Layout]{f' {label}' if label else ''}"
+    print(f"{prefix} apply {mode} to {total} cells (PIE registry) ...")
+    for i, (gx, gy) in enumerate(cells_list, start=1):
+        if set_block_mode_pie(ucv, registry, gx, gy, mode):
+            ok_n += 1
+        else:
+            fail_n += 1
+        if progress_every > 0 and (i % progress_every == 0 or i == total):
+            print(
+                f"{prefix} {i}/{total} ok={ok_n} fail={fail_n} "
+                f"elapsed={time.monotonic() - t0:.0f}s"
+            )
+    print(f"{prefix} done ok={ok_n} fail={fail_n} elapsed={time.monotonic() - t0:.1f}s")
+    return ok_n, fail_n
+
+
+def verify_robot_bp_available(ucv: UnrealCV) -> bool:
+    """BP_SpotRobot が PIE からスポーン可能か短いプローブ（同一セッションは1回）。"""
+    from mount_simworld_runtime_paks_pie import probe_robot_spawn  # noqa: WPS433
+
+    return probe_robot_spawn(ucv)
+
+
+def robot_bp_setup_hint() -> str:
+    return (
+        "SpotDog BP が PIE からスポーンできません。\n"
+        "  1. PIE 停止 → C:\\UEProjects\\SimWorld\\apply_unrealcv_dll.bat 実行\n"
+        "     （spawn_bp_asset + /Game UFS 登録入り DLL を適用）\n"
+        "  2. UE Editor 再起動 → grid_100x100 → PIE\n"
+        "  3. WSL: python dev/grid_env_10k/grid_env_10k_pie_patrol.py\n"
+        "  （パトロールは起動時に pak マウントも自動実行）\n"
+        "  pak: C:\\SimWorldServer\\SimWorld\\Content\\Paks\\pakchunk1000/0"
+    )
+
+
+def humanoid_bp_setup_hint() -> str:
+    return (
+        "Humanoid BP が PIE からスポーンできません（runtime pak に含まれません）。\n"
+        "  1. WSL: bash dev/grid_env_10k/scripts/install_traffic_system_editor.sh\n"
+        "  2. WSL: bash dev/grid_env_10k/scripts/verify_traffic_system_preflight.sh\n"
+        "  3. UE Editor: PIE Play（grid_100x100）— TrafficSystem BP は Editor で開かない\n"
+        "  4. WSL: python dev/grid_env_10k/run_humanoid_spawn_test.py\n"
+        "  ※ verify/compile の Editor Python は load_asset でクラッシュするため使わない"
+    )
+
+
+def cleanup_runtime_agents(ucv: UnrealCV) -> None:
+    """Remove SpotDog / probe actors; keep Humanoid for safe reposition on re-run."""
+    geh.destroy_pawn_safely(ucv, geh.ROBOT_ACTOR_NAME)
+    geh.destroy_actor_safely(ucv, ROBOT_PROBE_NAME)
+    geh._prepare_ue_spawn(ucv)
+
+
+def prepare_pie_rerun(ucv: UnrealCV) -> None:
+    """Early cleanup when re-running patrol in the same PIE session."""
+    print("[Scenario] prepare PIE rerun (clear prior agents) ...")
+    cleanup_runtime_agents(ucv)
+
+
+def _configure_robot_at(ucv: UnrealCV, loc: Sequence[float]) -> None:
+    """Apply standard SpotDog spawn settings at ``loc`` [cm]."""
+    ucv.set_physics(geh.ROBOT_ACTOR_NAME, False)
+    ucv.set_movable(geh.ROBOT_ACTOR_NAME, True)
+    ucv.set_location(list(loc), geh.ROBOT_ACTOR_NAME)
+    ucv.set_orientation((0.0, 0.0, 0.0), geh.ROBOT_ACTOR_NAME)
+    ucv.set_collision(geh.ROBOT_ACTOR_NAME, True)
+    ucv.enable_controller(geh.ROBOT_ACTOR_NAME, True)
+    time.sleep(geh.PHYSICS_ENABLE_DELAY_S)
+
+
+def _spawn_humanoid_bp(ucv: UnrealCV, human_name: str) -> bool:
+    for bp in HUMAN_BP_CANDIDATES:
+        if geh.spawn_bp(ucv, bp, human_name):
+            print(f"[Humanoid] spawn_bp OK ({bp})")
+            return True
+        print(f"[Humanoid] spawn_bp failed ({bp})")
+    return False
+
+
+def verify_humanoid_after_patrol(
+    ucv: UnrealCV,
+    communicator: Communicator,
+    human_cell: BlockIndex,
+    human_name: Optional[str],
+) -> Tuple[bool, Optional[str], Optional[WorldXY], Optional[float]]:
+    """After SpotDog finishes, confirm Humanoid exists on the floor at ``human_cell``."""
+    floor_z = geh.resolve_floor_top_z_cm(ucv)
+    expected_xy = block_index_to_world_xy_cm(*human_cell)
+    map_xy = block_index_to_map_xy_m(*human_cell)
+    target_loc = geh.agent_spawn_xyz_cm(
+        map_xy, agent_kind="humanoid", floor_top_z_cm=floor_z
+    )
+
+    name = human_name
+    if not name or not geh.actor_exists(ucv, name):
+        name = _find_existing_humanoid_name(ucv)
+    if not name:
+        print("[Humanoid] post-patrol respawn attempt (missing actor)")
+        name = spawn_humanoid_at(communicator, ucv, human_cell)
+    if not name:
+        print("[Humanoid] post-patrol VERIFY FAIL: actor missing after respawn")
+        return False, None, None, None
+
+    ok_floor, loc = geh.verify_humanoid_on_floor(
+        ucv, name, floor_top_z_cm=floor_z
+    )
+    if not ok_floor:
+        print(f"[Humanoid] post-patrol repair placement for {name!r}")
+        geh.place_humanoid_on_floor(
+            ucv, communicator, name, target_loc, floor_top_z_cm=floor_z
+        )
+        ok_floor, loc = geh.verify_humanoid_on_floor(
+            ucv, name, floor_top_z_cm=floor_z
+        )
+
+    if loc is None:
+        print(f"[Humanoid] post-patrol VERIFY FAIL: no location for {name!r}")
+        return False, name, None, None
+
+    feet_z = geh.humanoid_feet_z_cm(loc[2])
+    xy = (loc[0], loc[1])
+    xy_dist = dist2d(xy, expected_xy)
+    xy_ok = xy_dist <= HUMANOID_CELL_XY_TOLERANCE_CM
+    ok = ok_floor and xy_ok
+    status = "OK" if ok else "FAIL"
+    print(
+        f"[Humanoid] post-patrol VERIFY {status} {name} actor={geh._fmt_xyz(loc)} "
+        f"feet≈{feet_z:.1f}cm floor_top={floor_z:.1f}cm "
+        f"xy_dist={xy_dist:.1f}cm (limit {HUMANOID_CELL_XY_TOLERANCE_CM:.0f})"
+    )
+    return ok, name, xy, feet_z
+
+
+def _find_existing_humanoid_name(ucv: UnrealCV) -> Optional[str]:
+    raw = geh._ue_request(ucv, "vget /objects", timeout_s=60.0)
+    if not raw:
+        return None
+    names = [n for n in raw.split() if n.startswith("GEN_BP_Humanoid")]
+    return names[0] if names else None
+
+
+def spawn_humanoid_at(
+    communicator: Communicator,
+    ucv: UnrealCV,
+    cell: BlockIndex,
+) -> Optional[str]:
+    gx, gy = cell
+    map_xy = block_index_to_map_xy_m(gx, gy)
+    floor_z = geh.resolve_floor_top_z_cm(ucv)
+    loc = geh.agent_spawn_xyz_cm(
+        map_xy, agent_kind="humanoid", floor_top_z_cm=floor_z
+    )
+
+    existing = _find_existing_humanoid_name(ucv)
+    if existing and geh.actor_exists(ucv, existing):
+        print(f"[Humanoid] reuse {existing!r} (teleport to cell)")
+        if geh.place_humanoid_on_floor(
+            ucv, communicator, existing, loc, floor_top_z_cm=floor_z
+        ):
+            print(
+                f"[Humanoid] {existing} @ cell({gx},{gy}) map={map_xy} "
+                f"target={geh._fmt_xyz(loc)} floor_top={floor_z:.1f}cm"
+            )
+            return existing
+        print(f"[Humanoid] reuse failed — respawn {existing!r}")
+        geh.destroy_actor_safely(ucv, existing)
+
+    human = Humanoid(position=Vector(loc[0], loc[1]), direction=Vector(1, 0))
+    human_name = communicator.get_humanoid_name(human.id)
+    if not _spawn_humanoid_bp(ucv, human_name):
+        print(humanoid_bp_setup_hint())
+        return None
+    if not geh.place_humanoid_on_floor(
+        ucv,
+        communicator,
+        human_name,
+        loc,
+        human_id=human.id,
+        floor_top_z_cm=floor_z,
+    ):
+        print(f"[Humanoid] placement failed for {human_name}")
+        return None
+    print(
+        f"[Humanoid] {human_name} @ cell({gx},{gy}) map={map_xy} "
+        f"target={geh._fmt_xyz(loc)} floor_top={floor_z:.1f}cm "
+        f"capsule_half={geh.HUMANOID_CAPSULE_HALF_HEIGHT_CM:.0f}cm"
+    )
+    return human_name
+
+
+def spawn_robot_at(ucv: UnrealCV, cell: BlockIndex) -> bool:
+    gx, gy = cell
+    map_xy = block_index_to_map_xy_m(gx, gy)
+    floor_z = geh.resolve_floor_top_z_cm(ucv)
+    loc = geh.agent_spawn_xyz_cm(
+        map_xy, agent_kind="robot", floor_top_z_cm=floor_z
+    )
+    robot_name = geh.ROBOT_ACTOR_NAME
+
+    gone = geh.destroy_pawn_safely(ucv, robot_name)
+    if not gone and geh.actor_exists(ucv, robot_name):
+        print(
+            f"[Robot] reuse existing {robot_name!r} at goal/start "
+            "(teleport to start cell; skip spawn_bp rename)"
+        )
+        _configure_robot_at(ucv, loc)
+        print(
+            f"[Robot] {robot_name} @ cell({gx},{gy}) "
+            f"map={map_xy} world={geh._fmt_xyz(loc)} "
+            f"z_clearance={geh.AGENT_SPAWN_ABOVE_FLOOR_CM:.0f}cm"
+        )
+        return True
+
+    if not geh.spawn_bp(ucv, ROBOT_BP, robot_name):
+        if geh.actor_exists(ucv, robot_name):
+            print(f"[Robot] spawn failed but {robot_name!r} exists — reusing via teleport")
+            _configure_robot_at(ucv, loc)
+            return True
+        print("[Robot] spawn failed")
+        return False
+
+    _configure_robot_at(ucv, loc)
+    print(
+        f"[Robot] {robot_name} @ cell({gx},{gy}) "
+        f"map={map_xy} world={geh._fmt_xyz(loc)} "
+        f"z_clearance={geh.AGENT_SPAWN_ABOVE_FLOOR_CM:.0f}cm"
+    )
+    return True
+
+
+def _mark_rect_lethal(
+    costmap: Costmap2D,
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+) -> None:
+    res = costmap.resolution_cm
+    gx0 = int(math.floor((x0 - costmap.origin_xy[0]) / res))
+    gy0 = int(math.floor((y0 - costmap.origin_xy[1]) / res))
+    gx1 = int(math.ceil((x1 - costmap.origin_xy[0]) / res))
+    gy1 = int(math.ceil((y1 - costmap.origin_xy[1]) / res))
+    gx0 = max(0, gx0)
+    gy0 = max(0, gy0)
+    gx1 = min(costmap.width_cells, gx1)
+    gy1 = min(costmap.height_cells, gy1)
+    for gy in range(gy0, gy1):
+        for gx in range(gx0, gx1):
+            costmap.costs[gy, gx] = COSTMAP_LETHAL_COST
+
+
+def build_costmap_from_blocking_cells(
+    blocking_cells: Set[BlockIndex],
+    *,
+    grid_n: int = GRID_N,
+) -> Costmap2D:
+    """Build a 30 m costmap; solid (T) cells are marked lethal at block resolution."""
+    size_m = grid_n * geh.CUBE_SIZE_M
+    costmap = build_uniform_costmap(
+        origin_xy=geh.MAP_ORIGIN_XY_CM,
+        size_m=size_m,
+        resolution_cm=COSTMAP_RESOLUTION_CM,
+    )
+    ox, oy = geh.MAP_ORIGIN_XY_CM
+    for gx, gy in blocking_cells:
+        row, col = g10k.block_index_to_row_col(gx, gy)
+        x0 = ox + col * geh.CUBE_SIZE_CM
+        x1 = x0 + geh.CUBE_SIZE_CM
+        y0 = oy + row * geh.CUBE_SIZE_CM
+        y1 = y0 + geh.CUBE_SIZE_CM
+        _mark_rect_lethal(costmap, x0, y0, x1, y1)
+    print(
+        f"[Costmap] {size_m:.0f} m, resolution={costmap.resolution_cm / 100:.2f} m, "
+        f"lethal from {len(blocking_cells)} blocks, grid={costmap.costs.shape}"
+    )
+    return costmap
+
+
+def perimeter_blocking_set(*, grid_n: int = GRID_N) -> Set[BlockIndex]:
+    return set(g10k.iter_perimeter_indices(grid_n))
+
+
+def get_pos2d(ucv: UnrealCV, actor_name: str) -> WorldXY:
+    loc = ucv.get_location(actor_name)
+    return float(loc[0]), float(loc[1])
+
+
+def get_yaw(ucv: UnrealCV, actor_name: str) -> float:
+    ori = ucv.get_orientation(actor_name)
+    return float(ori[1])
+
+
+def dist2d(a: WorldXY, b: WorldXY) -> float:
+    return math.hypot(a[0] - b[0], a[1] - b[1])
+
+
+def normalize_angle(deg: float) -> float:
+    while deg > 180.0:
+        deg -= 360.0
+    while deg < -180.0:
+        deg += 360.0
+    return deg
+
+
+def yaw_to_target(from_xy: WorldXY, to_xy: WorldXY) -> float:
+    return math.degrees(math.atan2(to_xy[1] - from_xy[1], to_xy[0] - from_xy[0]))
+
+
+def plan_astar_waypoints(
+    costmap: Costmap2D,
+    start_xy: WorldXY,
+    goal_xy: WorldXY,
+) -> AStarPlanResult:
+    return plan_waypoints_grid_astar(
+        costmap,
+        start_xy,
+        goal_xy,
+        max_segment_cm=PATH_WP_SPACING_CM,
+    )
+
+
+def segment_command_toward_waypoint(
+    pos_xy: WorldXY,
+    yaw_deg: float,
+    waypoint_xy: WorldXY,
+) -> Optional[SegmentCommand]:
+    distance_cm = dist2d(pos_xy, waypoint_xy)
+    if distance_cm < 1e-3:
+        return None
+    target_yaw = yaw_to_target(pos_xy, waypoint_xy)
+    angle_diff = normalize_angle(target_yaw - yaw_deg)
+    if abs(angle_diff) > ROTATE_THR_DEG:
+        clockwise = 1 if angle_diff < 0.0 else -1
+        return SegmentCommand(
+            turn_deg=abs(angle_diff),
+            turn_clockwise=clockwise,
+            move_cm=0.0,
+        )
+    move_cm = min(distance_cm, PATH_MAX_OPEN_LOOP_MOVE_CM)
+    return SegmentCommand(turn_deg=0.0, turn_clockwise=1, move_cm=move_cm)
+
+
+def execute_segment_command(ucv: UnrealCV, command: SegmentCommand) -> None:
+    if command.turn_deg > ROTATE_THR_DEG:
+        turn_duration_s = max(0.15, ROBOT_TURN_DUR_S * command.turn_deg / 90.0)
+        ucv.dog_rotate(
+            geh.ROBOT_ACTOR_NAME,
+            [turn_duration_s, command.turn_deg, command.turn_clockwise],
+        )
+        time.sleep(turn_duration_s * 0.15)
+    if command.move_cm > 1e-3:
+        move_duration_s = max(ROBOT_MOVE_SLICE_S, command.move_cm / ROBOT_SPEED)
+        ucv.dog_move(
+            geh.ROBOT_ACTOR_NAME,
+            [ROBOT_SPEED, move_duration_s, 0],
+        )
+        time.sleep(move_duration_s * 0.1)
+
+
+def _nearest_waypoint_index_ahead(
+    pos_xy: WorldXY,
+    waypoints: Sequence[WorldXY],
+    current_index: int,
+) -> int:
+    if not waypoints:
+        return 0
+    start = min(max(current_index, 0), len(waypoints) - 1)
+    best_index = start
+    best_dist = dist2d(pos_xy, waypoints[start])
+    for index in range(start, len(waypoints)):
+        dist = dist2d(pos_xy, waypoints[index])
+        if dist < best_dist:
+            best_dist = dist
+            best_index = index
+    return best_index
+
+
+def robot_navigate_astar(
+    ucv: UnrealCV,
+    costmap: Costmap2D,
+    goal_xy: WorldXY,
+    *,
+    tolerance_cm: float = ARRIVE_TOLERANCE_CM,
+    label: str = "",
+) -> bool:
+    """Global A* waypoints + open-loop rotate-then-drive control."""
+    start_xy = get_pos2d(ucv, geh.ROBOT_ACTOR_NAME)
+    plan = plan_astar_waypoints(costmap, start_xy, goal_xy)
+    waypoints = plan.waypoints_xy
+    wp_index = 0
+    steps_on_wp = 0
+    total_steps = 0
+
+    print(
+        f"  [Nav]{f' {label}' if label else ''} A* cost={plan.total_cost:.1f}, "
+        f"grid_cells={len(plan.grid_path)}, waypoints={len(waypoints)}"
+    )
+    for index, waypoint in enumerate(waypoints[:8]):
+        print(f"    WP{index + 1}: ({waypoint[0]:.1f}, {waypoint[1]:.1f})")
+    if len(waypoints) > 8:
+        print(f"    ... ({len(waypoints) - 8} more)")
+
+    while total_steps < PATH_MAX_TOTAL_STEPS:
+        total_steps += 1
+        pos_xy = get_pos2d(ucv, geh.ROBOT_ACTOR_NAME)
+        if dist2d(pos_xy, goal_xy) <= tolerance_cm:
+            print(f"  [Nav] Arrived (dist={dist2d(pos_xy, goal_xy):.1f} cm)")
+            return True
+
+        if wp_index >= len(waypoints):
+            waypoint_xy = goal_xy
+        else:
+            waypoint_xy = waypoints[wp_index]
+            if dist2d(pos_xy, waypoint_xy) <= PATH_WP_REACH_TOLERANCE_CM:
+                wp_index += 1
+                steps_on_wp = 0
+                continue
+
+        command = segment_command_toward_waypoint(
+            pos_xy,
+            get_yaw(ucv, geh.ROBOT_ACTOR_NAME),
+            waypoint_xy,
+        )
+        if command is None:
+            if wp_index >= len(waypoints):
+                if dist2d(pos_xy, goal_xy) <= max(tolerance_cm, ARRIVE_TOLERANCE_CM):
+                    return True
+            else:
+                wp_index += 1
+            steps_on_wp = 0
+            continue
+
+        execute_segment_command(ucv, command)
+        steps_on_wp += 1
+
+        if steps_on_wp >= PATH_REPLAN_STUCK_STEPS:
+            pos_xy = get_pos2d(ucv, geh.ROBOT_ACTOR_NAME)
+            if dist2d(pos_xy, goal_xy) <= max(tolerance_cm, ARRIVE_TOLERANCE_CM):
+                return True
+            if wp_index < len(waypoints):
+                replan = plan_astar_waypoints(costmap, pos_xy, goal_xy)
+                if replan.waypoints_xy:
+                    waypoints = replan.waypoints_xy
+                    wp_index = _nearest_waypoint_index_ahead(pos_xy, waypoints, wp_index)
+                    print(
+                        f"  [Nav] Replan @ ({pos_xy[0]:.1f},{pos_xy[1]:.1f}) "
+                        f"→ {len(waypoints)} WP, resume WP{wp_index + 1}"
+                    )
+            steps_on_wp = 0
+
+        if steps_on_wp >= PATH_MAX_STEPS_PER_WP and wp_index < len(waypoints):
+            print(f"  [Nav] WP{wp_index + 1} step limit; skip")
+            wp_index += 1
+            steps_on_wp = 0
+
+    print(f"  [Nav] ERROR: exceeded PATH_MAX_TOTAL_STEPS={PATH_MAX_TOTAL_STEPS}")
+    return False
+
+
+def apply_perimeter_solid(
+    ucv: UnrealCV,
+    registry: Dict[BlockIndex, str],
+    *,
+    grid_n: int = GRID_N,
+) -> Tuple[int, int]:
+    return set_blocks_mode_pie(
+        ucv,
+        registry,
+        g10k.iter_perimeter_indices(grid_n),
+        "T",
+        progress_every=50,
+        label="perimeter T",
+    )
+
+
+def run_patrol_scenario(
+    *,
+    human_cell: BlockIndex = HUMAN_CELL,
+    robot_start_cell: BlockIndex = ROBOT_START_CELL,
+    robot_goal_cell: BlockIndex = ROBOT_GOAL_CELL,
+    goal_dwell_s: float = GOAL_DWELL_S,
+    grid_n: int = GRID_N,
+    skip_perimeter_if_already_solid: bool = False,
+    skip_robot_probe: bool = False,
+    ucv: Optional[UnrealCV] = None,
+    communicator: Optional[Communicator] = None,
+) -> PatrolResult:
+    """Perimeter T -> spawn agents -> outbound A* -> dwell -> return A*."""
+    ucv, communicator = g10k.reconnect_if_needed(ucv, communicator=communicator)
+
+    prepare_pie_rerun(ucv)
+
+    scripts_dir = str(G10K_DIR / "scripts")
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    from mount_simworld_runtime_paks_pie import (  # noqa: WPS433
+        mount_paks,
+        probe_humanoid_spawn,
+        probe_robot_spawn,
+    )
+
+    if not mount_paks(ucv):
+        raise RuntimeError(robot_bp_setup_hint())
+    if skip_robot_probe:
+        print("[Robot] skip BP probe (reuse session)")
+    elif not probe_robot_spawn(ucv):
+        raise RuntimeError(robot_bp_setup_hint())
+    if skip_robot_probe:
+        print("[Humanoid] skip BP probe (reuse session)")
+    elif not probe_humanoid_spawn(ucv):
+        print("[Humanoid] WARN: BP probe failed — will try spawn with fallbacks")
+
+    start_xy = block_index_to_world_xy_cm(*robot_start_cell)
+    goal_xy = block_index_to_world_xy_cm(*robot_goal_cell)
+
+    perimeter_cells = set(g10k.iter_perimeter_indices(grid_n))
+    registry = build_pie_block_registry(
+        ucv, grid_n=grid_n, cells=perimeter_cells
+    )
+
+    if skip_perimeter_if_already_solid:
+        print("[Scenario] skip perimeter (assume already T)")
+        ok_n, fail_n = len(perimeter_cells), 0
+    else:
+        ok_n, fail_n = apply_perimeter_solid(ucv, registry, grid_n=grid_n)
+    perimeter_ok = fail_n == 0
+
+    blocking = perimeter_blocking_set(grid_n=grid_n)
+    costmap = build_costmap_from_blocking_cells(blocking, grid_n=grid_n)
+
+    human_name = spawn_humanoid_at(communicator, ucv, human_cell)
+    robot_spawned = spawn_robot_at(ucv, robot_start_cell)
+    geh.report_spawn_state(ucv, {}, human_name)
+    if not human_name:
+        print("[Scenario] WARN: Humanoid missing or not on floor")
+    if not robot_spawned:
+        return PatrolResult(
+            perimeter_ok=perimeter_ok,
+            human_name=human_name,
+            humanoid_on_floor=False,
+            robot_spawned=False,
+            outbound_arrived=False,
+            return_arrived=False,
+            start_xy=start_xy,
+            goal_xy=goal_xy,
+            final_xy=start_xy,
+            return_dist_cm=float("inf"),
+        )
+
+    time.sleep(0.5)
+    actual_start = get_pos2d(ucv, geh.ROBOT_ACTOR_NAME)
+    print(f"[Scenario] outbound {robot_start_cell} → {robot_goal_cell}")
+    outbound_arrived = robot_navigate_astar(
+        ucv,
+        costmap,
+        goal_xy,
+        tolerance_cm=ARRIVE_TOLERANCE_CM,
+        label="outbound",
+    )
+
+    if outbound_arrived and goal_dwell_s > 0:
+        print(f"[Scenario] dwell {goal_dwell_s:.1f}s at goal ...")
+        time.sleep(goal_dwell_s)
+
+    print(f"[Scenario] return {robot_goal_cell} → {robot_start_cell}")
+    return_arrived = robot_navigate_astar(
+        ucv,
+        costmap,
+        start_xy,
+        tolerance_cm=RETURN_ARRIVE_TOLERANCE_CM,
+        label="return",
+    )
+
+    final_xy = get_pos2d(ucv, geh.ROBOT_ACTOR_NAME)
+    return_dist = dist2d(final_xy, start_xy)
+
+    humanoid_on_floor, human_name, humanoid_xy, humanoid_feet_z = (
+        verify_humanoid_after_patrol(
+            ucv, communicator, human_cell, human_name
+        )
+    )
+    geh.report_spawn_state(ucv, {}, human_name)
+
+    print(
+        f"[Scenario] done outbound={outbound_arrived} return={return_arrived} "
+        f"final_dist_from_start={return_dist:.1f} cm "
+        f"humanoid_on_floor={humanoid_on_floor}"
+    )
+    return PatrolResult(
+        perimeter_ok=perimeter_ok,
+        human_name=human_name,
+        humanoid_on_floor=humanoid_on_floor,
+        robot_spawned=True,
+        outbound_arrived=outbound_arrived,
+        return_arrived=return_arrived,
+        start_xy=start_xy,
+        goal_xy=goal_xy,
+        final_xy=final_xy,
+        return_dist_cm=return_dist,
+        humanoid_xy=humanoid_xy,
+        humanoid_feet_z_cm=humanoid_feet_z,
+    )
+
+
+def main() -> int:
+    result = run_patrol_scenario(
+        skip_perimeter_if_already_solid=True,
+        skip_robot_probe=True,
+    )
+    ok = patrol_success(result)
+    return 0 if ok else 1
+
+
+def patrol_success(result: PatrolResult) -> bool:
+    return (
+        result.perimeter_ok
+        and result.robot_spawned
+        and result.outbound_arrived
+        and result.return_arrived
+        and result.return_dist_cm <= RETURN_ARRIVE_TOLERANCE_CM
+        and result.humanoid_on_floor
+    )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

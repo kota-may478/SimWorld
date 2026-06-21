@@ -1042,6 +1042,14 @@ class UnrealCV(object):
                 cv2.imshow(title, img)
             cv2.waitKey(3)
 
+    def _restore_editor_viewmode_lit(self) -> None:
+        """Restore editor viewport after object_mask capture (UnrealCV may switch view mode)."""
+        try:
+            with self.lock:
+                self.client.request('vset /viewmode lit')
+        except Exception:
+            pass
+
     def get_image(self, cam_id, viewmode, mode='direct', img_path=None):
         """Get image.
 
@@ -1051,6 +1059,7 @@ class UnrealCV(object):
             mode: Mode.
             img_path: Image path.
         """
+        restore_lit = viewmode == 'object_mask'
         image = None
         try:
             if mode == 'direct':  # get image from unrealcv in png format
@@ -1091,6 +1100,9 @@ class UnrealCV(object):
         except Exception as e:
             print(f'Error reading image: {str(e)}')
             return np.zeros((480, 640, 3), dtype=np.uint8)
+        finally:
+            if restore_lit:
+                self._restore_editor_viewmode_lit()
 
     def _decode_npy(self, res):
         """Decode NPY image.

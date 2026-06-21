@@ -1,0 +1,398 @@
+{
+  "geometry": {
+    "existing_block_top_z_cm": 130.5,
+    "temp_floor_top_z_cm": 330.5,
+    "block_bottom_z_cm": 345.5
+  },
+  "fill_region": [
+    1,
+    1,
+    5,
+    5
+  ],
+  "temp_floor_region": [
+    1,
+    1,
+    3,
+    3
+  ],
+  "semantics": {
+    "001_001": "floor",
+    "001_002": "floor",
+    "001_003": "floor",
+    "001_004": "air",
+    "001_005": "air",
+    "002_001": "floor",
+    "002_002": "floor",
+    "002_003": "floor",
+    "002_004": "air",
+    "002_005": "air",
+    "003_001": "floor",
+    "003_002": "floor",
+    "003_003": "floor",
+    "003_004": "air",
+    "003_005": "air",
+    "004_001": "air",
+    "004_002": "air",
+    "004_003": "air",
+    "004_004": "air",
+    "004_005": "air",
+    "005_001": "air",
+    "005_002": "air",
+    "005_003": "air",
+    "005_004": "air",
+    "005_005": "air"
+  },
+  "blocks": {
+    "sem_block_001_001": {
+      "gx": 1,
+      "gy": 1,
+      "semantic": "floor",
+      "mode": "F",
+      "block_bottom_z_cm": 345.5,
+      "actor_name": "sem_block_001_001",
+      "world_cm": [
+        15.0,
+        15.0,
+        345.5
+      ],
+      "on_temp_floor": true
+    },
+    "sem_block_001_002": {
+      "gx": 1,
+      "gy": 2,
+      "semantic": "floor",
+      "mode": "F",
+      "block_bottom_z_cm": 345.5,
+      "actor_name": "sem_block_001_002",
+      "world_cm": [
+        15.0,
+        45.0,
+        345.5
+      ],
+      "on_temp_floor": true
+    },
+    "sem_block_001_003": {
+      "gx": 1,
+      "gy": 3,
+      "semantic": "floor",
+      "mode": "F",
+      "block_bottom_z_cm": 345.5,
+      "actor_name": "sem_block_001_003",
+      "world_cm": [
+        15.0,
+        75.0,
+        345.5
+      ],
+      "on_temp_floor": true
+    },
+    "sem_block_001_004": {
+      "gx": 1,
+      "gy": 4,
+      "semantic": "air",
+      "mode": "T",
+      "block_bottom_z_cm": 345.5,
+      "actor_name": "sem_block_001_004",
+      "world_cm": [
+        15.0,
+        105.0,
+        345.5
+      ],
+      "on_temp_floor": false
+    },
+    "sem_block_001_005": {
+      "gx": 1,
+      "gy": 5,
+      "semantic": "air",
+      "mode": "T",
+      "block_bottom_z_cm": 345.5,
+      "actor_name": "sem_block_001_005",
+      "world_cm": [
+        15.0,
+        135.0,
+        345.5
+      ],
+      "on_temp_floor": false
+    },
+    "sem_block_002_001": {
+      "gx": 2,
+      "gy": 1,
+      "semantic": "floor",
+      "mode": "F",
+      "block_bottom_z_cm": 345.5,
+      "actor_name": "sem_block_002_001",
+      "world_cm": [
+        45.0,
+        15.0,
+        345.5
+      ],
+      "on_temp_floor": true
+    },
+    "sem_block_002_002": {
+      "gx": 2,
+      "gy": 2,
+      "semantic": "floor",
+      "mode": "F",
+      "block_bottom_z_cm": 345.5,
+      "actor_name": "sem_block_002_002",
+      "world_cm": [
+        45.0,
+        45.0,
+        345.5
+      ],
+      "on_temp_floor": true
+    },
+    "sem_block_002_003": {
+      "gx": 2,
+      "gy": 3,
+      "semantic": "floor",
+      "mode": "F",
+      "block_bottom_z_cm": 345.5,
+      "actor_name": "sem_block_002_003",
+      "world_cm": [
+        45.0,
+        75.0,
+        345.5
+      ],
+      "on_temp_floor": true
+    },
+    "sem_block_002_004": {
+      "gx": 2,
+      "gy": 4,
+      "semantic": "air",
+      "mode": "T",
+      "block_bottom_z_cm": 345.5,
+      "actor_name": "sem_block_002_004",
+      "world_cm": [
+        45.0,
+        105.0,
+        345.5
+      ],
+      "on_temp_floor": false
+    },
+    "sem_block_002_005": {
+      "gx": 2,
+      "gy": 5,
+      "semantic": "air",
+      "mode": "T",
+      "block_bottom_z_cm": 345.5,
+      "actor_name": "sem_block_002_005",
+      "world_cm": [
+        45.0,
+        135.0,
+        345.5
+      ],
+      "on_temp_floor": false
+    },
+    "sem_block_003_001": {
+      "gx": 3,
+      "gy": 1,
+      "semantic": "floor",
+      "mode": "F",
+      "block_bottom_z_cm": 345.5,
+      "actor_name": "sem_block_003_001",
+      "world_cm": [
+        75.0,
+        15.0,
+        345.5
+      ],
+      "on_temp_floor": true
+    },
+    "sem_block_003_002": {
+      "gx": 3,
+      "gy": 2,
+      "semantic": "floor",
+      "mode": "F",
+      "block_bottom_z_cm": 345.5,
+      "actor_name": "sem_block_003_002",
+      "world_cm": [
+        75.0,
+        45.0,
+        345.5
+      ],
+      "on_temp_floor": true
+    },
+    "sem_block_003_003": {
+      "gx": 3,
+      "gy": 3,
+      "semantic": "floor",
+      "mode": "F",
+      "block_bottom_z_cm": 345.5,
+      "actor_name": "sem_block_003_003",
+      "world_cm": [
+        75.0,
+        75.0,
+        345.5
+      ],
+      "on_temp_floor": true
+    },
+    "sem_block_003_004": {
+      "gx": 3,
+      "gy": 4,
+      "semantic": "air",
+      "mode": "T",
+      "block_bottom_z_cm": 345.5,
+      "actor_name": "sem_block_003_004",
+      "world_cm": [
+        75.0,
+        105.0,
+        345.5
+      ],
+      "on_temp_floor": false
+    },
+    "sem_block_003_005": {
+      "gx": 3,
+      "gy": 5,
+      "semantic": "air",
+      "mode": "T",
+      "block_bottom_z_cm": 345.5,
+      "actor_name": "sem_block_003_005",
+      "world_cm": [
+        75.0,
+        135.0,
+        345.5
+      ],
+      "on_temp_floor": false
+    },
+    "sem_block_004_001": {
+      "gx": 4,
+      "gy": 1,
+      "semantic": "air",
+      "mode": "T",
+      "block_bottom_z_cm": 345.5,
+      "actor_name": "sem_block_004_001",
+      "world_cm": [
+        105.0,
+        15.0,
+        345.5
+      ],
+      "on_temp_floor": false
+    },
+    "sem_block_004_002": {
+      "gx": 4,
+      "gy": 2,
+      "semantic": "air",
+      "mode": "T",
+      "block_bottom_z_cm": 345.5,
+      "actor_name": "sem_block_004_002",
+      "world_cm": [
+        105.0,
+        45.0,
+        345.5
+      ],
+      "on_temp_floor": false
+    },
+    "sem_block_004_003": {
+      "gx": 4,
+      "gy": 3,
+      "semantic": "air",
+      "mode": "T",
+      "block_bottom_z_cm": 345.5,
+      "actor_name": "sem_block_004_003",
+      "world_cm": [
+        105.0,
+        75.0,
+        345.5
+      ],
+      "on_temp_floor": false
+    },
+    "sem_block_004_004": {
+      "gx": 4,
+      "gy": 4,
+      "semantic": "air",
+      "mode": "T",
+      "block_bottom_z_cm": 345.5,
+      "actor_name": "sem_block_004_004",
+      "world_cm": [
+        105.0,
+        105.0,
+        345.5
+      ],
+      "on_temp_floor": false
+    },
+    "sem_block_004_005": {
+      "gx": 4,
+      "gy": 5,
+      "semantic": "air",
+      "mode": "T",
+      "block_bottom_z_cm": 345.5,
+      "actor_name": "sem_block_004_005",
+      "world_cm": [
+        105.0,
+        135.0,
+        345.5
+      ],
+      "on_temp_floor": false
+    },
+    "sem_block_005_001": {
+      "gx": 5,
+      "gy": 1,
+      "semantic": "air",
+      "mode": "T",
+      "block_bottom_z_cm": 345.5,
+      "actor_name": "sem_block_005_001",
+      "world_cm": [
+        135.0,
+        15.0,
+        345.5
+      ],
+      "on_temp_floor": false
+    },
+    "sem_block_005_002": {
+      "gx": 5,
+      "gy": 2,
+      "semantic": "air",
+      "mode": "T",
+      "block_bottom_z_cm": 345.5,
+      "actor_name": "sem_block_005_002",
+      "world_cm": [
+        135.0,
+        45.0,
+        345.5
+      ],
+      "on_temp_floor": false
+    },
+    "sem_block_005_003": {
+      "gx": 5,
+      "gy": 3,
+      "semantic": "air",
+      "mode": "T",
+      "block_bottom_z_cm": 345.5,
+      "actor_name": "sem_block_005_003",
+      "world_cm": [
+        135.0,
+        75.0,
+        345.5
+      ],
+      "on_temp_floor": false
+    },
+    "sem_block_005_004": {
+      "gx": 5,
+      "gy": 4,
+      "semantic": "air",
+      "mode": "T",
+      "block_bottom_z_cm": 345.5,
+      "actor_name": "sem_block_005_004",
+      "world_cm": [
+        135.0,
+        105.0,
+        345.5
+      ],
+      "on_temp_floor": false
+    },
+    "sem_block_005_005": {
+      "gx": 5,
+      "gy": 5,
+      "semantic": "air",
+      "mode": "T",
+      "block_bottom_z_cm": 345.5,
+      "actor_name": "sem_block_005_005",
+      "world_cm": [
+        135.0,
+        135.0,
+        345.5
+      ],
+      "on_temp_floor": false
+    }
+  }
+}

@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "seed": 20260618,
+  "region_size_cm": 3000.0,
+  "goal_local_cm": [
+    2500.0,
+    2500.0
+  ],
+  "robot_start_local_cm": [
+    100.0,
+    100.0
+  ],
+  "props": [
+    {
+      "slot_id": "compact_prop_000",
+      "bp_name": "BP_Boxes_03a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Boxes_03a.BP_Boxes_03a",
+      "prop_type_id": "boxes_03a",
+      "mask_color_rgb": [
+        171,
+        41,
+        69
+      ],
+      "local_xy_cm": [
+        1500.0,
+        1500.0
+      ],
+      "yaw_deg": 10.0,
+      "world_xyz_cm": [
+        500.0,
+        -700.0,
+        6455.0
+      ]
+    },
+    {
+      "slot_id": "compact_prop_001",
+      "bp_name": "BP_ConstructionPylons_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_ConstructionPylons_01a.BP_ConstructionPylons_01a",
+      "prop_type_id": "constructionpylons_01a",
+      "mask_color_rgb": [
+        212,
+        100,
+        136
+      ],
+      "local_xy_cm": [
+        1300.0,
+        1700.0
+      ],
+      "yaw_deg": 0.0,
+      "world_xyz_cm": [
+        700.0,
+        -900.0,
+        6455.0
+      ]
+    },
+    {
+      "slot_id": "compact_prop_002",
+      "bp_name": "BP_Barrel_01",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Barrel_01.BP_Barrel_01",
+      "prop_type_id": "barrel_01",
+      "mask_color_rgb": [
+        63,
+        159,
+        203
+      ],
+      "local_xy_cm": [
+        1700.0,
+        1300.0
+      ],
+      "yaw_deg": 25.0,
+      "world_xyz_cm": [
+        300.0,
+        -500.0,
+        6455.0
+      ]
+    }
+  ]
+}

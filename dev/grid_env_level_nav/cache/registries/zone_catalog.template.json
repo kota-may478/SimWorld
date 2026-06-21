@@ -1,0 +1,54 @@
+{
+  "version": 2,
+  "note": "Edit local_xy_cm corners (cm, local origin at world -1000,-2200). Cells are computed at L0 resolution when applied.",
+  "zones": {
+    "RoomA": {
+      "kind": "rect_local",
+      "local_xy_cm": [[0, 0], [0, 0]],
+      "default_cost": 1.0,
+      "closed_cost": 1000000000.0,
+      "note": "TODO: set corners after measuring in UE",
+      "tags": ["room"]
+    },
+    "RoomB": {
+      "kind": "rect_local",
+      "local_xy_cm": [[0, 0], [0, 0]],
+      "default_cost": 1.0,
+      "closed_cost": 1000000000.0,
+      "note": "TODO",
+      "tags": ["room"]
+    },
+    "RoomC": {
+      "kind": "rect_local",
+      "local_xy_cm": [[0, 0], [0, 0]],
+      "default_cost": 1.0,
+      "closed_cost": 1000000000.0,
+      "note": "TODO",
+      "tags": ["room"]
+    },
+    "RoomD": {
+      "kind": "rect_local",
+      "local_xy_cm": [[0, 0], [0, 0]],
+      "default_cost": 1.0,
+      "closed_cost": 1000000000.0,
+      "note": "TODO: closure target for HRC instructions",
+      "tags": ["room"]
+    },
+    "AreaA": {
+      "kind": "rect_local",
+      "local_xy_cm": [[0, 0], [0, 0]],
+      "default_cost": 1.0,
+      "closed_cost": 1000000000.0,
+      "note": "TODO: corridor / yard / staging",
+      "tags": ["area"]
+    },
+    "AreaB": {
+      "kind": "rect_local",
+      "local_xy_cm": [[0, 0], [0, 0]],
+      "default_cost": 1.0,
+      "closed_cost": 1000000000.0,
+      "note": "TODO",
+      "tags": ["area"]
+    }
+  }
+}

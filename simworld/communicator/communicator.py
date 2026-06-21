@@ -641,6 +641,9 @@ class Communicator:
         self.unrealcv.set_location(location_3d, name)
         self.unrealcv.set_orientation(orientation_3d, name)
         self.unrealcv.set_scale((1, 1, 1), name)  # Default scale
+        # Kinematic humanoids: disable sim physics before enabling movement (avoids floor sink).
+        if type == 'humanoid':
+            self.unrealcv.set_physics(name, False)
         self.unrealcv.set_collision(name, True)
         self.unrealcv.set_movable(name, True)
 

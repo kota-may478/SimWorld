@@ -1,0 +1,518 @@
+{
+  "version": 2,
+  "pack": "Construction_VOL1",
+  "count": 73,
+  "props": [
+    {
+      "prop_type_id": "barrel_01",
+      "bp_name": "BP_Barrel_01",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Barrel_01.BP_Barrel_01",
+      "mesh_name": "SM_Barrel_01",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_Barrel_01.SM_Barrel_01"
+    },
+    {
+      "prop_type_id": "boxes_01a",
+      "bp_name": "BP_Boxes_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Boxes_01a.BP_Boxes_01a",
+      "mesh_name": "SM_Boxes_01a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_Boxes_01a.SM_Boxes_01a"
+    },
+    {
+      "prop_type_id": "boxes_02a",
+      "bp_name": "BP_Boxes_02a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Boxes_02a.BP_Boxes_02a",
+      "mesh_name": "SM_Boxes_02a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_Boxes_02a.SM_Boxes_02a"
+    },
+    {
+      "prop_type_id": "boxes_03a",
+      "bp_name": "BP_Boxes_03a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Boxes_03a.BP_Boxes_03a",
+      "mesh_name": "SM_Boxes_03a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_Boxes_03a.SM_Boxes_03a"
+    },
+    {
+      "prop_type_id": "boxes_04a",
+      "bp_name": "BP_Boxes_04a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Boxes_04a.BP_Boxes_04a",
+      "mesh_name": "SM_Boxes_04a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_Boxes_04a.SM_Boxes_04a"
+    },
+    {
+      "prop_type_id": "brickpalettestack_01a",
+      "bp_name": "BP_BrickPaletteStack_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_BrickPaletteStack_01a.BP_BrickPaletteStack_01a",
+      "mesh_name": "SM_BrickPaletteStack_01a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_BrickPaletteStack_01a.SM_BrickPaletteStack_01a"
+    },
+    {
+      "prop_type_id": "brickpalettestack_01b",
+      "bp_name": "BP_BrickPaletteStack_01b",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_BrickPaletteStack_01b.BP_BrickPaletteStack_01b",
+      "mesh_name": "SM_BrickPaletteStack_01b",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_BrickPaletteStack_01b.SM_BrickPaletteStack_01b"
+    },
+    {
+      "prop_type_id": "brickpalettestack_01c",
+      "bp_name": "BP_BrickPaletteStack_01c",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_BrickPaletteStack_01c.BP_BrickPaletteStack_01c",
+      "mesh_name": "SM_BrickPaletteStack_01c",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_BrickPaletteStack_01c.SM_BrickPaletteStack_01c"
+    },
+    {
+      "prop_type_id": "brickpalettestack_01d",
+      "bp_name": "BP_BrickPaletteStack_01d",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_BrickPaletteStack_01d.BP_BrickPaletteStack_01d",
+      "mesh_name": "SM_BrickPaletteStack_01d",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_BrickPaletteStack_01d.SM_BrickPaletteStack_01d"
+    },
+    {
+      "prop_type_id": "brickpalettestack_01e",
+      "bp_name": "BP_BrickPaletteStack_01e",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_BrickPaletteStack_01e.BP_BrickPaletteStack_01e",
+      "mesh_name": "SM_BrickPaletteStack_01e",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_BrickPaletteStack_01e.SM_BrickPaletteStack_01e"
+    },
+    {
+      "prop_type_id": "brickpalettestack_01f",
+      "bp_name": "BP_BrickPaletteStack_01f",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_BrickPaletteStack_01f.BP_BrickPaletteStack_01f",
+      "mesh_name": "SM_BrickPaletteStack_01f",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_BrickPaletteStack_01f.SM_BrickPaletteStack_01f"
+    },
+    {
+      "prop_type_id": "brickpalettestack_01g",
+      "bp_name": "BP_BrickPaletteStack_01g",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_BrickPaletteStack_01g.BP_BrickPaletteStack_01g",
+      "mesh_name": "SM_BrickPaletteStack_01g",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_BrickPaletteStack_01g.SM_BrickPaletteStack_01g"
+    },
+    {
+      "prop_type_id": "brickpalettestack_brick_01a",
+      "bp_name": "BP_BrickPaletteStack_Brick_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_BrickPaletteStack_Brick_01a.BP_BrickPaletteStack_Brick_01a",
+      "mesh_name": "SM_BrickPaletteStack_Brick_01a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_BrickPaletteStack_Brick_01a.SM_BrickPaletteStack_Brick_01a"
+    },
+    {
+      "prop_type_id": "cablereel",
+      "bp_name": "BP_CableReel",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_CableReel.BP_CableReel",
+      "mesh_name": "SM_CableReel",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_CableReel.SM_CableReel"
+    },
+    {
+      "prop_type_id": "cinderstack_01a",
+      "bp_name": "BP_CinderStack_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_CinderStack_01a.BP_CinderStack_01a",
+      "mesh_name": "SM_CinderStack_01a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_CinderStack_01a.SM_CinderStack_01a"
+    },
+    {
+      "prop_type_id": "cinderstack_01b",
+      "bp_name": "BP_CinderStack_01b",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_CinderStack_01b.BP_CinderStack_01b",
+      "mesh_name": "SM_CinderStack_01b",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_CinderStack_01b.SM_CinderStack_01b"
+    },
+    {
+      "prop_type_id": "cinderstack_02a",
+      "bp_name": "BP_CinderStack_02a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_CinderStack_02a.BP_CinderStack_02a",
+      "mesh_name": "SM_CinderStack_02a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_CinderStack_02a.SM_CinderStack_02a"
+    },
+    {
+      "prop_type_id": "cinderstack_03a",
+      "bp_name": "BP_CinderStack_03a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_CinderStack_03a.BP_CinderStack_03a",
+      "mesh_name": "SM_CinderStack_03a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_CinderStack_03a.SM_CinderStack_03a"
+    },
+    {
+      "prop_type_id": "cinderstack_pallete_01a",
+      "bp_name": "BP_CinderStack_Pallete_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_CinderStack_Pallete_01a.BP_CinderStack_Pallete_01a",
+      "mesh_name": "SM_CinderStack_Pallete_01a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_CinderStack_Pallete_01a.SM_CinderStack_Pallete_01a"
+    },
+    {
+      "prop_type_id": "cinderstack_single_01a",
+      "bp_name": "BP_CinderStack_Single_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_CinderStack_Single_01a.BP_CinderStack_Single_01a",
+      "mesh_name": "SM_CinderStack_Single_01a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_CinderStack_Single_01a.SM_CinderStack_Single_01a"
+    },
+    {
+      "prop_type_id": "concretebag_01a",
+      "bp_name": "BP_ConcreteBag_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_ConcreteBag_01a.BP_ConcreteBag_01a",
+      "mesh_name": "SM_ConcreteBag_01a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_ConcreteBag_01a.SM_ConcreteBag_01a"
+    },
+    {
+      "prop_type_id": "concretebag_02a",
+      "bp_name": "BP_ConcreteBag_02a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_ConcreteBag_02a.BP_ConcreteBag_02a",
+      "mesh_name": "SM_ConcreteBag_02a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_ConcreteBag_02a.SM_ConcreteBag_02a"
+    },
+    {
+      "prop_type_id": "concretebag_03a",
+      "bp_name": "BP_ConcreteBag_03a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_ConcreteBag_03a.BP_ConcreteBag_03a",
+      "mesh_name": "SM_ConcreteBag_03a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_ConcreteBag_03a.SM_ConcreteBag_03a"
+    },
+    {
+      "prop_type_id": "concretebag_04a",
+      "bp_name": "BP_ConcreteBag_04a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_ConcreteBag_04a.BP_ConcreteBag_04a",
+      "mesh_name": "SM_ConcreteBag_04a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_ConcreteBag_04a.SM_ConcreteBag_04a"
+    },
+    {
+      "prop_type_id": "concretebag_05a",
+      "bp_name": "BP_ConcreteBag_05a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_ConcreteBag_05a.BP_ConcreteBag_05a",
+      "mesh_name": "SM_ConcreteBag_05a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_ConcreteBag_05a.SM_ConcreteBag_05a"
+    },
+    {
+      "prop_type_id": "concretepipe_01",
+      "bp_name": "BP_ConcretePipe_01",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_ConcretePipe_01.BP_ConcretePipe_01",
+      "mesh_name": "SM_ConcretePipe_01",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_ConcretePipe_01.SM_ConcretePipe_01"
+    },
+    {
+      "prop_type_id": "concretepipe_02",
+      "bp_name": "BP_ConcretePipe_02",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_ConcretePipe_02.BP_ConcretePipe_02",
+      "mesh_name": "SM_ConcretePipe_02",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_ConcretePipe_02.SM_ConcretePipe_02"
+    },
+    {
+      "prop_type_id": "concretepipe_03",
+      "bp_name": "BP_ConcretePipe_03",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_ConcretePipe_03.BP_ConcretePipe_03",
+      "mesh_name": "SM_ConcretePipe_03",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_ConcretePipe_03.SM_ConcretePipe_03"
+    },
+    {
+      "prop_type_id": "constructionpylons_01a",
+      "bp_name": "BP_ConstructionPylons_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_ConstructionPylons_01a.BP_ConstructionPylons_01a",
+      "mesh_name": "SM_ConstructionPylons_01a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_ConstructionPylons_01a.SM_ConstructionPylons_01a"
+    },
+    {
+      "prop_type_id": "constructionpylons_01b",
+      "bp_name": "BP_ConstructionPylons_01b",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_ConstructionPylons_01b.BP_ConstructionPylons_01b",
+      "mesh_name": "SM_ConstructionPylons_01b",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_ConstructionPylons_01b.SM_ConstructionPylons_01b"
+    },
+    {
+      "prop_type_id": "constructionpylons_01c",
+      "bp_name": "BP_ConstructionPylons_01c",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_ConstructionPylons_01c.BP_ConstructionPylons_01c",
+      "mesh_name": "SM_ConstructionPylons_01c",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_ConstructionPylons_01c.SM_ConstructionPylons_01c"
+    },
+    {
+      "prop_type_id": "constructionpylons_01d",
+      "bp_name": "BP_ConstructionPylons_01d",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_ConstructionPylons_01d.BP_ConstructionPylons_01d",
+      "mesh_name": "SM_ConstructionPylons_01d",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_ConstructionPylons_01d.SM_ConstructionPylons_01d"
+    },
+    {
+      "prop_type_id": "constructionpylons_01e",
+      "bp_name": "BP_ConstructionPylons_01e",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_ConstructionPylons_01e.BP_ConstructionPylons_01e",
+      "mesh_name": "SM_ConstructionPylons_01e",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_ConstructionPylons_01e.SM_ConstructionPylons_01e"
+    },
+    {
+      "prop_type_id": "constructionpylons_01f",
+      "bp_name": "BP_ConstructionPylons_01f",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_ConstructionPylons_01f.BP_ConstructionPylons_01f",
+      "mesh_name": "SM_ConstructionPylons_01f",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_ConstructionPylons_01f.SM_ConstructionPylons_01f"
+    },
+    {
+      "prop_type_id": "constructionpylons_01g",
+      "bp_name": "BP_ConstructionPylons_01g",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_ConstructionPylons_01g.BP_ConstructionPylons_01g",
+      "mesh_name": "SM_ConstructionPylons_01g",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_ConstructionPylons_01g.SM_ConstructionPylons_01g"
+    },
+    {
+      "prop_type_id": "crate_01a",
+      "bp_name": "BP_Crate_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Crate_01a.BP_Crate_01a",
+      "mesh_name": "SM_Crate_01a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_Crate_01a.SM_Crate_01a"
+    },
+    {
+      "prop_type_id": "crate_base_01a",
+      "bp_name": "BP_Crate_Base_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Crate_Base_01a.BP_Crate_Base_01a",
+      "mesh_name": "SM_Crate_Base_01a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_Crate_Base_01a.SM_Crate_Base_01a"
+    },
+    {
+      "prop_type_id": "crate_lid_01a",
+      "bp_name": "BP_Crate_Lid_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Crate_Lid_01a.BP_Crate_Lid_01a",
+      "mesh_name": "SM_Crate_Lid_01a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_Crate_Lid_01a.SM_Crate_Lid_01a"
+    },
+    {
+      "prop_type_id": "drywall_01a",
+      "bp_name": "BP_Drywall_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Drywall_01a.BP_Drywall_01a",
+      "mesh_name": "SM_Drywall_01a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_Drywall_01a.SM_Drywall_01a"
+    },
+    {
+      "prop_type_id": "drywall_01b",
+      "bp_name": "BP_Drywall_01b",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Drywall_01b.BP_Drywall_01b",
+      "mesh_name": "SM_Drywall_01b",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_Drywall_01b.SM_Drywall_01b"
+    },
+    {
+      "prop_type_id": "dumpster",
+      "bp_name": "BP_Dumpster",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Dumpster.BP_Dumpster",
+      "mesh_name": "SM_Dumpster",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_Dumpster.SM_Dumpster"
+    },
+    {
+      "prop_type_id": "freightcontainer_01",
+      "bp_name": "BP_FreightContainer_01",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_FreightContainer_01.BP_FreightContainer_01",
+      "mesh_name": "SM_FreightContainer_01",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_FreightContainer_01.SM_FreightContainer_01"
+    },
+    {
+      "prop_type_id": "lightgenerator_01a",
+      "bp_name": "BP_LightGenerator_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_LightGenerator_01a.BP_LightGenerator_01a",
+      "mesh_name": "SM_LightGenerator_01a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_LightGenerator_01a.SM_LightGenerator_01a"
+    },
+    {
+      "prop_type_id": "lightgenerator_base_01a",
+      "bp_name": "BP_LightGenerator_Base_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_LightGenerator_Base_01a.BP_LightGenerator_Base_01a",
+      "mesh_name": "SM_LightGenerator_Base_01a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_LightGenerator_Base_01a.SM_LightGenerator_Base_01a"
+    },
+    {
+      "prop_type_id": "lightgenerator_lights_01a",
+      "bp_name": "BP_LightGenerator_Lights_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_LightGenerator_Lights_01a.BP_LightGenerator_Lights_01a",
+      "mesh_name": "SM_LightGenerator_Lights_01a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_LightGenerator_Lights_01a.SM_LightGenerator_Lights_01a"
+    },
+    {
+      "prop_type_id": "plasticbarrel_01a",
+      "bp_name": "BP_PlasticBarrel_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_PlasticBarrel_01a.BP_PlasticBarrel_01a",
+      "mesh_name": "SM_PlasticBarrel_01a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_PlasticBarrel_01a.SM_PlasticBarrel_01a"
+    },
+    {
+      "prop_type_id": "portapotty_01",
+      "bp_name": "BP_Portapotty_01",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Portapotty_01.BP_Portapotty_01",
+      "mesh_name": "SM_Portapotty_01",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_Portapotty_01.SM_Portapotty_01"
+    },
+    {
+      "prop_type_id": "portapotty_02",
+      "bp_name": "BP_Portapotty_02",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Portapotty_02.BP_Portapotty_02",
+      "mesh_name": "SM_Portapotty_02",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_Portapotty_02.SM_Portapotty_02"
+    },
+    {
+      "prop_type_id": "portapotty_03",
+      "bp_name": "BP_Portapotty_03",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Portapotty_03.BP_Portapotty_03",
+      "mesh_name": "SM_Portapotty_03",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_Portapotty_03.SM_Portapotty_03"
+    },
+    {
+      "prop_type_id": "rebar_01a",
+      "bp_name": "BP_Rebar_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Rebar_01a.BP_Rebar_01a",
+      "mesh_name": "SM_Rebar_01a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_Rebar_01a.SM_Rebar_01a"
+    },
+    {
+      "prop_type_id": "rebar_01b",
+      "bp_name": "BP_Rebar_01b",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Rebar_01b.BP_Rebar_01b",
+      "mesh_name": "SM_Rebar_01b",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_Rebar_01b.SM_Rebar_01b"
+    },
+    {
+      "prop_type_id": "roadblock_01a",
+      "bp_name": "BP_Roadblock_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_01a.BP_Roadblock_01a",
+      "mesh_name": "SM_Roadblock_01a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_Roadblock_01a.SM_Roadblock_01a"
+    },
+    {
+      "prop_type_id": "roadblock_02a",
+      "bp_name": "BP_Roadblock_02a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_02a.BP_Roadblock_02a",
+      "mesh_name": "SM_Roadblock_02a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_Roadblock_02a.SM_Roadblock_02a"
+    },
+    {
+      "prop_type_id": "roadblock_03a",
+      "bp_name": "BP_Roadblock_03a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_03a.BP_Roadblock_03a",
+      "mesh_name": "SM_Roadblock_03a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_Roadblock_03a.SM_Roadblock_03a"
+    },
+    {
+      "prop_type_id": "roadblock_03b",
+      "bp_name": "BP_Roadblock_03b",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_03b.BP_Roadblock_03b",
+      "mesh_name": "SM_Roadblock_03b",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_Roadblock_03b.SM_Roadblock_03b"
+    },
+    {
+      "prop_type_id": "roadblock_04a",
+      "bp_name": "BP_Roadblock_04a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_04a.BP_Roadblock_04a",
+      "mesh_name": "SM_Roadblock_04a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_Roadblock_04a.SM_Roadblock_04a"
+    },
+    {
+      "prop_type_id": "roadblock_flag_03a",
+      "bp_name": "BP_Roadblock_Flag_03a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_Flag_03a.BP_Roadblock_Flag_03a",
+      "mesh_name": "SM_Roadblock_Flag_03a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_Roadblock_Flag_03a.SM_Roadblock_Flag_03a"
+    },
+    {
+      "prop_type_id": "spool_01a",
+      "bp_name": "BP_Spool_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Spool_01a.BP_Spool_01a",
+      "mesh_name": "SM_Spool_01a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_Spool_01a.SM_Spool_01a"
+    },
+    {
+      "prop_type_id": "tarp_01",
+      "bp_name": "BP_Tarp_01",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Tarp_01.BP_Tarp_01",
+      "mesh_name": "SM_Tarp_01",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_Tarp_01.SM_Tarp_01"
+    },
+    {
+      "prop_type_id": "tarp_02",
+      "bp_name": "BP_Tarp_02",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Tarp_02.BP_Tarp_02",
+      "mesh_name": "SM_Tarp_02",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_Tarp_02.SM_Tarp_02"
+    },
+    {
+      "prop_type_id": "tarp_03",
+      "bp_name": "BP_Tarp_03",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Tarp_03.BP_Tarp_03",
+      "mesh_name": "SM_Tarp_03",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_Tarp_03.SM_Tarp_03"
+    },
+    {
+      "prop_type_id": "tarp_04",
+      "bp_name": "BP_Tarp_04",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Tarp_04.BP_Tarp_04",
+      "mesh_name": "SM_Tarp_04",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_Tarp_04.SM_Tarp_04"
+    },
+    {
+      "prop_type_id": "tarp_05",
+      "bp_name": "BP_Tarp_05",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Tarp_05.BP_Tarp_05",
+      "mesh_name": "SM_Tarp_05",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_Tarp_05.SM_Tarp_05"
+    },
+    {
+      "prop_type_id": "tarp_06",
+      "bp_name": "BP_Tarp_06",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Tarp_06.BP_Tarp_06",
+      "mesh_name": "SM_Tarp_06",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_Tarp_06.SM_Tarp_06"
+    },
+    {
+      "prop_type_id": "trafficbarrier_01",
+      "bp_name": "BP_Trafficbarrier_01",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Trafficbarrier_01.BP_Trafficbarrier_01",
+      "mesh_name": "SM_Trafficbarrier_01",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_Trafficbarrier_01.SM_Trafficbarrier_01"
+    },
+    {
+      "prop_type_id": "watertank_01a",
+      "bp_name": "BP_WaterTank_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_WaterTank_01a.BP_WaterTank_01a",
+      "mesh_name": "SM_WaterTank_01a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_WaterTank_01a.SM_WaterTank_01a"
+    },
+    {
+      "prop_type_id": "zbackdrop_01",
+      "bp_name": "BP_ZBackdrop_01",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_ZBackdrop_01.BP_ZBackdrop_01",
+      "mesh_name": "SM_ZBackdrop_01",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_ZBackdrop_01.SM_ZBackdrop_01"
+    },
+    {
+      "prop_type_id": "zplane_01a",
+      "bp_name": "BP_ZPlane_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_ZPlane_01a.BP_ZPlane_01a",
+      "mesh_name": "SM_ZPlane_01a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_ZPlane_01a.SM_ZPlane_01a"
+    },
+    {
+      "prop_type_id": "zsphere",
+      "bp_name": "BP_ZSphere",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_ZSphere.BP_ZSphere",
+      "mesh_name": "SM_ZSphere",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_ZSphere.SM_ZSphere"
+    },
+    {
+      "prop_type_id": "construction_fence_01a",
+      "bp_name": "BP_construction_fence_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_construction_fence_01a.BP_construction_fence_01a",
+      "mesh_name": "SM_construction_fence_01a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_construction_fence_01a.SM_construction_fence_01a"
+    },
+    {
+      "prop_type_id": "construction_fence_connectors_01a",
+      "bp_name": "BP_construction_fence_connectors_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_construction_fence_connectors_01a.BP_construction_fence_connectors_01a",
+      "mesh_name": "SM_construction_fence_connectors_01a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_construction_fence_connectors_01a.SM_construction_fence_connectors_01a"
+    },
+    {
+      "prop_type_id": "construction_fence_support_01a",
+      "bp_name": "BP_construction_fence_support_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_construction_fence_support_01a.BP_construction_fence_support_01a",
+      "mesh_name": "SM_construction_fence_support_01a",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_construction_fence_support_01a.SM_construction_fence_support_01a"
+    },
+    {
+      "prop_type_id": "woodenpalette_01",
+      "bp_name": "BP_woodenpalette_01",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_woodenpalette_01.BP_woodenpalette_01",
+      "mesh_name": "SM_woodenpalette_01",
+      "mesh_path": "/Game/Construction_VOL1/Meshes/SM_woodenpalette_01.SM_woodenpalette_01"
+    }
+  ]
+}
