@@ -104,9 +104,9 @@ ESCAPE_STEP_MIN_CM = 70.0
 ESCAPE_STEP_MAX_CM = 150.0
 ESCAPE_MAX_TURN_DEG = 135.0
 MAX_UNSTUCK_ATTEMPTS = 16
-STUCK_CORRIDOR_LENGTH_CM = 200.0
-STUCK_CORRIDOR_HALF_WIDTH_CELLS = 3
-STUCK_HOTSPOT_RADIUS_CELLS = 4
+STUCK_CORRIDOR_LENGTH_CM = 120.0
+STUCK_CORRIDOR_HALF_WIDTH_CELLS = 2
+STUCK_HOTSPOT_RADIUS_CELLS = 2
 ESCAPE_MIN_DISPLACEMENT_CM = 35.0
 ESCAPE_CANDIDATE_LIMIT = 8
 
@@ -441,9 +441,29 @@ def _replan_on_merged_layers(
         try:
             replan = _safe_replan_astar(layers.to_costmap2d(), pos_xy, goal_xy)
             print("  [SiteNav] replan using tight merged L0+L1+L2 clearance")
-        except (ValueError, RuntimeError) as exc:
-            print(f"  [SiteNav] tight merged replan failed: {exc}")
-            replan = None
+        except (ValueError, RuntimeError):
+            try:
+                merged_l01 = Costmap2D(
+                    costs=np.maximum(
+                        layers.l0.astype(np.float32),
+                        layers.l1.astype(np.float32),
+                    ),
+                    origin_xy=layers.origin_xy,
+                    resolution_cm=layers.resolution_cm,
+                    lethal_cost=layers.lethal_cost,
+                )
+                replan = _safe_replan_astar(merged_l01, pos_xy, goal_xy)
+                print("  [SiteNav] replan using L0+L1 (L2 ignored)")
+            except (ValueError, RuntimeError) as exc_l01:
+                try:
+                    replan = _safe_replan_astar(layers.to_l0_costmap2d(), pos_xy, goal_xy)
+                    print(
+                        f"  [SiteNav] L0+L1 replan failed ({exc_l01});"
+                        " escape replan on L0 only"
+                    )
+                except (ValueError, RuntimeError) as exc:
+                    print(f"  [SiteNav] tight merged replan failed: {exc}")
+                    replan = None
     if replan is not None and replan.waypoints_xy:
         if trace is not None:
             trace.record_plan(replan.waypoints_xy, reason=reason)
@@ -1310,7 +1330,7 @@ def navigate_layered_with_fusion(
                         waypoints = new_wps
                         wp_index = _nearest_waypoint_index_ahead(pos_xy, waypoints, 0)
                     else:
-                        wp_index += 1
+                        wp_index = min(wp_index + 1, len(waypoints))
                     steps_on_wp = 0
                     if moves_since_progress >= STUCK_CHECK_MOVES:
                         stuck_xy, ucv = _safe_get_pos2d(ucv, robot_name)

@@ -86,8 +86,8 @@ from zones import apply_forbidden_zones_l1  # noqa: E402
 
 DEFAULT_L0 = L0_MASK_STRICT
 ARRIVE_TOLERANCE_CM = 130.0
-DEPTH_CLEARANCE_TRIGGER_CM = 125.0
-DEPTH_KEEP_OUT_RADIUS_CM = 80.0
+DEPTH_CLEARANCE_TRIGGER_CM = 100.0
+DEPTH_KEEP_OUT_RADIUS_CM = 60.0
 _RELEASE_UE = Path(__file__).resolve().parents[2] / "release_ue_connection.py"
 
 
@@ -343,7 +343,7 @@ def main() -> int:
         depth_cfg = EgocentricPerceptionConfig(
             fov_deg=SENSOR_FOV_DEG,
             max_range_cm=650.0,
-            min_obstacle_height_cm=45.0,
+            min_obstacle_height_cm=55.0 if nav_profile.name == "fast" else 45.0,
             stride_px=nav_profile.depth_stride_px,
             use_lethal=True,
             camera_offset_forward_cm=SENSOR_CAM_FORWARD_OFFSET_CM,

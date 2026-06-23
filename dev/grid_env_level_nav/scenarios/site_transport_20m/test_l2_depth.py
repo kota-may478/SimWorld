@@ -113,6 +113,27 @@ class L2DepthTest(unittest.TestCase):
         )
         self.assertGreater(float(layers.l2[10, 10]), 0)
 
+    def test_aggressive_soft_reset_evicts_carry_forward_near_stuck(self) -> None:
+        layers = _tiny_layers()
+        layers.update_l2_log_odds_cell(12, 12, 0.85, latch_static=True)
+        layers.update_l2_log_odds_cell(12, 12, 0.85, latch_static=True)
+        tracker = DepthCellTracker()
+        tracker.carry_forward_mask = {(12, 12)}
+        seen: set = {(12, 12)}
+        stuck_xy = (
+            layers.origin_xy[0] + (12 + 0.5) * layers.resolution_cm,
+            layers.origin_xy[1] + (12 + 0.5) * layers.resolution_cm,
+        )
+        removed = soft_l2_depth_reset(
+            layers,
+            tracker,
+            seen,
+            stuck_world_xy=stuck_xy,
+            aggressive=True,
+        )
+        self.assertGreater(removed, 0)
+        self.assertEqual(float(layers.l2[12, 12]), 0.0)
+
     def test_aggressive_soft_reset_clears_latched_near_stuck(self) -> None:
         layers = _tiny_layers()
         layers.update_l2_log_odds_cell(12, 12, 0.85, latch_static=True)
@@ -135,6 +156,25 @@ class L2DepthTest(unittest.TestCase):
         self.assertGreater(removed, 0)
         self.assertEqual(float(layers.l2[12, 12]), 0.0)
         self.assertFalse(layers.l2_static_latch[12, 12])
+
+    def test_keepout_skipped_when_near_fraction_high(self) -> None:
+        layers = _tiny_layers()
+        depth = np.full((64, 64), 0.25, dtype=np.float32)
+        cfg = EgocentricPerceptionConfig(
+            min_obstacle_height_cm=10.0,
+            stride_px=16,
+            use_log_odds=True,
+            latch_static=True,
+        )
+        result = update_l2_depth(
+            depth,
+            layers,
+            robot_xy=(-500.0, -1700.0),
+            robot_yaw_deg=0.0,
+            config=cfg,
+            close_range_clearance_cm=125.0,
+        )
+        self.assertEqual(result.keepout_cells, 0)
 
     def test_update_l2_from_depth_image_offline(self) -> None:
         layers = _tiny_layers()

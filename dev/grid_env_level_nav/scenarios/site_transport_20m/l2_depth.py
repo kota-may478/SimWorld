@@ -28,8 +28,15 @@ from perception_layer import (  # noqa: E402
     update_l2_from_depth_image,
 )
 
-WorldXY = Tuple[float, float]
-GridCell = Tuple[int, int]
+MAX_KEEPOUT_CELLS_PER_FRAME = 24
+KEEPOUT_NEAR_FRACTION_SKIP = 0.35
+
+
+def _depth_near_fraction(depth_m: np.ndarray, clearance_m: float) -> float:
+    finite = depth_m[np.isfinite(depth_m) & (depth_m > 0.05)]
+    if finite.size == 0:
+        return 0.0
+    return float(np.sum(finite <= clearance_m)) / float(finite.size)
 
 
 @dataclass
@@ -40,11 +47,15 @@ class DepthCellTracker:
     carry_forward_mask: Set[GridCell] = field(default_factory=set)
 
     def snapshot_occupied(self, layers: LayeredCostmap) -> Set[GridCell]:
-        """Capture latched/static L2 cells to preserve across leg transitions."""
+        """Capture static-latched L2 cells to preserve across leg transitions.
+
+        Only 2-hit latched obstacles are carried forward; ephemeral depth hits
+        from the prior leg are dropped so they cannot block the return path.
+        """
         occupied: Set[GridCell] = set()
         for gy in range(layers.height_cells):
             for gx in range(layers.width_cells):
-                if layers.l2[gy, gx] > 0:
+                if layers.l2_static_latch[gy, gx]:
                     occupied.add((gx, gy))
         self.carry_forward_mask = set(occupied)
         return set(occupied)
@@ -120,6 +131,11 @@ def update_l2_depth(
         keepout_radius_cm=close_range_keepout_cm,
         camera_pitch_deg=camera_pitch_deg,
     )
+    near_frac = _depth_near_fraction(depth_m, close_range_clearance_cm / 100.0)
+    if near_frac > KEEPOUT_NEAR_FRACTION_SKIP:
+        keepout = []
+    elif len(keepout) > MAX_KEEPOUT_CELLS_PER_FRAME:
+        keepout = keepout[:MAX_KEEPOUT_CELLS_PER_FRAME]
     keepout_added = (
         apply_l2_obstacle_cells(layers, keepout, config=cfg, latch_static=False)
         if keepout
@@ -162,7 +178,18 @@ def soft_l2_depth_reset(
 
     removed = 0
     preserve = set(tracker.carry_forward_mask)
-    if not aggressive:
+    if aggressive and stuck_world_xy is not None:
+        # LAST RESORT: allow evicting carry-forward phantoms near the stuck pose.
+        filtered: Set[GridCell] = set()
+        for gx, gy in preserve:
+            cell_xy = (
+                layers.origin_xy[0] + (gx + 0.5) * layers.resolution_cm,
+                layers.origin_xy[1] + (gy + 0.5) * layers.resolution_cm,
+            )
+            if dist2d(stuck_world_xy, cell_xy) >= evict_near_radius_cm:
+                filtered.add((gx, gy))
+        preserve = filtered
+    elif not aggressive:
         for gy in range(layers.height_cells):
             for gx in range(layers.width_cells):
                 if layers.l2_static_latch[gy, gx]:

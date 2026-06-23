@@ -201,6 +201,15 @@ class LayeredCostmap:
             lethal_cost=self.lethal_cost,
         )
 
+    def to_l0_costmap2d(self) -> Costmap2D:
+        """L0 floor mask only — used for escape replans when trapped in L1/L2."""
+        return costmap_from_array(
+            self.l0.astype(np.float32),
+            origin_xy=self.origin_xy,
+            resolution_cm=self.resolution_cm,
+            lethal_cost=self.lethal_cost,
+        )
+
     def plan_astar(
         self,
         start_xy: WorldXY,
