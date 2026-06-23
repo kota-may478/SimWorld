@@ -16,6 +16,11 @@ if str(_THIS_DIR) not in sys.path:
 from costmap_layers import LayeredCostmap  # noqa: E402
 from l0_nav_mask import COSTMAP_LETHAL_COST, synthetic_l0_corridor  # noqa: E402
 from level_coords import local_xy_to_world  # noqa: E402
+from path_planning_costmap import (  # noqa: E402
+    build_uniform_costmap,
+    simplify_world_path,
+    world_segment_is_traversable,
+)
 from zone_registry import ZoneRegistry  # noqa: E402
 
 
@@ -52,6 +57,40 @@ class TestLayeredCostmap(unittest.TestCase):
     layers.set_l2_cell(5, 5, 80.0)
     merged = layers.merged_costs()
     self.assertEqual(float(merged[5, 5]), 80.0)
+
+  def test_world_segment_detects_lethal_cell(self) -> None:
+    costmap = build_uniform_costmap((0.0, 0.0), size_m=3.0, resolution_cm=10.0)
+    costmap.costs[5, 15] = COSTMAP_LETHAL_COST
+    self.assertFalse(world_segment_is_traversable(costmap, (50.0, 50.0), (250.0, 50.0)))
+    self.assertTrue(world_segment_is_traversable(costmap, (50.0, 50.0), (90.0, 50.0)))
+
+  def test_world_segment_skip_start_cell_allows_exit_from_lethal_pose(self) -> None:
+    costmap = build_uniform_costmap((0.0, 0.0), size_m=3.0, resolution_cm=10.0)
+    costmap.costs[5, 5] = COSTMAP_LETHAL_COST
+    start = (50.0, 50.0)
+    safe = (90.0, 50.0)
+    self.assertFalse(world_segment_is_traversable(costmap, start, safe))
+    self.assertTrue(
+      world_segment_is_traversable(costmap, start, safe, skip_start_cell=True)
+    )
+
+  def test_simplify_respects_lethal_barrier(self) -> None:
+    costmap = build_uniform_costmap((0.0, 0.0), size_m=3.0, resolution_cm=10.0)
+    costmap.costs[5, 15] = COSTMAP_LETHAL_COST
+    colinear = [(50.0, 50.0), (150.0, 50.0), (250.0, 50.0)]
+    naive = simplify_world_path(colinear)
+    self.assertEqual(len(naive), 2)
+    self.assertFalse(world_segment_is_traversable(costmap, naive[0], naive[1]))
+
+    detour = [
+      (50.0, 50.0),
+      (50.0, 150.0),
+      (150.0, 150.0),
+      (250.0, 150.0),
+    ]
+    safe = simplify_world_path(detour, costmap=costmap)
+    for start, end in zip(safe[:-1], safe[1:]):
+      self.assertTrue(world_segment_is_traversable(costmap, start, end))
 
 
 if __name__ == "__main__":
