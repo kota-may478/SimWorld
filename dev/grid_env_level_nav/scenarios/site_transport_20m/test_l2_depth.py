@@ -18,7 +18,7 @@ from bootstrap import setup_paths
 setup_paths(scenario="site_transport_20m")
 
 from costmap_layers import LayeredCostmap, L2_LOG_ODDS_OCCUPIED  # noqa: E402
-from l2_depth import DepthCellTracker, update_l2_depth  # noqa: E402
+from l2_depth import DepthCellTracker, soft_l2_depth_reset, update_l2_depth  # noqa: E402
 from perception_layer import (  # noqa: E402
     EgocentricPerceptionConfig,
     apply_depth_ray_update,
@@ -112,6 +112,29 @@ class L2DepthTest(unittest.TestCase):
             tracker=tracker,
         )
         self.assertGreater(float(layers.l2[10, 10]), 0)
+
+    def test_aggressive_soft_reset_clears_latched_near_stuck(self) -> None:
+        layers = _tiny_layers()
+        layers.update_l2_log_odds_cell(12, 12, 0.85, latch_static=True)
+        layers.update_l2_log_odds_cell(12, 12, 0.85, latch_static=True)
+        self.assertTrue(layers.l2_static_latch[12, 12])
+        tracker = DepthCellTracker()
+        tracker.active_cells.add((12, 12))
+        seen: set = {(12, 12)}
+        stuck_xy = (
+            layers.origin_xy[0] + (12 + 0.5) * layers.resolution_cm,
+            layers.origin_xy[1] + (12 + 0.5) * layers.resolution_cm,
+        )
+        removed = soft_l2_depth_reset(
+            layers,
+            tracker,
+            seen,
+            stuck_world_xy=stuck_xy,
+            aggressive=True,
+        )
+        self.assertGreater(removed, 0)
+        self.assertEqual(float(layers.l2[12, 12]), 0.0)
+        self.assertFalse(layers.l2_static_latch[12, 12])
 
     def test_update_l2_from_depth_image_offline(self) -> None:
         layers = _tiny_layers()

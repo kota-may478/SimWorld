@@ -81,7 +81,7 @@ from zones import apply_forbidden_zones_l1  # noqa: E402
 DEFAULT_L0 = L0_MASK_STRICT
 ARRIVE_TOLERANCE_CM = 130.0
 DEPTH_CLEARANCE_TRIGGER_CM = 125.0
-DEPTH_KEEP_OUT_RADIUS_CM = 100.0
+DEPTH_KEEP_OUT_RADIUS_CM = 80.0
 _RELEASE_UE = Path(__file__).resolve().parents[2] / "release_ue_connection.py"
 
 
@@ -282,7 +282,7 @@ def main() -> int:
         depth_cfg = EgocentricPerceptionConfig(
             fov_deg=SENSOR_FOV_DEG,
             max_range_cm=650.0,
-            min_obstacle_height_cm=35.0,
+            min_obstacle_height_cm=45.0,
             stride_px=6,
             use_lethal=True,
             camera_offset_forward_cm=SENSOR_CAM_FORWARD_OFFSET_CM,
@@ -308,13 +308,19 @@ def main() -> int:
                 object_registry.entries.clear()
                 print(f"[Site20] L2 depth + registry reset ({label})")
 
-        def _soft_reset_l2(l2_seen_cells: set, stuck_world_xy=None) -> None:
-            soft_l2_depth_reset(
+        def _soft_reset_l2(l2_seen_cells: set, stuck_world_xy=None, *, aggressive: bool = False) -> None:
+            removed = soft_l2_depth_reset(
                 layers,
                 depth_tracker,
                 l2_seen_cells,
                 stuck_world_xy=stuck_world_xy,
+                aggressive=aggressive,
             )
+            if removed:
+                print(
+                    f"[Site20] L2 soft reset evicted {removed} cells"
+                    f"{' (aggressive)' if aggressive else ''}"
+                )
 
         def _ensure_sight_depth_camera() -> int:
             if not sight_depth_cam["ready"]:
@@ -393,7 +399,7 @@ def main() -> int:
             print(
                 f"[Site20] L2_depth + ObjectRegistry: FOV={sight_cfg.fov_deg}° "
                 f"range={sight_cfg.max_range_cm}cm interval={SITE_DEFAULT_PERCEPTION_INTERVAL_S}s "
-                f"log-odds=on static-latch=on"
+                f"log-odds=on static-latch=2-hit"
             )
 
             def _perceive_sight(*, layers, l2_seen_cells):

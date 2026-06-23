@@ -120,12 +120,20 @@ def update_l2_depth(
         keepout_radius_cm=close_range_keepout_cm,
         camera_pitch_deg=camera_pitch_deg,
     )
-    keepout_added = apply_l2_obstacle_cells(layers, keepout, config=cfg) if keepout else 0
+    keepout_added = (
+        apply_l2_obstacle_cells(layers, keepout, config=cfg, latch_static=False)
+        if keepout
+        else 0
+    )
 
     new_active: Set[GridCell] = {hit.cell for hit in hits}
     new_active.update(keepout)
     if tracker is not None:
-        tracker.active_cells = new_active | preserve
+        tracker.active_cells.update(new_active)
+        for gy in range(layers.height_cells):
+            for gx in range(layers.width_cells):
+                if layers.l2[gy, gx] > 0:
+                    tracker.active_cells.add((gx, gy))
 
     total = hit_count + keepout_added
     return DepthUpdateResult(
@@ -143,40 +151,44 @@ def soft_l2_depth_reset(
     *,
     stuck_world_xy: Optional[WorldXY] = None,
     evict_near_radius_cm: float = 600.0,
+    aggressive: bool = False,
 ) -> int:
-    """Clear depth phantoms near stuck position; preserve static latch + carry-forward mask."""
+    """Clear depth phantoms near stuck position; preserve carry-forward mask.
+
+    When aggressive=True (LAST RESORT), also evicts static-latched cells near the
+    stuck pose so phantom obstacles on the robot path can be cleared.
+    """
     from grid_env_10k_pie_patrol import dist2d  # noqa: WPS433
 
     removed = 0
     preserve = set(tracker.carry_forward_mask)
+    if not aggressive:
+        for gy in range(layers.height_cells):
+            for gx in range(layers.width_cells):
+                if layers.l2_static_latch[gy, gx]:
+                    preserve.add((gx, gy))
+
+    to_clear: list[GridCell] = []
     for gy in range(layers.height_cells):
         for gx in range(layers.width_cells):
-            if layers.l2_static_latch[gy, gx]:
-                preserve.add((gx, gy))
+            if layers.l2[gy, gx] <= 0:
+                continue
+            if (gx, gy) in preserve:
+                continue
+            if stuck_world_xy is not None:
+                cell_xy = (
+                    layers.origin_xy[0] + (gx + 0.5) * layers.resolution_cm,
+                    layers.origin_xy[1] + (gy + 0.5) * layers.resolution_cm,
+                )
+                if dist2d(stuck_world_xy, cell_xy) >= evict_near_radius_cm:
+                    continue
+            to_clear.append((gx, gy))
 
-    if stuck_world_xy is not None:
-        to_clear: list[GridCell] = []
-        for gx, gy in tracker.active_cells:
-            if (gx, gy) in preserve:
-                continue
-            cell_xy = (
-                layers.origin_xy[0] + (gx + 0.5) * layers.resolution_cm,
-                layers.origin_xy[1] + (gy + 0.5) * layers.resolution_cm,
-            )
-            if dist2d(stuck_world_xy, cell_xy) < evict_near_radius_cm:
-                to_clear.append((gx, gy))
-        for gx, gy in to_clear:
-            layers.clear_l2_cell(gx, gy)
-            l2_seen_cells.discard((gx, gy))
-            tracker.active_cells.discard((gx, gy))
-            removed += 1
-    else:
-        for gx, gy in list(tracker.active_cells):
-            if (gx, gy) in preserve:
-                continue
-            layers.clear_l2_cell(gx, gy)
-            l2_seen_cells.discard((gx, gy))
-            tracker.active_cells.discard((gx, gy))
-            removed += 1
+    clear_fn = layers.force_clear_l2_cell if aggressive else layers.clear_l2_cell
+    for gx, gy in to_clear:
+        clear_fn(gx, gy)
+        l2_seen_cells.discard((gx, gy))
+        tracker.active_cells.discard((gx, gy))
+        removed += 1
 
     return removed

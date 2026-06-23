@@ -371,13 +371,15 @@ def apply_l2_obstacle_cells(
     cells: Sequence[GridCell],
     *,
     config: Optional[EgocentricPerceptionConfig] = None,
+    latch_static: Optional[bool] = None,
 ) -> int:
     cfg = config or EgocentricPerceptionConfig()
+    latch = cfg.latch_static if latch_static is None else latch_static
     cost = L2_LETHAL_COST if cfg.use_lethal else L2_OBSTACLE_COST
     n = 0
     for gx, gy in cells:
         if cfg.use_log_odds:
-            layers.update_l2_log_odds_cell(gx, gy, L2_LOG_ODDS_HIT, latch_static=cfg.latch_static)
+            layers.update_l2_log_odds_cell(gx, gy, L2_LOG_ODDS_HIT, latch_static=latch)
         else:
             layers.set_l2_cell(gx, gy, cost)
         n += 1

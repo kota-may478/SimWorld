@@ -83,7 +83,9 @@ class TestPerceptionLayer(unittest.TestCase):
 
     def test_log_odds_sync_to_l2(self) -> None:
         layers = LayeredCostmap.from_l0_array(np.ones((10, 10), dtype=np.float32), resolution_cm=30.0)
-        layers.update_l2_log_odds_cell(5, 5, 1.0, latch_static=True)
+        layers.update_l2_log_odds_cell(5, 5, 0.85, latch_static=True)
+        self.assertFalse(layers.l2_static_latch[5, 5])
+        layers.update_l2_log_odds_cell(5, 5, 0.85, latch_static=True)
         self.assertTrue(layers.l2_static_latch[5, 5])
         self.assertGreaterEqual(float(layers.l2_log_odds[5, 5]), L2_LOG_ODDS_OCCUPIED)
         n = layers.sync_l2_from_log_odds()

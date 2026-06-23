@@ -36,10 +36,11 @@ PATH_WP_SPACING_CM = 300.0
 
 # Log-odds occupancy (L2_depth): hit/miss updates, threshold → binary l2 cost.
 L2_LOG_ODDS_HIT = 0.85
-L2_LOG_ODDS_MISS = -0.40
+L2_LOG_ODDS_MISS = -0.55
 L2_LOG_ODDS_MIN = -4.0
 L2_LOG_ODDS_MAX = 6.0
 L2_LOG_ODDS_OCCUPIED = 0.5
+L2_LOG_ODDS_LATCH = 1.35
 
 
 @dataclass
@@ -120,7 +121,7 @@ class LayeredCostmap:
         prev = float(self.l2_log_odds[gy, gx])
         new_val = max(L2_LOG_ODDS_MIN, min(L2_LOG_ODDS_MAX, prev + delta))
         self.l2_log_odds[gy, gx] = new_val
-        if latch_static and delta > 0:
+        if latch_static and delta > 0 and new_val >= L2_LOG_ODDS_LATCH:
             self.l2_static_latch[gy, gx] = True
         if self.l2_static_latch[gy, gx] or new_val >= L2_LOG_ODDS_OCCUPIED:
             self.l2[gy, gx] = COSTMAP_LETHAL_COST
@@ -177,6 +178,13 @@ class LayeredCostmap:
                 return
             self.l2[gy, gx] = 0.0
             self.l2_log_odds[gy, gx] = 0.0
+
+    def force_clear_l2_cell(self, gx: int, gy: int) -> None:
+        """Clear L2 cell including static latch (LAST RESORT phantom eviction)."""
+        if 0 <= gx < self.width_cells and 0 <= gy < self.height_cells:
+            self.l2[gy, gx] = 0.0
+            self.l2_log_odds[gy, gx] = 0.0
+            self.l2_static_latch[gy, gx] = False
 
     def merged_costs(self) -> np.ndarray:
         """Per-cell max of L0, L1, L2 (0 = no extra cost from layer)."""

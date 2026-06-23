@@ -831,7 +831,7 @@ def navigate_layered_with_fusion(
     goal_local_xy: Tuple[float, float],
     *,
     perceive_fn: PerceiveFn,
-    soft_reset_fn: Optional[Callable[[Set[Tuple[int, int]], WorldXY], None]] = None,
+    soft_reset_fn: Optional[Callable[..., None]] = None,
     robot_name: str = ROBOT_ACTOR,
     nav_actor: Optional[str] = None,
     tolerance_cm: float = 120.0,
@@ -1138,7 +1138,7 @@ def navigate_layered_with_fusion(
                                         " flush all L2 cells, replan on L0+L1 only"
                                     )
                                     if soft_reset_fn is not None:
-                                        soft_reset_fn(l2_seen_cells, stuck_xy)
+                                        soft_reset_fn(l2_seen_cells, stuck_xy, aggressive=True)
                                     else:
                                         layers.l2[:, :] = 0
                                         l2_seen_cells.clear()
@@ -1246,7 +1246,7 @@ def navigate_layered_with_fusion(
                                 " flush all L2 cells, replan on L0+L1 only"
                             )
                             if soft_reset_fn is not None:
-                                soft_reset_fn(l2_seen_cells, new_xy)
+                                soft_reset_fn(l2_seen_cells, new_xy, aggressive=True)
                             else:
                                 layers.l2[:, :] = 0
                                 l2_seen_cells.clear()
@@ -1318,7 +1318,7 @@ def navigate_to_slot(
     perceive_fn: PerceiveFn,
     standoff_fn: Optional[Callable[[WorldXY, WorldXY], WorldXY]] = None,
     fallback_goal_local: Optional[Tuple[float, float]] = None,
-    soft_reset_fn: Optional[Callable[[Set[Tuple[int, int]], WorldXY], None]] = None,
+    soft_reset_fn: Optional[Callable[..., None]] = None,
     robot_name: str = ROBOT_ACTOR,
     nav_actor: Optional[str] = None,
     tolerance_cm: float = 120.0,
@@ -1371,7 +1371,7 @@ def deliver_to(
     object_registry: object,
     perceive_fn: PerceiveFn,
     fallback_goal_local: Optional[Tuple[float, float]] = None,
-    soft_reset_fn: Optional[Callable[[Set[Tuple[int, int]], WorldXY], None]] = None,
+    soft_reset_fn: Optional[Callable[..., None]] = None,
     robot_name: str = ROBOT_ACTOR,
     nav_actor: Optional[str] = None,
     tolerance_cm: float = 120.0,
