@@ -8,7 +8,7 @@ import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from level_coords import world_xy_to_local
 from placement import SiteTransportRegistry
@@ -17,6 +17,88 @@ from zones import ForbiddenZone, point_in_forbidden_local
 WorldXY = Tuple[float, float]
 SPEED_LIMIT_KMH = 5.0
 SPEED_LIMIT_CM_S = SPEED_LIMIT_KMH * 100_000.0 / 3600.0  # ≈138.89 cm/s
+
+
+@dataclass
+class NavTimingAccumulator:
+    """Per-navigation-loop timing buckets (milliseconds)."""
+
+    perceive_ms: float = 0.0
+    move_ms: float = 0.0
+    replan_ms: float = 0.0
+    settle_ms: float = 0.0
+    label: str = ""
+
+    def add(self, other: "NavTimingAccumulator") -> None:
+        self.perceive_ms += other.perceive_ms
+        self.move_ms += other.move_ms
+        self.replan_ms += other.replan_ms
+        self.settle_ms += other.settle_ms
+
+    def total_ms(self) -> float:
+        return self.perceive_ms + self.move_ms + self.replan_ms + self.settle_ms
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "label": self.label,
+            "perceive_ms": round(self.perceive_ms, 2),
+            "move_ms": round(self.move_ms, 2),
+            "replan_ms": round(self.replan_ms, 2),
+            "settle_ms": round(self.settle_ms, 2),
+            "total_ms": round(self.total_ms(), 2),
+        }
+
+
+def build_timing_summary(
+    *,
+    legs: Sequence[NavTimingAccumulator],
+    leg1_time_s: Optional[float] = None,
+    leg2_time_s: Optional[float] = None,
+    profile: Optional[str] = None,
+) -> Dict[str, Any]:
+    totals = NavTimingAccumulator(label="mission")
+    per_leg: List[Dict[str, Any]] = []
+    for leg in legs:
+        totals.add(leg)
+        row = leg.to_dict()
+        if leg.label == "leg1" and leg1_time_s is not None:
+            row["wall_time_s"] = round(leg1_time_s, 3)
+        if leg.label == "leg2" and leg2_time_s is not None:
+            row["wall_time_s"] = round(leg2_time_s, 3)
+        per_leg.append(row)
+    summary: Dict[str, Any] = {
+        "profile": profile,
+        "totals": totals.to_dict(),
+        "per_leg": per_leg,
+    }
+    if leg1_time_s is not None:
+        summary["leg1_time_s"] = round(leg1_time_s, 3)
+    if leg2_time_s is not None:
+        summary["leg2_time_s"] = round(leg2_time_s, 3)
+    if leg1_time_s is not None and leg2_time_s is not None:
+        summary["nav_wall_time_s"] = round(leg1_time_s + leg2_time_s, 3)
+    return summary
+
+
+def save_timing_json(
+    timing: Mapping[str, Any],
+    output_dir: Path,
+    *,
+    run_label: str | None = None,
+    trial_index: int | None = None,
+) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    if run_label is not None and trial_index is not None:
+        path = output_dir / f"timing_{run_label}_{trial_index}.json"
+    elif run_label is not None:
+        path = output_dir / f"timing_{run_label}_{stamp}.json"
+    else:
+        path = output_dir / f"timing_{stamp}.json"
+    path.write_text(json.dumps(dict(timing), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    latest = output_dir / "latest_timing_json.json"
+    latest.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+    return path
 
 
 @dataclass
@@ -63,6 +145,10 @@ class MissionRecorder:
         success: bool,
         mission_end_t: float,
         layout_id: str,
+        leg1_time_s: Optional[float] = None,
+        leg2_time_s: Optional[float] = None,
+        timing_summary: Optional[Dict[str, Any]] = None,
+        profile: Optional[str] = None,
     ) -> Dict[str, Any]:
         total_time_s = max(0.0, mission_end_t - self.mission_t0)
         if len(self.samples) < 2:
@@ -86,7 +172,7 @@ class MissionRecorder:
         violation_speed = overspeed_time_s / dt_total if dt_total > 0 else 0.0
         success_rate = 1.0 if success else 0.0
         trials = 1
-        return {
+        result: Dict[str, Any] = {
             "layout_id": layout_id,
             "success": success,
             "success_rate": success_rate,
@@ -110,6 +196,15 @@ class MissionRecorder:
             },
             "trajectory_local_cm": [list(s.local_xy_cm) for s in self.samples],
         }
+        if profile is not None:
+            result["profile"] = profile
+        if leg1_time_s is not None:
+            result["leg1_time_s"] = round(leg1_time_s, 3)
+        if leg2_time_s is not None:
+            result["leg2_time_s"] = round(leg2_time_s, 3)
+        if timing_summary is not None:
+            result["timing_summary"] = timing_summary
+        return result
 
 
 def save_metrics_json(

@@ -41,7 +41,6 @@ from l2_fusion import estimate_world_xy_from_detection  # noqa: E402
 from l2_geom import GeomPerceptionConfig, geom_detections  # noqa: E402
 from layered_nav import (  # noqa: E402
     PerceiveOutcome,
-    SITE_DEFAULT_PERCEPTION_INTERVAL_S,
     deliver_to,
     navigate_to_slot,
 )
@@ -52,7 +51,14 @@ from object_registry import (  # noqa: E402
     update_object_registry_from_sight,
 )
 from l2_depth import DepthCellTracker, soft_l2_depth_reset, update_l2_depth  # noqa: E402
-from metrics import MissionRecorder, save_metrics_json  # noqa: E402
+from metrics import (  # noqa: E402
+    MissionRecorder,
+    NavTimingAccumulator,
+    build_timing_summary,
+    save_metrics_json,
+    save_timing_json,
+)
+from site_transport_config import apply_profile_to_layered_nav, resolve_profile  # noqa: E402
 from paths import L0_MASK_STRICT  # noqa: E402
 from pie_safety import PieSessionLost, require_live_ucv, tick_settle  # noqa: E402
 from perception_layer import (  # noqa: E402
@@ -140,6 +146,12 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip L1 forbidden-zone rasterization (no forbidden rects on L1)",
     )
+    p.add_argument(
+        "--profile",
+        choices=("default", "careful", "fast"),
+        default="default",
+        help="Navigation profile: default/careful (conservative) or fast (quick-wins)",
+    )
     p.add_argument("--artifact-dir", type=Path, default=DEFAULT_ARTIFACT_DIR)
     p.add_argument(
         "--run-label",
@@ -181,6 +193,13 @@ def main() -> int:
     except ValueError as exc:
         print(f"[Site20] {exc}")
         return 1
+    try:
+        nav_profile = resolve_profile(args.profile)
+    except ValueError as exc:
+        print(f"[Site20] {exc}")
+        return 1
+    apply_profile_to_layered_nav(nav_profile)
+    print(f"[Site20] profile={nav_profile.name} perception_interval={nav_profile.perception_interval_s}s")
     l2_mode = "off" if args.no_l2 else args.l2_mode
     if not args.l0.is_file():
         print(f"[Site20] missing L0: {args.l0}")
@@ -191,9 +210,12 @@ def main() -> int:
     if args.no_l1:
         n_l1 = 0
         print(f"[Site20] L1 forbidden zones DISABLED (--no-l1); props → L2 via {l2_mode}")
-    else:
+    elif nav_profile.enable_l1_by_default:
         n_l1 = apply_forbidden_zones_l1(layers, registry.forbidden_zones)
         print(f"[Site20] L1 forbidden cells: {n_l1} (props → L2 via {l2_mode})")
+    else:
+        n_l1 = 0
+        print(f"[Site20] L1 skipped by profile={nav_profile.name}")
 
     start = registry.robot_start_local_cm
     material_local = registry.material_pickup_local_cm
@@ -221,6 +243,11 @@ def main() -> int:
     metrics: dict = {}
     trace = NavTrace()
     ucv = None
+    leg1_time_s: Optional[float] = None
+    leg2_time_s: Optional[float] = None
+    leg1_timing = NavTimingAccumulator(label="leg1")
+    leg2_timing = NavTimingAccumulator(label="leg2")
+    timing_summary: Optional[dict] = None
 
     try:
         ucv, _ = _connect_ue_with_retry()
@@ -307,7 +334,7 @@ def main() -> int:
             fov_deg=SENSOR_FOV_DEG,
             max_range_cm=650.0,
             min_obstacle_height_cm=45.0,
-            stride_px=6,
+            stride_px=nav_profile.depth_stride_px,
             use_lethal=True,
             camera_offset_forward_cm=SENSOR_CAM_FORWARD_OFFSET_CM,
             camera_height_cm=SENSOR_CAM_HEIGHT_OFFSET_CM,
@@ -422,7 +449,7 @@ def main() -> int:
             )
             print(
                 f"[Site20] L2_depth + ObjectRegistry: FOV={sight_cfg.fov_deg}° "
-                f"range={sight_cfg.max_range_cm}cm interval={SITE_DEFAULT_PERCEPTION_INTERVAL_S}s "
+                f"range={sight_cfg.max_range_cm}cm interval={nav_profile.perception_interval_s}s "
                 f"log-odds=on static-latch=2-hit"
             )
 
@@ -471,7 +498,7 @@ def main() -> int:
             )
             print(
                 f"[Site20] L2 geom enabled: FOV={geom_cfg.fov_deg}° "
-                f"range={geom_cfg.max_range_cm}cm interval={SITE_DEFAULT_PERCEPTION_INTERVAL_S}s "
+                f"range={geom_cfg.max_range_cm}cm interval={nav_profile.perception_interval_s}s "
                 f"({len(placement_reg.props)} props in registry)"
             )
 
@@ -537,7 +564,7 @@ def main() -> int:
                 fov_deg=SENSOR_FOV_DEG,
                 max_range_cm=650.0,
                 min_obstacle_height_cm=35.0,
-                stride_px=8,
+                stride_px=nav_profile.depth_stride_px,
                 use_lethal=True,
                 camera_offset_forward_cm=perceive_cfg.camera_offset_forward_cm,
                 camera_height_cm=perceive_cfg.camera_height_cm,
@@ -633,15 +660,43 @@ def main() -> int:
         def _on_pose(pos_xy, now_t: float) -> None:
             recorder.record_pose(pos_xy, now=now_t)
 
+        def _persist_mission_metrics(*, success: bool, mission_end: float) -> dict:
+            nonlocal timing_summary, metrics
+            timing_summary = build_timing_summary(
+                legs=[leg1_timing, leg2_timing],
+                leg1_time_s=leg1_time_s,
+                leg2_time_s=leg2_time_s,
+                profile=nav_profile.name,
+            )
+            metrics = recorder.finalize(
+                success=success,
+                mission_end_t=mission_end,
+                layout_id=registry.layout_id,
+                leg1_time_s=leg1_time_s,
+                leg2_time_s=leg2_time_s,
+                timing_summary=timing_summary,
+                profile=nav_profile.name,
+            )
+            metrics_path = save_metrics_json(metrics, args.artifact_dir, **artifact_kw)
+            timing_path = save_timing_json(timing_summary, args.artifact_dir, **artifact_kw)
+            print(f"[Site20] metrics: {metrics_path}")
+            print(f"[Site20] timing: {timing_path}")
+            print(
+                f"[Site20] timing_summary total_ms={timing_summary['totals']['total_ms']:.0f} "
+                f"leg1_s={timing_summary.get('leg1_time_s')} leg2_s={timing_summary.get('leg2_time_s')}"
+            )
+            return metrics
+
         material_xy = _material_goal_xy(registry)
         robot_xy = get_pos2d(ucv, robot_name)
         print(f"[Site20] leg1 material @ {material_xy}")
-        tick_settle(ucv, settle_s=6.0, ticks=4)
+        tick_settle(ucv, settle_s=nav_profile.pre_leg1_settle_s, ticks=4)
         ucv = ensure_live_or_reconnect(ucv, reason="pre leg1 settle")
 
         layers.reset_l2()
         if l2_mode == "sight":
             _reset_depth_state("leg1")
+        leg1_t0 = time.time()
         leg1_ok = navigate_to_slot(
             ucv,
             layers,
@@ -654,16 +709,18 @@ def main() -> int:
             nav_actor=nav_actor,
             tolerance_cm=ARRIVE_TOLERANCE_CM,
             label="to-material",
-            perception_interval_s=SITE_DEFAULT_PERCEPTION_INTERVAL_S,
+            perception_interval_s=nav_profile.perception_interval_s,
             max_total_steps=args.max_nav_steps,
             trace=trace,
             on_pose_sample=_on_pose,
+            nav_timing=leg1_timing,
         )
+        leg1_time_s = time.time() - leg1_t0
+        print(f"[Site20] leg1_time_s={leg1_time_s:.1f}")
         if not leg1_ok:
             print("[Site20] FAIL: leg1 material approach")
             mission_end = time.time()
-            metrics = recorder.finalize(success=False, mission_end_t=mission_end, layout_id=registry.layout_id)
-            save_metrics_json(metrics, args.artifact_dir, **artifact_kw)
+            _persist_mission_metrics(success=False, mission_end=mission_end)
             save_site_transport_artifacts(
                 layers, registry, trace, metrics, output_dir=args.artifact_dir, **artifact_kw
             )
@@ -673,8 +730,7 @@ def main() -> int:
         if not carry_name:
             print("[Site20] FAIL: carry start")
             mission_end = time.time()
-            metrics = recorder.finalize(success=False, mission_end_t=mission_end, layout_id=registry.layout_id)
-            save_metrics_json(metrics, args.artifact_dir, **artifact_kw)
+            _persist_mission_metrics(success=False, mission_end=mission_end)
             save_site_transport_artifacts(
                 layers, registry, trace, metrics, output_dir=args.artifact_dir, **artifact_kw
             )
@@ -693,6 +749,7 @@ def main() -> int:
             _reset_depth_state("leg2", carry_forward=True)
         else:
             layers.reset_l2()
+        leg2_t0 = time.time()
         leg2_ok = deliver_to(
             ucv,
             layers,
@@ -705,17 +762,19 @@ def main() -> int:
             nav_actor=nav_actor,
             tolerance_cm=ARRIVE_TOLERANCE_CM,
             label="to-humanoid",
-            perception_interval_s=SITE_DEFAULT_PERCEPTION_INTERVAL_S,
+            perception_interval_s=nav_profile.perception_interval_s,
             max_total_steps=args.max_nav_steps,
             trace=trace,
             carry_sync_name=carry_name,
             on_pose_sample=_on_pose,
+            nav_timing=leg2_timing,
         )
+        leg2_time_s = time.time() - leg2_t0
+        print(f"[Site20] leg2_time_s={leg2_time_s:.1f}")
         if not leg2_ok:
             print("[Site20] FAIL: leg2 humanoid approach")
             mission_end = time.time()
-            metrics = recorder.finalize(success=False, mission_end_t=mission_end, layout_id=registry.layout_id)
-            save_metrics_json(metrics, args.artifact_dir, **artifact_kw)
+            _persist_mission_metrics(success=False, mission_end=mission_end)
             save_site_transport_artifacts(
                 layers, registry, trace, metrics, output_dir=args.artifact_dir, **artifact_kw
             )
@@ -734,16 +793,10 @@ def main() -> int:
             except (ConnectionError, OSError, ValueError, RuntimeError):
                 pass
         mission_end = time.time()
-        metrics = recorder.finalize(
-            success=success,
-            mission_end_t=mission_end,
-            layout_id=registry.layout_id,
-        )
-        metrics_path = save_metrics_json(metrics, args.artifact_dir, **artifact_kw)
+        _persist_mission_metrics(success=success, mission_end=mission_end)
         artifact_paths = save_site_transport_artifacts(
             layers, registry, trace, metrics, output_dir=args.artifact_dir, **artifact_kw
         )
-        print(f"[Site20] metrics: {metrics_path}")
         for key, path in sorted(artifact_paths.items()):
             print(f"[Site20] artifact {key}: {path}")
         if not success:

@@ -44,6 +44,7 @@ from perception_layer import L2_LETHAL_COST  # noqa: E402
 from pie_safety import PieSessionLost, require_live_ucv, tick_settle  # noqa: E402
 from pie_spawn_safety import ensure_live_or_reconnect  # noqa: E402
 from viz import NavTrace  # noqa: E402
+from metrics import NavTimingAccumulator  # noqa: E402
 from simworld.communicator.unrealcv import UnrealCV  # noqa: E402
 
 WorldXY = Tuple[float, float]
@@ -81,6 +82,7 @@ def _invoke_perceive(
     return PerceiveOutcome(detections=list(raw or []), l2_applied=False)
 
 SITE_DEFAULT_PERCEPTION_INTERVAL_S = 1.0
+L2_REPLAN_CELL_DELTA_THRESHOLD = 1
 PERCEPTION_START_DELAY_S = 0.0
 MOTION_SETTLE_BEFORE_PERCEIVE_S = 0.2
 POST_MOTION_SETTLE_S = 0.15
@@ -115,6 +117,48 @@ LAST_RESORT_PERCEIVE_PAUSE_STEPS = 40
 SITE_PLANNING_CLEARANCE_CM = 40.0
 SITE_PLANNING_CLEARANCE_COST = 300.0
 ROBOT_L2_SELF_EXCLUDE_RADIUS_CM = 70.0
+
+
+def _l2_cell_delta_warrants_replan(cells_added: int, cells_removed: int = 0) -> bool:
+    """Replan on L2 updates only when cell delta exceeds threshold (path-block uses separate replan)."""
+    return (cells_added + cells_removed) >= L2_REPLAN_CELL_DELTA_THRESHOLD
+
+
+def _nav_settle(
+    ucv: UnrealCV,
+    *,
+    settle_s: float,
+    ticks: int,
+    nav_timing: Optional[NavTimingAccumulator],
+) -> None:
+    t0 = time.perf_counter()
+    tick_settle(ucv, settle_s=settle_s, ticks=ticks)
+    if nav_timing is not None:
+        nav_timing.settle_ms += (time.perf_counter() - t0) * 1000.0
+
+
+def _timed_replan_on_merged_layers(
+    layers: LayeredCostmap,
+    pos_xy: WorldXY,
+    goal_xy: WorldXY,
+    *,
+    reason: str,
+    trace: Optional[NavTrace],
+    l2_seen_cells: Set[Tuple[int, int]],
+    nav_timing: Optional[NavTimingAccumulator],
+) -> Optional[list]:
+    t0 = time.perf_counter()
+    result = _replan_on_merged_layers(
+        layers,
+        pos_xy,
+        goal_xy,
+        reason=reason,
+        trace=trace,
+        l2_seen_cells=l2_seen_cells,
+    )
+    if nav_timing is not None:
+        nav_timing.replan_ms += (time.perf_counter() - t0) * 1000.0
+    return result
 
 
 def _planning_costmap(layers: LayeredCostmap) -> Costmap2D:
@@ -841,6 +885,7 @@ def navigate_layered_with_fusion(
     trace: Optional[NavTrace] = None,
     carry_sync_name: Optional[str] = None,
     on_pose_sample: Optional[PoseSampleFn] = None,
+    nav_timing: Optional[NavTimingAccumulator] = None,
 ) -> bool:
     require_live_ucv(ucv, context="site transport fusion nav")
     goal_xy = local_xy_to_world(*goal_local_xy)
@@ -857,7 +902,10 @@ def navigate_layered_with_fusion(
     carry_motion_cb: Optional[CarrySyncFn] = _sync_carry if use_carry_sync else None
 
     start_xy, ucv = _safe_get_pos2d(ucv, robot_name)
+    plan_t0 = time.perf_counter()
     plan = _safe_replan_astar(_planning_costmap(layers), start_xy, goal_xy)
+    if nav_timing is not None:
+        nav_timing.replan_ms += (time.perf_counter() - plan_t0) * 1000.0
     waypoints = plan.waypoints_xy
     if trace is not None:
         trace.record_plan(waypoints, reason="initial")
@@ -885,13 +933,13 @@ def navigate_layered_with_fusion(
         f"waypoints={len(waypoints)} cost={plan.total_cost:.1f}"
     )
     print(f"  [SiteNav] warmup {NAV_WARMUP_SETTLE_S:.1f}s before first dog_move")
-    tick_settle(ucv, settle_s=NAV_WARMUP_SETTLE_S, ticks=3)
+    _nav_settle(ucv, settle_s=NAV_WARMUP_SETTLE_S, ticks=3, nav_timing=nav_timing)
     if nav_actor and is_robot_tipped(ucv, robot_name):
         pos_xy, ucv = _safe_get_pos2d(ucv, robot_name)
         recover_robot_upright(ucv, robot_name, pos_xy, nav_actor=nav_actor)
-        tick_settle(ucv, settle_s=1.0, ticks=2)
+        _nav_settle(ucv, settle_s=1.0, ticks=2, nav_timing=nav_timing)
     _prime_first_motion(ucv, robot_name)
-    tick_settle(ucv, settle_s=1.0, ticks=2)
+    _nav_settle(ucv, settle_s=1.0, ticks=2, nav_timing=nav_timing)
     if use_carry_sync:
         _sync_carry()
 
@@ -907,13 +955,14 @@ def navigate_layered_with_fusion(
             best_dist_goal = dist_goal
             turn_only_steps = 0
         elif dist_goal > best_dist_goal + PROGRESS_REGRESS_THRESHOLD_CM:
-            new_wps = _replan_on_merged_layers(
+            new_wps = _timed_replan_on_merged_layers(
                 layers,
                 pos_xy,
                 goal_xy,
                 reason="progress_regress",
                 trace=trace,
                 l2_seen_cells=l2_seen_cells,
+                nav_timing=nav_timing,
             )
             if new_wps is not None:
                 waypoints = new_wps
@@ -930,6 +979,12 @@ def navigate_layered_with_fusion(
                 trace.arrived = True
                 trace.l2_cell_count = len(l2_seen_cells)
             _sync_carry()
+            if nav_timing is not None:
+                print(
+                    f"  [SiteNav] timing_ms perceive={nav_timing.perceive_ms:.0f} "
+                    f"move={nav_timing.move_ms:.0f} replan={nav_timing.replan_ms:.0f} "
+                    f"settle={nav_timing.settle_ms:.0f} total={nav_timing.total_ms():.0f}"
+                )
             return True
 
         now = time.time()
@@ -942,6 +997,7 @@ def navigate_layered_with_fusion(
             and now - nav_t0 >= PERCEPTION_START_DELAY_S
             and _l2_perceive_pause_steps <= 0
         ):
+            perceive_t0 = time.perf_counter()
             l2_count_before = _l2_occupied_count(layers)
             l2_snapshot = layers.l2.copy()
             l2_seen_snapshot = set(l2_seen_cells)
@@ -955,15 +1011,18 @@ def navigate_layered_with_fusion(
             detections = outcome.detections
             l2_count_after = _l2_occupied_count(layers)
             if outcome.l2_applied:
-                if outcome.l2_changed:
+                if outcome.l2_changed and _l2_cell_delta_warrants_replan(
+                    outcome.cells_added, outcome.cells_removed
+                ):
                     summary = detections_summary(detections) if detections else {}
-                    new_wps = _replan_on_merged_layers(
+                    new_wps = _timed_replan_on_merged_layers(
                         layers,
                         pos_xy,
                         goal_xy,
                         reason="l2_depth",
                         trace=trace,
                         l2_seen_cells=l2_seen_cells,
+                        nav_timing=nav_timing,
                     )
                     if new_wps is not None:
                         waypoints = new_wps
@@ -981,6 +1040,11 @@ def navigate_layered_with_fusion(
                             f"  [SiteNav] L2 sight +{outcome.cells_added}/-{outcome.cells_removed} "
                             f"cells → replan failed; rolled back latest L2 update"
                         )
+                elif outcome.l2_changed:
+                    print(
+                        f"  [SiteNav] L2 sight delta +{outcome.cells_added}/-{outcome.cells_removed} "
+                        f"below replan threshold ({L2_REPLAN_CELL_DELTA_THRESHOLD}); skip replan"
+                    )
                 else:
                     print(
                         f"  [SiteNav] L2 sight: no map change "
@@ -1001,14 +1065,15 @@ def navigate_layered_with_fusion(
                         known_cells=l2_seen_cells,
                     )
                     summary = detections_summary(detections)
-                    if n_cells > 0:
-                        new_wps = _replan_on_merged_layers(
+                    if n_cells > 0 and _l2_cell_delta_warrants_replan(n_cells):
+                        new_wps = _timed_replan_on_merged_layers(
                             layers,
                             pos_xy,
                             goal_xy,
                             reason="l2_perception",
                             trace=trace,
                             l2_seen_cells=l2_seen_cells,
+                            nav_timing=nav_timing,
                         )
                         if new_wps is not None:
                             waypoints = new_wps
@@ -1022,38 +1087,53 @@ def navigate_layered_with_fusion(
                                 f"  [SiteNav] L2 +{n_cells} cells detect={list(summary.keys())} "
                                 f"→ replan failed (merged map)"
                             )
+                    elif n_cells > 0:
+                        print(
+                            f"  [SiteNav] L2 +{n_cells} cells below replan threshold "
+                            f"({L2_REPLAN_CELL_DELTA_THRESHOLD}); skip replan"
+                        )
                     else:
                         print(
                             f"  [SiteNav] L2 detect={list(summary.keys())} "
                             f"(no new cells, l2_cells={len(l2_seen_cells)})"
                         )
             elif l2_count_after > l2_count_before:
+                depth_delta = l2_count_after - l2_count_before
                 _sync_seen_cells_from_l2(layers, l2_seen_cells)
-                new_wps = _replan_on_merged_layers(
-                    layers,
-                    pos_xy,
-                    goal_xy,
-                    reason="l2_depth",
-                    trace=trace,
-                    l2_seen_cells=l2_seen_cells,
-                )
-                if new_wps is not None:
-                    waypoints = new_wps
-                    wp_index = _nearest_waypoint_index_ahead(pos_xy, waypoints, wp_index)
-                    print(
-                        f"  [SiteNav] L2 depth +{l2_count_after - l2_count_before} cells "
-                        f"→ replan {len(waypoints)} WP (merged L0+L1+L2)"
+                if _l2_cell_delta_warrants_replan(depth_delta):
+                    new_wps = _timed_replan_on_merged_layers(
+                        layers,
+                        pos_xy,
+                        goal_xy,
+                        reason="l2_depth",
+                        trace=trace,
+                        l2_seen_cells=l2_seen_cells,
+                        nav_timing=nav_timing,
                     )
+                    if new_wps is not None:
+                        waypoints = new_wps
+                        wp_index = _nearest_waypoint_index_ahead(pos_xy, waypoints, wp_index)
+                        print(
+                            f"  [SiteNav] L2 depth +{depth_delta} cells "
+                            f"→ replan {len(waypoints)} WP (merged L0+L1+L2)"
+                        )
+                    else:
+                        layers.l2[:, :] = l2_snapshot
+                        l2_seen_cells.clear()
+                        l2_seen_cells.update(l2_seen_snapshot)
+                        print(
+                            f"  [SiteNav] L2 depth +{depth_delta} cells "
+                            f"→ replan failed; rolled back latest L2 update"
+                        )
                 else:
-                    layers.l2[:, :] = l2_snapshot
-                    l2_seen_cells.clear()
-                    l2_seen_cells.update(l2_seen_snapshot)
                     print(
-                        f"  [SiteNav] L2 depth +{l2_count_after - l2_count_before} cells "
-                        f"→ replan failed; rolled back latest L2 update"
+                        f"  [SiteNav] L2 depth +{depth_delta} cells below replan threshold "
+                        f"({L2_REPLAN_CELL_DELTA_THRESHOLD}); skip replan"
                     )
             else:
                 print(f"  [SiteNav] L2 perceive: 0 detections (l2_cells={len(l2_seen_cells)})")
+            if nav_timing is not None:
+                nav_timing.perceive_ms += (time.perf_counter() - perceive_t0) * 1000.0
             last_perception_t = now
 
         for _ in range(MOVES_PER_CYCLE):
@@ -1099,13 +1179,14 @@ def navigate_layered_with_fusion(
                 ):
                     moves_since_progress += 1
                     total_steps += 1
-                    new_wps = _replan_on_merged_layers(
+                    new_wps = _timed_replan_on_merged_layers(
                         layers,
                         pos_xy,
                         goal_xy,
                         reason="move_segment_blocked",
                         trace=trace,
                         l2_seen_cells=l2_seen_cells,
+                        nav_timing=nav_timing,
                     )
                     if new_wps is not None:
                         waypoints = new_wps
@@ -1185,6 +1266,7 @@ def navigate_layered_with_fusion(
                         moves_since_progress = 0
                     continue
 
+            move_t0 = time.perf_counter()
             _execute_segment_command(
                 ucv,
                 command,
@@ -1192,18 +1274,21 @@ def navigate_layered_with_fusion(
                 diag=(moves_executed == 0),
                 on_after_motion=carry_motion_cb,
             )
+            if nav_timing is not None:
+                nav_timing.move_ms += (time.perf_counter() - move_t0) * 1000.0
             if command.move_cm <= 1e-3 and command.turn_deg > SITE_ROTATE_THR_DEG:
                 turn_only_steps += 1
             else:
                 turn_only_steps = 0
             if turn_only_steps >= MAX_TURN_ONLY_STEPS:
-                new_wps = _replan_on_merged_layers(
+                new_wps = _timed_replan_on_merged_layers(
                     layers,
                     pos_xy,
                     goal_xy,
                     reason="turn_only_stall",
                     trace=trace,
                     l2_seen_cells=l2_seen_cells,
+                    nav_timing=nav_timing,
                 )
                 if new_wps is not None:
                     waypoints = new_wps
@@ -1215,7 +1300,12 @@ def navigate_layered_with_fusion(
                 turn_only_steps = 0
             last_motion_t = time.time()
             if POST_MOTION_SETTLE_S > 0:
-                tick_settle(ucv, settle_s=POST_MOTION_SETTLE_S, ticks=1)
+                _nav_settle(
+                    ucv,
+                    settle_s=POST_MOTION_SETTLE_S,
+                    ticks=1,
+                    nav_timing=nav_timing,
+                )
             moves_executed += 1
             total_steps += 1
             steps_on_wp += 1
@@ -1306,6 +1396,12 @@ def navigate_layered_with_fusion(
     print(f"  [SiteNav] ERROR: exceeded max_total_steps={max_total_steps}")
     if trace is not None:
         trace.l2_cell_count = len(l2_seen_cells)
+    if nav_timing is not None:
+        print(
+            f"  [SiteNav] timing_ms perceive={nav_timing.perceive_ms:.0f} "
+            f"move={nav_timing.move_ms:.0f} replan={nav_timing.replan_ms:.0f} "
+            f"settle={nav_timing.settle_ms:.0f} total={nav_timing.total_ms():.0f}"
+        )
     return False
 
 
@@ -1327,6 +1423,7 @@ def navigate_to_slot(
     max_total_steps: int = PATH_MAX_TOTAL_STEPS,
     trace: Optional[NavTrace] = None,
     on_pose_sample: Optional[PoseSampleFn] = None,
+    nav_timing: Optional[NavTimingAccumulator] = None,
 ) -> bool:
     """Navigate to semantic slot via ObjectRegistry goal + optional standoff."""
     from carry import pickup_standoff_xy  # noqa: WPS433
@@ -1360,6 +1457,7 @@ def navigate_to_slot(
         max_total_steps=max_total_steps,
         trace=trace,
         on_pose_sample=on_pose_sample,
+        nav_timing=nav_timing,
     )
 
 
@@ -1381,6 +1479,7 @@ def deliver_to(
     trace: Optional[NavTrace] = None,
     carry_sync_name: Optional[str] = None,
     on_pose_sample: Optional[PoseSampleFn] = None,
+    nav_timing: Optional[NavTimingAccumulator] = None,
 ) -> bool:
     """Navigate directly to semantic slot goal (e.g. humanoid delivery point)."""
     goal_local = object_registry.goal_local(slot_id) if hasattr(object_registry, "goal_local") else None
@@ -1406,4 +1505,5 @@ def deliver_to(
         trace=trace,
         carry_sync_name=carry_sync_name,
         on_pose_sample=on_pose_sample,
+        nav_timing=nav_timing,
     )
