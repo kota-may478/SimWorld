@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 import sys
 import time
 from pathlib import Path
@@ -123,6 +124,23 @@ def _vbp_ok(raw: Optional[str]) -> bool:
     return bool(text) and not text.startswith("error")
 
 
+def _sight_vbp_returns_json(ucv: UnrealCV, robot_name: str) -> bool:
+    """True when pawn sight vbp returns parseable JSON (controller cast OK)."""
+    for cmd in ("GetVisibleSightTargetsJson", "GetSightPerceptionJson"):
+        try:
+            raw = geh._ue_request(ucv, f"vbp {robot_name} {cmd}", timeout_s=15.0)  # noqa: SLF001
+        except (ConnectionError, OSError, RuntimeError, ValueError):
+            continue
+        if raw is None:
+            continue
+        text = str(raw).strip()
+        if not text or text.lower().startswith("error"):
+            continue
+        if "targets" in text or "actors" in text or text.startswith("{"):
+            return True
+    return False
+
+
 def _try_possess_pawn(ucv: UnrealCV, controller_name: str, pawn_name: str) -> bool:
     for cmd in (
         f"vbp {controller_name} Possess {pawn_name}",
@@ -152,6 +170,15 @@ def ensure_spotdog_sight_controller(
     ``BP_SpotDogAIController``; when that fails, UE returns ``{"targets":[]}`` even
     though geom FOV would see props.
     """
+    if _sight_vbp_returns_json(ucv, robot_name):
+        controllers = _spotdog_ai_controller_names(ucv)
+        ctrl = controllers[0] if controllers else None
+        print(
+            f"[LevelRobot] sight vbp already OK on {robot_name!r}"
+            + (f" via {ctrl!r}" if ctrl else "")
+        )
+        return ctrl
+
     controllers = _spotdog_ai_controller_names(ucv)
     for ctrl in controllers:
         if _try_possess_pawn(ucv, ctrl, robot_name):
@@ -370,3 +397,74 @@ def ensure_level_spotdog(
         return ok, name
     ok, name, _ = _spawn_spotdog_at(ucv, start_local_xy, actor_name=actor_name)
     return ok, name
+
+
+def ensure_robot_upright_at_start(
+    ucv: UnrealCV,
+    robot_name: str,
+    start_local_xy: LocalXY,
+    *,
+    nav_actor: Optional[str] = None,
+) -> bool:
+    """Recover fallen SpotDog onto NavMesh at mission start."""
+    if not is_robot_tipped(ucv, robot_name):
+        return True
+    wx, wy, _wz = _resolve_robot_world_xyz(ucv, start_local_xy, nav_actor=nav_actor)
+    print(f"[LevelRobot] robot tipped — upright recover @ local={start_local_xy}")
+    ok, _landed = recover_robot_upright(
+        ucv,
+        robot_name,
+        (wx, wy),
+        nav_actor=nav_actor,
+        yaw_deg=0.0,
+    )
+    return ok
+
+
+def verify_spotdog_at_start(
+    ucv: UnrealCV,
+    robot_name: str,
+    start_local_xy: LocalXY,
+    *,
+    tolerance_cm: float = 180.0,
+) -> bool:
+    loc = geh.try_get_location_cm(ucv, robot_name)
+    if loc is None:
+        return False
+    lx, ly = world_xy_to_local(float(loc[0]), float(loc[1]))
+    dist = math.hypot(lx - start_local_xy[0], ly - start_local_xy[1])
+    if dist > tolerance_cm:
+        print(
+            f"[LevelRobot] WARN: robot @ local=({lx:.1f}, {ly:.1f}) "
+            f"far from start {start_local_xy} ({dist:.0f}cm)"
+        )
+        return False
+    return True
+
+
+def prepare_spotdog_mission_start(
+    ucv: UnrealCV,
+    start_local_xy: LocalXY,
+    *,
+    nav_actor: Optional[str] = None,
+    start_tolerance_cm: float = 180.0,
+) -> Tuple[bool, str]:
+    """Teleport SpotDog to mission start, upright yaw=0, controller on."""
+    ok, name = soft_reset_level_spotdog(ucv, start_local_xy, nav_actor=nav_actor)
+    if not ok or not geh.actor_exists(ucv, name):
+        return False, name
+    if not ensure_robot_upright_at_start(ucv, name, start_local_xy, nav_actor=nav_actor):
+        return False, name
+    try:
+        ucv.enable_controller(name, True)
+    except Exception:
+        pass
+    time.sleep(ROBOT_SETTLE_S)
+    if not verify_spotdog_at_start(ucv, name, start_local_xy, tolerance_cm=start_tolerance_cm):
+        print("[LevelRobot] retry soft-reset after start position mismatch")
+        ok, name = soft_reset_level_spotdog(ucv, start_local_xy, nav_actor=nav_actor)
+        if not ok:
+            return False, name
+        ensure_robot_upright_at_start(ucv, name, start_local_xy, nav_actor=nav_actor)
+        time.sleep(ROBOT_SETTLE_S)
+    return True, name
