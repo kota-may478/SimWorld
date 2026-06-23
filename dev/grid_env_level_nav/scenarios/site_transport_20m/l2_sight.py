@@ -43,15 +43,7 @@ VBP_SIGHT_COMMANDS = (
 
 HUMAN_PROP_TYPE_ID = "human_worker"
 DYNAMIC_PROP_TYPE_IDS = frozenset({HUMAN_PROP_TYPE_ID, "pedestrian", "robot_agent"})
-DYNAMIC_EVICT_MISS_THRESHOLD = 2
 ROBOT_L2_EXCLUDE_RADIUS_CM = 70.0
-
-# SLAM-like confidence for static prop observations
-CONF_HIT = 1.0           # confidence gain when slot is visible
-CONF_MISS_IN_RANGE = 0.3  # confidence loss when in range but not visible
-CONF_MAX = 5.0
-CONF_EVICT_THRESHOLD = 0.5  # evict slot when confidence drops below this
-LAST_RESORT_DECAY = 0.3     # multiply confidence on soft L2 reset
 
 
 @dataclass(frozen=True)
@@ -72,12 +64,10 @@ class VisibleTarget:
 
 @dataclass
 class SightMemory:
-    """Static props: last seen world XY persists. Dynamic: only while visible."""
+    """Static props: permanent once seen. Dynamic: sticky until re-scan proves absence."""
 
     static_last_seen_xy: Dict[str, WorldXY] = field(default_factory=dict)
-    static_confidence: Dict[str, float] = field(default_factory=dict)
-    last_visible_dynamic: Set[str] = field(default_factory=set)
-    dynamic_miss_counts: Dict[str, int] = field(default_factory=dict)
+    dynamic_last_seen_xy: Dict[str, WorldXY] = field(default_factory=dict)
 
 
 @dataclass
@@ -395,6 +385,24 @@ def detection_from_world_pose(
     )
 
 
+def _position_in_sensor_view(
+    robot_xy: WorldXY,
+    robot_yaw_deg: float,
+    target_xy: WorldXY,
+    *,
+    config: SightConfig,
+) -> bool:
+    if dist2d(robot_xy, target_xy) > config.max_range_cm:
+        return False
+    bearing = _bearing_deg_robot_frame(
+        robot_xy,
+        robot_yaw_deg,
+        target_xy,
+        sensor_forward_cm=config.sensor_forward_cm,
+    )
+    return _in_fov_cone(bearing, config.fov_deg)
+
+
 def _world_xy_for_slot(
     slot_id: str,
     memory: SightMemory,
@@ -403,7 +411,10 @@ def _world_xy_for_slot(
     is_dynamic: bool,
 ) -> Optional[WorldXY]:
     if is_dynamic:
-        return live_xy
+        if live_xy is not None:
+            memory.dynamic_last_seen_xy[slot_id] = live_xy
+            return live_xy
+        return memory.dynamic_last_seen_xy.get(slot_id)
     if live_xy is not None:
         memory.static_last_seen_xy[slot_id] = live_xy
         return live_xy
@@ -548,30 +559,41 @@ def update_l2_from_sight(
     cells_removed = 0
     detections: List[ObjectEstimate] = []
 
-    # Dynamic: drop slots that left FOV (with grace to avoid replan thrash).
-    for slot_id in list(memory.last_visible_dynamic):
+    # Dynamic: re-scan in FOV without detection → evict; otherwise sticky at last seen.
+    for slot_id, last_xy in list(memory.dynamic_last_seen_xy.items()):
         if slot_id in visible_now:
-            memory.dynamic_miss_counts.pop(slot_id, None)
             continue
-        misses = memory.dynamic_miss_counts.get(slot_id, 0) + 1
-        memory.dynamic_miss_counts[slot_id] = misses
-        if misses < DYNAMIC_EVICT_MISS_THRESHOLD:
-            visible_now[slot_id] = VisibleTarget(
-                actor_name=slot_id,
-                prop_type_id=actor_to_type.get(slot_id, HUMAN_PROP_TYPE_ID),
-                slot_id=slot_id,
-                is_dynamic=True,
+        prop_type = actor_to_type.get(slot_id, HUMAN_PROP_TYPE_ID)
+        if _position_in_sensor_view(robot_xy, robot_yaw, last_xy, config=cfg):
+            memory.dynamic_last_seen_xy.pop(slot_id, None)
+            cells_removed += _remove_slot_cells(
+                layers, slot_id, tracker=tracker, l2_seen_cells=l2_seen_cells
             )
             continue
-        memory.dynamic_miss_counts.pop(slot_id, None)
-        cells_removed += _remove_slot_cells(
-            layers, slot_id, tracker=tracker, l2_seen_cells=l2_seen_cells
+        if not apply_cells:
+            continue
+        added, removed = _apply_slot_cells(
+            layers,
+            slot_id,
+            last_xy,
+            prop_type_id=prop_type,
+            config=cfg,
+            tracker=tracker,
+            l2_seen_cells=l2_seen_cells,
+            robot_xy=robot_xy,
         )
-    memory.last_visible_dynamic = {
-        slot_id
-        for slot_id, target in visible_now.items()
-        if target.is_dynamic
-    }
+        cells_added += added
+        cells_removed += removed
+        detections.append(
+            detection_from_world_pose(
+                slot_id=slot_id,
+                prop_type_id=prop_type,
+                target_xy=last_xy,
+                robot_xy=robot_xy,
+                robot_yaw_deg=robot_yaw,
+                config=cfg,
+            )
+        )
 
     # Visible targets: update L2 at current (dynamic) or last-seen (static) position.
     for slot_id, target in visible_now.items():
@@ -615,29 +637,13 @@ def update_l2_from_sight(
             )
         )
 
-    # Confidence: increment for visible static slots.
-    for slot_id, target in visible_now.items():
-        if not target.is_dynamic:
-            memory.static_confidence[slot_id] = min(
-                CONF_MAX, memory.static_confidence.get(slot_id, 0.0) + CONF_HIT
-            )
-
-    # Static memory: keep L2 at last seen even when not currently visible.
-    # Also apply miss penalty when within sensor range but not detected.
-    slots_to_evict: List[str] = []
+    # Static memory: permanent map — keep L2 at last seen even when not visible.
     for slot_id, center_xy in memory.static_last_seen_xy.items():
         if slot_id in visible_now:
             continue
         prop_type = actor_to_type.get(slot_id, "static_prop")
         if is_dynamic_slot(slot_id, dynamic_slots=dynamic_slots, prop_type_id=prop_type):
             continue
-        # Miss penalty: in sensor range but not visible → reduce confidence.
-        if dist2d(robot_xy, center_xy) <= cfg.max_range_cm:
-            conf = memory.static_confidence.get(slot_id, CONF_MAX) - CONF_MISS_IN_RANGE
-            if conf <= 0.0:
-                slots_to_evict.append(slot_id)
-                continue
-            memory.static_confidence[slot_id] = conf
         if not apply_cells:
             continue
         added, removed = _apply_slot_cells(
@@ -663,14 +669,6 @@ def update_l2_from_sight(
             )
         )
 
-    # Evict slots whose confidence decayed to zero (object moved or removed).
-    for slot_id in slots_to_evict:
-        memory.static_last_seen_xy.pop(slot_id, None)
-        memory.static_confidence.pop(slot_id, None)
-        cells_removed += _remove_slot_cells(
-            layers, slot_id, tracker=tracker, l2_seen_cells=l2_seen_cells
-        )
-
     return SightUpdateResult(
         detections=detections,
         cells_added=cells_added,
@@ -690,35 +688,28 @@ def soft_l2_reset(
     layers: LayeredCostmap,
     l2_seen_cells: Set[GridCell],
     *,
-    decay: float = LAST_RESORT_DECAY,
-    evict_threshold: float = CONF_EVICT_THRESHOLD,
     stuck_world_xy: Optional[WorldXY] = None,
     evict_near_radius_cm: float = LAST_RESORT_EVICT_NEAR_RADIUS_CM,
 ) -> None:
-    """Decay slot confidences and evict low-confidence or nearby slots from L2.
+    """LAST RESORT: clear phantom dynamics near stuck pos and unowned L2 marks.
 
-    - Slots whose confidence decays below evict_threshold are removed.
-    - Slots within evict_near_radius_cm of stuck_world_xy are always removed
-      regardless of confidence (they are physically blocking the escape path).
-    - Distant high-confidence slots (e.g. watertank seen in leg1 when
-      the current stuck pos is far away) are preserved so the planner still
-      avoids them after the LAST RESORT replan.
-    - Unowned L2 cells (stuck-corridor / hotspot marks) are also cleared.
+    Static mapped props are never evicted — they persist for the full mission.
+    Only dynamic slots within evict_near_radius_cm of stuck_world_xy are removed.
+    Unowned L2 cells (stuck-corridor / hotspot / depth marks) are also cleared.
     """
-    for slot_id, center_xy in list(memory.static_last_seen_xy.items()):
-        conf = memory.static_confidence.get(slot_id, 1.0) * decay
+    for slot_id, center_xy in list(memory.dynamic_last_seen_xy.items()):
         near_stuck = (
             stuck_world_xy is not None
             and dist2d(stuck_world_xy, center_xy) < evict_near_radius_cm
         )
-        if conf < evict_threshold or near_stuck:
-            memory.static_last_seen_xy.pop(slot_id, None)
-            memory.static_confidence.pop(slot_id, None)
+        if near_stuck:
+            memory.dynamic_last_seen_xy.pop(slot_id, None)
             _remove_slot_cells(layers, slot_id, tracker=tracker, l2_seen_cells=l2_seen_cells)
-        else:
-            memory.static_confidence[slot_id] = conf
 
-    # Clear unowned L2 cells (stuck-hotspot/corridor marks written directly).
+    if "__depth__" in tracker.slot_to_cells:
+        _remove_slot_cells(layers, "__depth__", tracker=tracker, l2_seen_cells=l2_seen_cells)
+
+    # Clear unowned L2 cells (stuck-hotspot/corridor/depth marks written directly).
     owned: Set[GridCell] = set()
     for cells in tracker.slot_to_cells.values():
         owned.update(cells)

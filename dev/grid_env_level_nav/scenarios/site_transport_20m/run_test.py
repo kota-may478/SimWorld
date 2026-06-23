@@ -139,6 +139,11 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Alias for --l2-mode off (L0+L1 navigation only)",
     )
+    p.add_argument(
+        "--no-l1",
+        action="store_true",
+        help="Skip L1 forbidden-zone rasterization (no forbidden rects on L1)",
+    )
     p.add_argument("--artifact-dir", type=Path, default=DEFAULT_ARTIFACT_DIR)
     return p.parse_args()
 
@@ -163,8 +168,12 @@ def main() -> int:
 
     registry = ensure_registry(force_rebuild=args.force_rebuild_registry)
     layers = crop_l0_to_local_region(args.l0, size_x_cm=REGION_SIZE_CM, size_y_cm=REGION_SIZE_CM)
-    n_l1 = apply_forbidden_zones_l1(layers, registry.forbidden_zones)
-    print(f"[Site20] L1 forbidden cells: {n_l1} (props → L2 via {l2_mode})")
+    if args.no_l1:
+        n_l1 = 0
+        print(f"[Site20] L1 forbidden zones DISABLED (--no-l1); props → L2 via {l2_mode}")
+    else:
+        n_l1 = apply_forbidden_zones_l1(layers, registry.forbidden_zones)
+        print(f"[Site20] L1 forbidden cells: {n_l1} (props → L2 via {l2_mode})")
 
     start = registry.robot_start_local_cm
     material_local = registry.material_pickup_local_cm
@@ -287,8 +296,7 @@ def main() -> int:
         sight_depth_cam: dict = {"ready": False, "fusion_id": None}
 
         def _reset_sight_memory(label: str, *, keep_static: bool = False) -> None:
-            sight_memory.last_visible_dynamic.clear()
-            sight_memory.dynamic_miss_counts.clear()
+            sight_memory.dynamic_last_seen_xy.clear()
             if keep_static:
                 # Between legs: evict only dynamic slots, preserve static map.
                 for slot_id in list(sight_tracker.slot_to_cells.keys()):
@@ -298,7 +306,6 @@ def main() -> int:
                 print(f"[Site20] L2 sight memory soft-reset ({label}, static map preserved)")
             else:
                 sight_memory.static_last_seen_xy.clear()
-                sight_memory.static_confidence.clear()
                 for cells in sight_tracker.slot_to_cells.values():
                     for gx, gy in cells:
                         layers.l2[gy, gx] = 0
@@ -366,15 +373,24 @@ def main() -> int:
                     camera_pitch_deg=SENSOR_CAM_PITCH_DEG,
                 )
             )
-            new_cells = [cell for cell in cells if cell not in sight_tracker.cells_for("__depth__")]
-            if cells or finite_depth.size:
-                print(f"[Site20] depth keepout cells: raw={len(cells)} new={len(new_cells)}")
-            if not new_cells:
+            prev_depth = sight_tracker.pop_cells("__depth__")
+            if prev_depth:
+                other_owned: set = set()
+                for other_id, other_cells in sight_tracker.slot_to_cells.items():
+                    other_owned.update(other_cells)
+                for gx, gy in prev_depth:
+                    if (gx, gy) in other_owned:
+                        continue
+                    layers.l2[gy, gx] = 0
+                    l2_seen_cells.discard((gx, gy))
+            if not cells:
                 return 0
-            n = apply_l2_obstacle_cells(layers, new_cells, config=sight_depth_cfg)
-            depth_cells = sight_tracker.cells_for("__depth__")
-            depth_cells.update(new_cells)
-            sight_tracker.set_cells("__depth__", depth_cells)
+            if finite_depth.size:
+                print(f"[Site20] depth keepout cells: frame={len(cells)}")
+            n = apply_l2_obstacle_cells(layers, cells, config=sight_depth_cfg)
+            sight_tracker.set_cells("__depth__", set(cells))
+            for cell in cells:
+                l2_seen_cells.add(cell)
             return n
 
         if l2_mode == "sight":
@@ -383,7 +399,7 @@ def main() -> int:
             print(
                 f"[Site20] L2 sight enabled: FOV={sight_cfg.fov_deg}° "
                 f"range={sight_cfg.max_range_cm}cm interval={SITE_DEFAULT_PERCEPTION_INTERVAL_S}s "
-                f"static=persist dynamic=evict-on-fov-exit"
+                f"static=persist dynamic=sticky-until-rescan"
             )
 
             def _perceive_sight(*, layers, l2_seen_cells):

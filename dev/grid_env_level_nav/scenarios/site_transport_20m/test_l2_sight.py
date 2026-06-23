@@ -101,9 +101,9 @@ class SightMemoryTest(unittest.TestCase):
         memory = SightMemory()
         memory.static_last_seen_xy["site20_prop_001"] = (-800.0, -2000.0)
         self.assertIn("site20_prop_001", memory.static_last_seen_xy)
-        memory.last_visible_dynamic.add("site20_humanoid")
-        memory.last_visible_dynamic.discard("site20_humanoid")
-        self.assertEqual(len(memory.last_visible_dynamic), 0)
+        memory.dynamic_last_seen_xy["site20_humanoid"] = (-750.0, -1950.0)
+        memory.dynamic_last_seen_xy.pop("site20_humanoid")
+        self.assertEqual(len(memory.dynamic_last_seen_xy), 0)
 
     def test_parse_vbp_return_value_wrapper(self) -> None:
         raw = '{"ReturnValue": "{\\"targets\\":[{\\"actor\\":\\"site20_prop_003\\"}]}"}'
