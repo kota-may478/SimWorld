@@ -15,6 +15,7 @@ Before CLI / a fresh notebook run:
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -25,22 +26,20 @@ if str(GEH_DIR) not in sys.path:
 
 import grid_env_hri_simulation as geh  # noqa: E402
 from ue_client_guard import (  # noqa: E402
-    terminate_stale_wsl_python_clients_on_port,
+    cleanup_port_before_connect,
     release_ue_client_lock,
+    windows_tcp_states_on_port,
 )
 
 
 def main() -> int:
     release_ue_client_lock()
-    killed = terminate_stale_wsl_python_clients_on_port()
-    if killed:
-        print(f"[release] terminated {killed} WSL Python client(s) on :9000")
-    else:
-        print("[release] No other WSL Python clients on :9000")
-
-    geh.release_connection()
+    cleanup_port_before_connect(except_pid=os.getpid())
     print("[release] module-level UnrealCV session cleared")
 
+    states = windows_tcp_states_on_port()
+    if states:
+        print(f"[release] Windows :9000 states: {states}")
     for host in geh._ue_host_candidates():
         ok = geh._probe_unrealcv_endpoint(host, geh.UE_PORT, timeout_s=3.0)
         print(f"[release] probe {host}:{geh.UE_PORT} -> {'OK' if ok else 'no'}")

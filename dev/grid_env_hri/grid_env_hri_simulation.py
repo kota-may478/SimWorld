@@ -368,9 +368,14 @@ def release_connection(
         if client is None:
             continue
         try:
-            client.disconnect()
+            import ue_client_guard as _guard
+
+            _guard._shutdown_ucv_socket(client)
         except Exception:
-            pass
+            try:
+                client.disconnect()
+            except Exception:
+                pass
     _UE_SESSION_UCV = None
     _UE_SESSION_COMM = None
     _UE_SESSION_HOST = None
