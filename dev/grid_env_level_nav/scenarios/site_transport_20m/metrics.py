@@ -213,6 +213,49 @@ class MissionRecorder:
         return result
 
 
+def timing_breakdown_rows(metrics: Mapping[str, Any]) -> List[Tuple[str, str]]:
+    """Build (label, value) rows for the metrics-summary timing table."""
+    timing = metrics.get("timing_summary") or {}
+    totals = timing.get("totals") or {}
+
+    def _ms_to_s(ms: Optional[float]) -> Optional[float]:
+        if ms is None:
+            return None
+        return float(ms) / 1000.0
+
+    def _fmt_s(value: Optional[float]) -> str:
+        if value is None:
+            return "—"
+        return f"{value:.2f} s"
+
+    rows: List[Tuple[str, str]] = [
+        ("Total mission time", _fmt_s(metrics.get("total_time_s"))),
+    ]
+    nav_wall = timing.get("nav_wall_time_s")
+    if nav_wall is not None:
+        rows.append(("Nav wall time (leg1+leg2)", _fmt_s(nav_wall)))
+    bucket_specs = (
+        ("Movement", _ms_to_s(totals.get("move_ms"))),
+        ("Mapping / perception (SLAM/L2)", _ms_to_s(totals.get("perceive_ms"))),
+        ("Replan", _ms_to_s(totals.get("replan_ms"))),
+        ("Settle", _ms_to_s(totals.get("settle_ms"))),
+        ("Standoff", _ms_to_s(totals.get("standoff_ms"))),
+    )
+    for label, seconds in bucket_specs:
+        if seconds is not None and seconds > 0.0:
+            rows.append((label, _fmt_s(seconds)))
+    leg1 = timing.get("leg1_time_s", metrics.get("leg1_time_s"))
+    leg2 = timing.get("leg2_time_s", metrics.get("leg2_time_s"))
+    if leg1 is not None:
+        rows.append(("Leg 1 wall time", _fmt_s(leg1)))
+    if leg2 is not None:
+        rows.append(("Leg 2 wall time", _fmt_s(leg2)))
+    tracked = (metrics.get("violations") or {}).get("tracked_motion_time_s")
+    if tracked is not None:
+        rows.append(("Tracked motion time", _fmt_s(tracked)))
+    return rows
+
+
 def save_metrics_json(
     metrics: Dict[str, Any],
     output_dir: Path,

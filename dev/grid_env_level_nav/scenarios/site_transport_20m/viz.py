@@ -111,7 +111,7 @@ def save_site_transport_artifacts(
         summary_png = output_dir / f"metricsSummary_{suffix}.png"
     else:
         summary_png = output_dir / f"site_transport_metrics_summary_{suffix}.png"
-    _save_metrics_summary_png(registry, trace, metrics, summary_png)
+    _save_metrics_summary_png(registry, trace, metrics, summary_png, layers=layers)
     paths["metrics_summary_png"] = summary_png
 
     traj_path = output_dir / f"site_transport_trajectory_{suffix}.json"
@@ -131,31 +131,210 @@ def _save_metrics_summary_png(
     trace: NavTrace,
     metrics: Dict[str, Any],
     output_path: Path,
+    *,
+    layers: Optional[LayeredCostmap] = None,
 ) -> None:
-    fig = plt.figure(figsize=(14, 8))
-    gs = fig.add_gridspec(2, 2, height_ratios=[1.2, 1.0], width_ratios=[1.4, 1.0])
+    from metrics import timing_breakdown_rows  # noqa: WPS433
 
-    ax_map = fig.add_subplot(gs[:, 0])
-    _draw_mission_map(ax_map, registry, trace, metrics)
-
-    ax_metrics = fig.add_subplot(gs[0, 1])
-    _draw_metrics_bars(ax_metrics, metrics)
-
-    ax_viol = fig.add_subplot(gs[1, 1])
-    _draw_violation_pie(ax_viol, metrics)
-
-    success = metrics.get("success", False)
-    title_color = "#1a7f37" if success else "#b42318"
-    fig.suptitle(
-        f"Site transport 20m — {'SUCCESS' if success else 'FAIL'} "
-        f"(layout {metrics.get('layout_id', '?')})",
-        fontsize=14,
-        fontweight="bold",
-        color=title_color,
+    fig = plt.figure(figsize=(18, 11))
+    gs = fig.add_gridspec(
+        3,
+        3,
+        height_ratios=[0.12, 1.15, 0.85],
+        width_ratios=[1.5, 0.75, 0.75],
+        hspace=0.38,
+        wspace=0.32,
     )
-    plt.tight_layout()
-    fig.savefig(output_path, dpi=150)
+
+    ax_status = fig.add_subplot(gs[0, :])
+    _draw_status_banner(ax_status, metrics)
+
+    ax_merged = fig.add_subplot(gs[1, :2])
+    if layers is not None:
+        _draw_merged_costmap_panel(ax_merged, layers, registry, trace, metrics)
+    else:
+        _draw_mission_map(ax_merged, registry, trace, metrics)
+
+    ax_viol_time = fig.add_subplot(gs[1, 2])
+    _draw_violation_time_rates(ax_viol_time, metrics)
+
+    ax_viol_vel = fig.add_subplot(gs[2, 2])
+    _draw_violation_velocity_rates(ax_viol_vel, metrics)
+
+    ax_table = fig.add_subplot(gs[2, :2])
+    _draw_timing_breakdown_table(ax_table, timing_breakdown_rows(metrics))
+
+    fig.subplots_adjust(top=0.96, bottom=0.06, left=0.06, right=0.98)
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
+
+
+def _draw_status_banner(ax, metrics: Dict[str, Any]) -> None:
+    success = bool(metrics.get("success", False))
+    status = "SUCCESS" if success else "FAILED"
+    bg = "#d3f9d8" if success else "#ffe3e3"
+    fg = "#1a7f37" if success else "#b42318"
+    total_s = float(metrics.get("total_time_s", 0.0))
+    layout = metrics.get("layout_id", "?")
+    profile = metrics.get("profile") or (metrics.get("timing_summary") or {}).get("profile")
+    profile_txt = f"  |  profile: {profile}" if profile else ""
+    ax.set_facecolor(bg)
+    ax.text(
+        0.5,
+        0.62,
+        status,
+        ha="center",
+        va="center",
+        fontsize=28,
+        fontweight="bold",
+        color=fg,
+        transform=ax.transAxes,
+    )
+    ax.text(
+        0.5,
+        0.22,
+        f"Site transport 20m  ·  layout {layout}  ·  total time {total_s:.1f} s{profile_txt}",
+        ha="center",
+        va="center",
+        fontsize=11,
+        color="#333333",
+        transform=ax.transAxes,
+    )
+    ax.axis("off")
+
+
+def _draw_merged_costmap_panel(
+    ax,
+    layers: LayeredCostmap,
+    registry: SiteTransportRegistry,
+    trace: NavTrace,
+    metrics: Dict[str, Any],
+) -> None:
+    lethal = float(layers.lethal_cost)
+    extent = [0.0, REGION_SIZE_CM, 0.0, REGION_SIZE_CM]
+    merged = layers.merged_costs()
+    display = np.where(merged >= lethal * 0.5, lethal, merged)
+    im = ax.imshow(
+        display.T,
+        origin="lower",
+        extent=extent,
+        cmap="RdYlGn_r",
+        vmin=0,
+        vmax=max(10.0, lethal),
+    )
+    _overlay_registry_props(ax, registry, label_gt=False)
+    _overlay_forbidden_zones(ax, registry)
+    if trace.trajectory_local_cm:
+        xs = [p[0] for p in trace.trajectory_local_cm]
+        ys = [p[1] for p in trace.trajectory_local_cm]
+        ax.plot(xs, ys, "-", color="deepskyblue", linewidth=1.8, label="trajectory")
+    sx, sy = registry.robot_start_local_cm
+    mx, my = registry.material_pickup_local_cm
+    hx, hy = registry.humanoid_local_cm
+    ax.plot(sx, sy, "o", color="cyan", markersize=8, label="start")
+    ax.plot(mx, my, "s", color="gold", markersize=10, label="crate")
+    ax.plot(hx, hy, "^", color="magenta", markersize=9, label="humanoid")
+    l1_active = int(np.count_nonzero(layers.l1)) > 0
+    layer_label = "L0+L1+L2" if l1_active else "L0+L2"
+    ax.set_title(f"Merged costmap ({layer_label}) + trajectory")
+    ax.set_xlabel("local X (cm)")
+    ax.set_ylabel("local Y (cm)")
+    ax.set_aspect("equal")
+    fig = ax.get_figure()
+    if fig is not None:
+        fig.colorbar(im, ax=ax, fraction=0.035, pad=0.02)
+    ax.legend(loc="upper left", fontsize=7)
+
+
+def _draw_violation_time_rates(ax, metrics: Dict[str, Any]) -> None:
+    viol = metrics.get("violations", {})
+    forbidden = float(viol.get("forbidden_zone_rate", 0.0))
+    compliant = max(0.0, 1.0 - forbidden)
+    labels = ["compliant", "forbidden zone"]
+    values = [compliant, forbidden]
+    colors = ["#51cf66", "#ff6b6b"]
+    _draw_violation_rate_bars(
+        ax,
+        labels,
+        values,
+        colors,
+        title="Violation rates (time)",
+    )
+
+
+def _draw_violation_velocity_rates(ax, metrics: Dict[str, Any]) -> None:
+    viol = metrics.get("violations", {})
+    overspeed = float(viol.get("overspeed_rate", 0.0))
+    compliant = max(0.0, 1.0 - overspeed)
+    speed_limit = metrics.get("rules", {}).get("speed_limit_kmh", 5)
+    labels = ["compliant", f"overspeed (>{speed_limit} km/h)"]
+    values = [compliant, overspeed]
+    colors = ["#51cf66", "#ffa94d"]
+    _draw_violation_rate_bars(
+        ax,
+        labels,
+        values,
+        colors,
+        title="Violation rates (velocity)",
+    )
+
+
+def _draw_violation_rate_bars(
+    ax,
+    labels: Sequence[str],
+    values: Sequence[float],
+    colors: Sequence[str],
+    *,
+    title: str,
+) -> None:
+    nonzero = [(l, v, c) for l, v, c in zip(labels, values, colors) if v > 1e-6]
+    if not nonzero:
+        ax.text(0.5, 0.5, "no motion samples", ha="center", va="center", transform=ax.transAxes)
+        ax.set_title(title)
+        ax.axis("off")
+        return
+    labels_nz, values_nz, colors_nz = zip(*nonzero)
+    y_pos = np.arange(len(labels_nz))
+    bars = ax.barh(y_pos, values_nz, color=colors_nz, edgecolor="#333333", linewidth=0.6)
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(labels_nz, fontsize=9)
+    ax.set_xlim(0.0, 1.0)
+    ax.set_xlabel("fraction of tracked motion time")
+    ax.set_title(title)
+    ax.invert_yaxis()
+    for bar, val in zip(bars, values_nz):
+        ax.text(
+            min(0.98, val + 0.02),
+            bar.get_y() + bar.get_height() / 2,
+            f"{val * 100:.1f}%",
+            va="center",
+            ha="left",
+            fontsize=9,
+        )
+
+
+def _draw_timing_breakdown_table(ax, rows: Sequence[Tuple[str, str]]) -> None:
+    ax.axis("off")
+    ax.set_title("Time breakdown", loc="left", fontsize=12, fontweight="bold")
+    if not rows:
+        ax.text(0.02, 0.5, "No timing data", transform=ax.transAxes, fontsize=10)
+        return
+    table = ax.table(
+        cellText=[[label, value] for label, value in rows],
+        colLabels=["Metric", "Value"],
+        loc="center",
+        cellLoc="left",
+        colWidths=[0.62, 0.28],
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(9)
+    table.scale(1.0, 1.35)
+    for (row, col), cell in table.get_celld().items():
+        if row == 0:
+            cell.set_facecolor("#e7f5ff")
+            cell.set_text_props(fontweight="bold")
+        elif col == 1:
+            cell.set_text_props(ha="right")
 
 
 def _draw_mission_map(
@@ -206,53 +385,6 @@ def _draw_mission_map(
         ax.plot(xs, ys, "-", color="deepskyblue", linewidth=1.8, label="trajectory")
 
     ax.legend(loc="upper left", fontsize=8)
-
-
-def _draw_metrics_bars(ax, metrics: Dict[str, Any]) -> None:
-    labels = ["Success\n(0/1)", "Total time\n(s)"]
-    values = [
-        float(metrics.get("success_rate", 0.0)),
-        float(metrics.get("total_time_s", 0.0)),
-    ]
-    colors = ["#2f9e44" if metrics.get("success") else "#e03131", "#1971c2"]
-    bars = ax.bar(labels, values, color=colors, edgecolor="#333333", linewidth=0.8)
-    ax.set_title("Mission metrics")
-    ax.set_ylabel("value")
-    for bar, val in zip(bars, values):
-        ax.text(
-            bar.get_x() + bar.get_width() / 2,
-            bar.get_height() + max(0.02 * max(values + [1.0]), 0.05),
-            f"{val:.2f}",
-            ha="center",
-            va="bottom",
-            fontsize=10,
-        )
-    ax.set_ylim(0, max(values + [1.0]) * 1.25)
-
-
-def _draw_violation_pie(ax, metrics: Dict[str, Any]) -> None:
-    viol = metrics.get("violations", {})
-    forbidden = float(viol.get("forbidden_zone_rate", 0.0))
-    overspeed = float(viol.get("overspeed_rate", 0.0))
-    compliant = max(0.0, 1.0 - forbidden - overspeed)
-    sizes = [compliant, forbidden, overspeed]
-    labels = ["compliant", "forbidden zone", f"overspeed (>{metrics.get('rules', {}).get('speed_limit_kmh', 5)} km/h)"]
-    colors = ["#51cf66", "#ff6b6b", "#ffa94d"]
-    nonzero = [(s, l, c) for s, l, c in zip(sizes, labels, colors) if s > 1e-6]
-    if not nonzero:
-        ax.text(0.5, 0.5, "no motion samples", ha="center", va="center", transform=ax.transAxes)
-        ax.set_title("Violation rates (time fraction)")
-        ax.axis("off")
-        return
-    sizes_nz, labels_nz, colors_nz = zip(*nonzero)
-    ax.pie(
-        sizes_nz,
-        labels=[f"{l}\n{v*100:.1f}%" for l, v in zip(labels_nz, sizes_nz)],
-        colors=colors_nz,
-        autopct="",
-        startangle=90,
-    )
-    ax.set_title("Violation rates (time fraction)")
 
 
 def _overlay_registry_props(ax, registry: SiteTransportRegistry, *, label_gt: bool = False) -> None:

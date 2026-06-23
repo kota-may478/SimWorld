@@ -54,3 +54,34 @@ def test_build_timing_summary() -> None:
     assert summary["leg1_time_s"] == 120.5
     assert summary["totals"]["move_ms"] == 1800.0
     assert summary["per_leg"][0]["wall_time_s"] == 120.5
+
+
+def test_timing_breakdown_rows() -> None:
+    from metrics import timing_breakdown_rows  # noqa: WPS433
+
+    metrics = {
+        "success": True,
+        "total_time_s": 584.81,
+        "leg1_time_s": 300.0,
+        "leg2_time_s": 280.0,
+        "violations": {"tracked_motion_time_s": 580.0},
+        "timing_summary": {
+            "profile": "fast",
+            "nav_wall_time_s": 580.0,
+            "leg1_time_s": 300.0,
+            "leg2_time_s": 280.0,
+            "totals": {
+                "move_ms": 120000.0,
+                "perceive_ms": 45000.0,
+                "replan_ms": 8000.0,
+                "settle_ms": 12000.0,
+                "standoff_ms": 3000.0,
+            },
+        },
+    }
+    rows = dict(timing_breakdown_rows(metrics))
+    assert rows["Total mission time"] == "584.81 s"
+    assert rows["Nav wall time (leg1+leg2)"] == "580.00 s"
+    assert rows["Movement"] == "120.00 s"
+    assert rows["Mapping / perception (SLAM/L2)"] == "45.00 s"
+    assert rows["Leg 1 wall time"] == "300.00 s"
