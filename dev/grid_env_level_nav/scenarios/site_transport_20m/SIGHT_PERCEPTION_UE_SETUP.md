@@ -534,6 +534,256 @@ PYTHONUNBUFFERED=1 conda run --no-capture-output -n simworld python \
 
 ---
 
+## Phase 9: 運搬物 CarrySocket Attach（leg2・vbp）
+
+Sight（Phase 1～8）が動いたあと、**運搬物を SpotDog の骨に追従させる**ための UE 作業です。  
+Python は pickup / delivery 時に次を呼びます:
+
+```text
+vbp GridEnv_SpotRobot AttachCarryActor site20_carry
+vbp GridEnv_SpotRobot DetachCarryActor site20_carry
+```
+
+**UE 側が未設定**のときは Python が `set_location` で運搬物を同期します（遅延・ズレの原因）。  
+**本 Phase を完了**すると leg2 中は **Socket 追従**になり、Python 同期を **スキップ**します。
+
+> **詳細グラフ手順（ピン単位）** は同フォルダの **`CARRY_ATTACH_UE_SETUP.md`** にも全文あります。  
+> 本 Phase 9 は **省略なしの作業順序・チェックリスト**として読んでください。
+
+### 9-0. 全体の作業順序（チェックリスト）
+
+| # | 作業 | ドキュメント |
+|---|------|-------------|
+| 1 | Skeleton に **`CarrySocket`** を追加 | 9-1 |
+| 2 | **`AttachCarryActor`** 関数を実装 | 9-2 |
+| 3 | **`DetachCarryActor`** 関数を実装 | 9-3 |
+| 4 | （任意）**`ProbeCarryAttach`** | 9-4 |
+| 5 | **Compile / Save / Public 確認** | 9-5 |
+| 6 | **プローブ**（PIE 中） | 9-6 |
+| 7 | **E2E**（leg1+leg2） | 9-7 |
+
+---
+
+### 9-1. Skeleton に `CarrySocket` を追加
+
+| 項目 | 値 |
+|------|-----|
+| 対象 BP | `BP_SpotRobot` または `BP_SpotRobot_Child` の Skeletal Mesh |
+| Socket 名 | **`CarrySocket`**（Python 定数と **完全一致**） |
+
+1. **あなた**は **PIE を停止**する。  
+2. **あなた**は **Content Drawer** → `Content/Robot_Dog/Blueprint/` → **`BP_SpotRobot`**（または Child）を **ダブルクリック**する。  
+3. **あなた**は 右 **Details** → **Mesh** → **Skeletal Mesh Asset** の **Browse** を **クリック**し、**Skeleton Editor** を **開く**。  
+4. **あなた**は **Skeleton Tree** で背中付近のボーン（`spine_03` 等、モデル依存）を **右クリック** → **Add Socket** を **選択**する。  
+5. **あなた**は Socket 名を **`CarrySocket`** に **変更**する。  
+6. **あなた**は Viewport でソケット位置を **調整**する（目安: 後方 20 cm、背中上面 50～70 cm）。  
+7. **あなた**は **Save** し、Skeleton Editor を **閉じる**。
+
+---
+
+### 9-2. `AttachCarryActor` を実装する（`BP_SpotRobot`）
+
+**対象:** `vbp GridEnv_SpotRobot ...` が届く Pawn BP（`Move_Speed` と同じ）。
+
+#### 9-2-A. 関数の作成と入出力
+
+1. **あなた**は **`BP_SpotRobot`** を **開く**。  
+2. **あなた**は **My Blueprint → Functions → ＋** で **`AttachCarryActor`** を **作成**する。  
+3. **あなた**は **Details**（検索フィルタ **× でクリア**）で次を **設定**する:
+
+| 項目 | 設定 |
+|------|------|
+| **Inputs ＋** | Name = **`CarryActorName`**、Type = **`String`** または **Name** |
+| **Outputs ＋** | Type = **`Boolean`** |
+
+4. **あなた**は **Variables ＋** で **`FoundCarryActor`**（Type = **Actor → Object Reference**）を **追加**する。  
+5. **あなた**は **Compile** を **クリック**する。
+
+#### 9-2-B. グラフ配線（完成形）
+
+**実行線（白）の流れ:**
+
+```text
+[入口 Attach Carry Actor]
+  → [SET FoundCarryActor = None]          ← 値ピン未接続
+  → [Get All Actors Of Class]             ← Actor Class = Actor
+  → [For Each Loop]
+       Loop Body → [Branch①] → (True) [SET FoundCarryActor]
+       Completed → [Branch②]
+            ├─ False → [Return false]
+            └─ True  → [Set Actor Enable Collision OFF]
+                    → [Attach Actor to Component]
+                    → [Return true]
+```
+
+**データ線（青・赤）の要点:**
+
+| 接続 | 内容 |
+|------|------|
+| ループ内 | `Array Element` → `Get Object Name` → `Equal (String)` ← `Carry Actor Name` |
+| ループ内 | `Branch`① True → `SET FoundCarryActor` ← `Array Element` |
+| ループ後 | `Get FoundCarryActor` → `Is Valid` → `Branch`② **Condition** |
+| Attach | **Target** = `FoundCarryActor`、**Parent** = **Mesh**、**Socket Name** = **`CarrySocket`** |
+| Attach Rule | Location / Rotation = **Snap to Target**、Scale = **Keep World** |
+
+**Return 値（必須）:**
+
+| 経路 | Return Value |
+|------|----------------|
+| **`Branch`② False**（見つからず） | **チェック OFF** = **false** |
+| **Attach 成功後** | **チェック ON** = **true** |
+
+**よくある誤り:**
+
+- `Get All Actors Of Class` の **Actor Class = None** → 必ず **`Actor`**
+- `Completed` を **`Is Valid` に接続** → **不要**（`Is Valid` に白ピン無し）
+- 成功 `Return` が **false** のまま → Python が attach 失敗と判断
+- `Set Simulate Physics (Mesh)` 等ロボット用ノード → **使わない**（Collision OFF だけで可）
+
+---
+
+### 9-3. `DetachCarryActor` を実装する
+
+delivery 前に Socket から外します。**Actor 検索ループは 9-2 と同型**です。
+
+#### 9-3-A. 関数の作成と入出力
+
+1. **あなた**は **Functions → ＋** で **`DetachCarryActor`** を **作成**する。  
+2. **あなた**は **Input** = **`CarryActorName`**（String/Name）、**Output** = **Boolean** を **設定**する。  
+3. **あなた**は **Compile** を **クリック**する。
+
+#### 9-3-B. グラフ配線（完成形）
+
+```text
+[入口 Detach Carry Actor]
+  → [SET FoundCarryActor = None]
+  → [Get All Actors Of Class (Actor)]
+  → [For Each Loop]  …（9-2 と同じ名前比較ループ）…
+  → [Branch②]
+       ├─ False → [Return false]
+       └─ True  → [Detach from Actor] (Target=FoundCarryActor)
+               → [Return true]
+```
+
+**`Detach from Actor` の Rule（すべて Keep World）:**
+
+| ピン | 値 |
+|------|-----|
+| **Location Rule** | **Keep World** |
+| **Rotation Rule** | **Keep World** |
+| **Scale Rule** | **Keep World** |
+
+> **コツ:** `AttachCarryActor` のループ部分を **コピー＆ペースト**し、True 側だけ **Attach → Detach** に **差し替える**と早いです。
+
+---
+
+### 9-4. （任意）`ProbeCarryAttach`
+
+1. **あなた**は **Functions → ＋** で **`ProbeCarryAttach`** を **作成**する（**Input なし**、**Output Boolean**）。  
+2. **あなた**は **`Mesh`** をグラフへ **ドラッグ** → **`Does Socket Exist`**（Socket Name = **`CarrySocket`**）→ **`Return Node`** を **接続**する。  
+3. **あなた**は **`Does Socket Exist` の戻り値** → **`Return Value`** を **接続**する。  
+4. **あなた**は **Compile → Save** する。
+
+---
+
+### 9-5. Compile・Save・Callable 確認
+
+1. **あなた**は 各関数（`AttachCarryActor` / `DetachCarryActor`）を **選択**する。  
+2. **あなた**は **Details → Graph → Access Specifier** が **`Public`** であることを **確認**する。  
+3. **あなた**は ツールバー **Compile** を **クリック**する。  
+4. **あなた**は **Compiler Results** に **warning 0 件**（または許容できるものだけ）であることを **確認**する。  
+5. **あなた**は **Save**（Ctrl+S）する。  
+6. **あなた**は **Level エディタ**に戻る（PIE はまだ **停止**でよい）。
+
+---
+
+### 9-6. プローブ（PIE 中・WSL）
+
+1. **あなた**は UE で **Play（PIE）** を **開始**する。  
+2. **あなた**は WSL で次を **実行**する:
+
+```bash
+cd ~/00_kotaprivate/Program/SimWorld
+python dev/grid_env_level_nav/scripts/probe_carry_attach_vbp.py
+```
+
+3. **あなた**は 出力を **確認**する:
+
+| 表示 | 意味 |
+|------|------|
+| `AttachCarryActor vbp: AVAILABLE` | vbp 関数が Pawn に載った |
+| `trial attach ... OK` | `site20_carry` がシーンにいれば attach 試行成功 |
+| `NOT FOUND` | Compile/Save 漏れ、別 BP を編集、PIE 未開始 |
+
+**手動 vbp（任意）:**
+
+```bash
+conda run -n simworld python -c "
+import sys
+sys.path.insert(0,'dev/grid_env_hri')
+import grid_env_hri_simulation as geh
+ucv,_=geh.ensure_connection()
+print(ucv.client.request('vbp GridEnv_SpotRobot AttachCarryActor site20_carry'))
+"
+```
+
+**期待:** `true` または成功を示す応答（`false` なら Actor 名不一致・未スポーン）。
+
+---
+
+### 9-7. E2E（leg1 + leg2 本番）
+
+1. **あなた**は **PIE を Play** したままにする。  
+2. **あなた**は WSL で次を **実行**する:
+
+```bash
+rm -f /tmp/simworld_ue9000.lock
+python dev/grid_env_level_semantic/release_ue_connection.py
+
+PYTHONUNBUFFERED=1 ~/miniforge3/envs/simworld/bin/python \
+  dev/grid_env_level_nav/run_site_transport_20m_test.py --max-nav-steps 600
+```
+
+3. **あなた**は ログを **確認**する:
+
+| ログ | 意味 |
+|------|------|
+| `[Site20Carry] UE bone attach 'site20_carry' → socket 'CarrySocket' (no Python sync during leg2)` | **成功** |
+| `[Site20Carry] visual ready ... Python sync` | vbp 未適用または attach が false |
+| `[Site20] PASS` | leg1+leg2 完了 |
+
+4. **あなた**は 成果物を **確認**する（任意）:  
+   `dev/grid_env_level_nav/cache/runs/site_transport_20m/latest_*`
+
+---
+
+### 9-8. Phase 9 トラブルシュート
+
+| 症状 | 対処 |
+|------|------|
+| vbp `not found` | `BP_SpotRobot` を Compile/Save。編集 BP が spawn 先と一致するか確認 |
+| 常に `false` | `Get Object Name` と `site20_carry` の一致。`Actor Class=None` でないか |
+| attach 成功だがズレ | Phase 9-1 の **`CarrySocket`** 位置を Skeleton Editor で再調整 |
+| `Set AttachOk was pruned` | `SET AttachOk` の **左 Exec 未接続** — **ノード削除**して **Return true** のみで可 |
+| leg2 で Penetration | 運搬物 **Collision OFF** が Attach 前に実行されているか |
+| Python が古い同期のまま | 成功 `Return true` か。ログに `UE bone attach` が出るか |
+
+---
+
+### 9-9. site_transport UE セットアップ全体マップ
+
+| Phase | 内容 | 本ドキュメント |
+|-------|------|----------------|
+| 1～3 | SpotDog Child 開く・視点 | Phase 1～3 |
+| 2-A～2-B | AI Controller・Class Defaults | Phase 2 |
+| 4 | Prop / Humanoid Stimuli | Phase 4 |
+| 5 | `GetVisibleSightTargetsJson` | Phase 5 |
+| 6 | Sight 動作確認 | Phase 6 |
+| 7～8 | トラブル・spawn Child 切替 | Phase 7～8 |
+| **9** | **運搬物 CarrySocket Attach** | **本 Phase** |
+
+---
+
 ## 参考リンク
 
 - [AI Perception（Epic 公式）](https://dev.epicgames.com/documentation/en-us/unreal-engine/ai-perception-in-unreal-engine)
