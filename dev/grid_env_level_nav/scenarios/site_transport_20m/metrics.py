@@ -112,10 +112,20 @@ class MissionRecorder:
         }
 
 
-def save_metrics_json(metrics: Dict[str, Any], output_dir: Path) -> Path:
+def save_metrics_json(
+    metrics: Dict[str, Any],
+    output_dir: Path,
+    *,
+    run_label: str | None = None,
+    trial_index: int | None = None,
+) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    path = output_dir / f"site_transport_metrics_{stamp}.json"
+    if run_label is not None and trial_index is not None:
+        suffix = f"{run_label}_{trial_index}"
+        path = output_dir / f"metricsSummary_{suffix}.json"
+    else:
+        path = output_dir / f"site_transport_metrics_{stamp}.json"
     path.write_text(json.dumps(metrics, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     latest = output_dir / "latest_metrics_json.json"
     latest.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")

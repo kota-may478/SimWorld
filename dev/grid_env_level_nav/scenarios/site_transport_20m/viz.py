@@ -60,6 +60,19 @@ class NavTrace:
         self.replan_events.append({"reason": reason, "waypoint_count": len(path)})
 
 
+def _artifact_suffix(
+    *,
+    run_label: Optional[str] = None,
+    trial_index: Optional[int] = None,
+    stamp: Optional[str] = None,
+) -> str:
+    if run_label is not None and trial_index is not None:
+        return f"{run_label}_{trial_index}"
+    if stamp is None:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return stamp
+
+
 def save_site_transport_artifacts(
     layers: LayeredCostmap,
     registry: SiteTransportRegistry,
@@ -67,13 +80,17 @@ def save_site_transport_artifacts(
     metrics: Dict[str, Any],
     *,
     output_dir: Path = DEFAULT_ARTIFACT_DIR,
+    run_label: Optional[str] = None,
+    trial_index: Optional[int] = None,
 ) -> Dict[str, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    suffix = _artifact_suffix(run_label=run_label, trial_index=trial_index, stamp=stamp)
+    labeled = run_label is not None and trial_index is not None
     paths: Dict[str, Path] = {}
 
     snap = layers.snapshot_layers()
-    npz_path = output_dir / f"site_transport_costmap_{stamp}.npz"
+    npz_path = output_dir / f"site_transport_costmap_{suffix}.npz"
     np.savez_compressed(
         npz_path,
         l0=snap["l0"],
@@ -86,15 +103,18 @@ def save_site_transport_artifacts(
     )
     paths["costmap_npz"] = npz_path
 
-    costmap_png = output_dir / f"costMap_{stamp}.png"
+    costmap_png = output_dir / f"costMap_{suffix}.png"
     _save_costmap_png(layers, registry, trace, costmap_png)
     paths["costMap"] = costmap_png
 
-    summary_png = output_dir / f"site_transport_metrics_summary_{stamp}.png"
+    if labeled:
+        summary_png = output_dir / f"metricsSummary_{suffix}.png"
+    else:
+        summary_png = output_dir / f"site_transport_metrics_summary_{suffix}.png"
     _save_metrics_summary_png(registry, trace, metrics, summary_png)
     paths["metrics_summary_png"] = summary_png
 
-    traj_path = output_dir / f"site_transport_trajectory_{stamp}.json"
+    traj_path = output_dir / f"site_transport_trajectory_{suffix}.json"
     traj_path.write_text(
         json.dumps(_trace_to_dict(registry, trace, layers, metrics), indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",

@@ -11,7 +11,7 @@ import argparse
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 
@@ -141,6 +141,17 @@ def _parse_args() -> argparse.Namespace:
         help="Skip L1 forbidden-zone rasterization (no forbidden rects on L1)",
     )
     p.add_argument("--artifact-dir", type=Path, default=DEFAULT_ARTIFACT_DIR)
+    p.add_argument(
+        "--run-label",
+        default=None,
+        help="Stable artifact label (e.g. L0andL2withSLAM); use with --trial-index",
+    )
+    p.add_argument(
+        "--trial-index",
+        type=int,
+        default=None,
+        help="Trial number for labeled artifacts (e.g. 1..5); requires --run-label",
+    )
     return p.parse_args()
 
 
@@ -155,8 +166,21 @@ def _humanoid_goal_local(registry) -> tuple[float, float]:
     return registry.humanoid_local_cm
 
 
+def _artifact_kwargs(args: argparse.Namespace) -> dict[str, Any]:
+    if (args.run_label is None) != (args.trial_index is None):
+        raise ValueError("--run-label and --trial-index must be used together")
+    if args.run_label is None:
+        return {}
+    return {"run_label": args.run_label, "trial_index": args.trial_index}
+
+
 def main() -> int:
     args = _parse_args()
+    try:
+        artifact_kw = _artifact_kwargs(args)
+    except ValueError as exc:
+        print(f"[Site20] {exc}")
+        return 1
     l2_mode = "off" if args.no_l2 else args.l2_mode
     if not args.l0.is_file():
         print(f"[Site20] missing L0: {args.l0}")
@@ -639,8 +663,10 @@ def main() -> int:
             print("[Site20] FAIL: leg1 material approach")
             mission_end = time.time()
             metrics = recorder.finalize(success=False, mission_end_t=mission_end, layout_id=registry.layout_id)
-            save_metrics_json(metrics, args.artifact_dir)
-            save_site_transport_artifacts(layers, registry, trace, metrics, output_dir=args.artifact_dir)
+            save_metrics_json(metrics, args.artifact_dir, **artifact_kw)
+            save_site_transport_artifacts(
+                layers, registry, trace, metrics, output_dir=args.artifact_dir, **artifact_kw
+            )
             return 3
 
         carry_name = begin_carry_from_material(ucv, registry, robot_name=robot_name)
@@ -648,8 +674,10 @@ def main() -> int:
             print("[Site20] FAIL: carry start")
             mission_end = time.time()
             metrics = recorder.finalize(success=False, mission_end_t=mission_end, layout_id=registry.layout_id)
-            save_metrics_json(metrics, args.artifact_dir)
-            save_site_transport_artifacts(layers, registry, trace, metrics, output_dir=args.artifact_dir)
+            save_metrics_json(metrics, args.artifact_dir, **artifact_kw)
+            save_site_transport_artifacts(
+                layers, registry, trace, metrics, output_dir=args.artifact_dir, **artifact_kw
+            )
             return 4
         print(f"[Site20] carry: {carry_name}")
         tick_settle(ucv, settle_s=2.0, ticks=3)
@@ -687,8 +715,10 @@ def main() -> int:
             print("[Site20] FAIL: leg2 humanoid approach")
             mission_end = time.time()
             metrics = recorder.finalize(success=False, mission_end_t=mission_end, layout_id=registry.layout_id)
-            save_metrics_json(metrics, args.artifact_dir)
-            save_site_transport_artifacts(layers, registry, trace, metrics, output_dir=args.artifact_dir)
+            save_metrics_json(metrics, args.artifact_dir, **artifact_kw)
+            save_site_transport_artifacts(
+                layers, registry, trace, metrics, output_dir=args.artifact_dir, **artifact_kw
+            )
             return 5
 
         delivered = deliver_carry_at_humanoid(ucv, registry, robot_name=robot_name)
@@ -709,9 +739,9 @@ def main() -> int:
             mission_end_t=mission_end,
             layout_id=registry.layout_id,
         )
-        metrics_path = save_metrics_json(metrics, args.artifact_dir)
+        metrics_path = save_metrics_json(metrics, args.artifact_dir, **artifact_kw)
         artifact_paths = save_site_transport_artifacts(
-            layers, registry, trace, metrics, output_dir=args.artifact_dir
+            layers, registry, trace, metrics, output_dir=args.artifact_dir, **artifact_kw
         )
         print(f"[Site20] metrics: {metrics_path}")
         for key, path in sorted(artifact_paths.items()):
