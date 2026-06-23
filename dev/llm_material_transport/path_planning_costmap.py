@@ -398,7 +398,8 @@ def astar_grid_path(
             grid_path = _reconstruct_grid_path(came_from, goal_cell)
             total_cost = compute_grid_path_total_cost(costmap, grid_path)
             waypoints_xy = simplify_world_path(
-                [costmap.grid_to_world_xy_center(cell) for cell in grid_path]
+                [costmap.grid_to_world_xy_center(cell) for cell in grid_path],
+                costmap=costmap,
             )
             return AStarPlanResult(
                 waypoints_xy=waypoints_xy,
@@ -453,8 +454,64 @@ def compute_grid_path_total_cost(
     return total
 
 
-def simplify_world_path(path_xy: List[WorldXY]) -> List[WorldXY]:
-    """共線な中間点を間引く。"""
+def world_segment_is_traversable(
+    costmap: Costmap2D,
+    start_xy: WorldXY,
+    end_xy: WorldXY,
+    *,
+    skip_start_cell: bool = False,
+) -> bool:
+    """True when every sampled cell along the world-space segment is traversable."""
+    dist_cm = math.hypot(end_xy[0] - start_xy[0], end_xy[1] - start_xy[1])
+    if dist_cm < 1e-3:
+        if skip_start_cell:
+            cell = costmap.world_xy_to_grid(end_xy, clamp=True)
+            return cell is not None and costmap.is_traversable(cell)
+        cell = costmap.world_xy_to_grid(start_xy, clamp=True)
+        return cell is not None and costmap.is_traversable(cell)
+    step_cm = max(costmap.resolution_cm * 0.45, 5.0)
+    steps = max(2, int(math.ceil(dist_cm / step_cm)))
+    start_cell = costmap.world_xy_to_grid(start_xy, clamp=True) if skip_start_cell else None
+    first_index = 1 if skip_start_cell else 0
+    for index in range(first_index, steps + 1):
+        t = index / steps
+        wx = start_xy[0] + t * (end_xy[0] - start_xy[0])
+        wy = start_xy[1] + t * (end_xy[1] - start_xy[1])
+        cell = costmap.world_xy_to_grid((wx, wy), clamp=True)
+        if cell is None:
+            return False
+        if skip_start_cell and start_cell is not None and cell == start_cell:
+            continue
+        if not costmap.is_traversable(cell):
+            return False
+    return True
+
+
+def simplify_world_path(
+    path_xy: List[WorldXY],
+    costmap: Optional[Costmap2D] = None,
+) -> List[WorldXY]:
+    """Drop collinear points; with *costmap*, never shortcut through lethal cells."""
+    if len(path_xy) <= 2:
+        return list(path_xy)
+    if costmap is None:
+        return _simplify_world_path_colinear(path_xy)
+
+    simplified: List[WorldXY] = [path_xy[0]]
+    index = 0
+    while index < len(path_xy) - 1:
+        farthest = index + 1
+        for candidate in range(len(path_xy) - 1, index, -1):
+            if world_segment_is_traversable(costmap, path_xy[index], path_xy[candidate]):
+                farthest = candidate
+                break
+        simplified.append(path_xy[farthest])
+        index = farthest
+    return simplified
+
+
+def _simplify_world_path_colinear(path_xy: List[WorldXY]) -> List[WorldXY]:
+    """Legacy colinear simplification (no lethal clearance check)."""
     if len(path_xy) <= 2:
         return list(path_xy)
 
