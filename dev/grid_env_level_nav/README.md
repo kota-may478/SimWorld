@@ -19,7 +19,7 @@ Design note: Obsidian #320 `simWorld_LevelNavMeshNavigation_ForHRCMaterialTransp
 
 | File | Role |
 |------|------|
-| `paths.py` | Canonical paths for `cache/l0`, `cache/registries`, `cache/runs/*` |
+| `paths.py` | Canonical paths for `cache/l0`, `cache/registries`, scenario `out/` dirs |
 | `bootstrap.py` | `sys.path` setup for scenarios |
 | `pie_spawn_safety.py` | PIE-safe destroy→spawn (cooldown, per-actor settle) |
 | `level_coords.py` | Level map local ↔ world UE coordinates |
@@ -93,7 +93,7 @@ Design note: Obsidian #320 `simWorld_LevelNavMeshNavigation_ForHRCMaterialTransp
 | `layered_nav.py` | Full L0+L1+L2 nav with replanning |
 | `carry.py` | Material pickup, carry attach, deliver to humanoid |
 | `metrics.py` | Run metrics aggregation |
-| `viz.py` | Trajectory/metrics plots → `cache/runs/site_transport_20m/` |
+| `viz.py` | Trajectory/metrics plots → `scenarios/site_transport_20m/out/` |
 | `spawn_pie.py` | PIE scene spawn |
 | `run_test.py` | **E2E entry**: spawn → nav → carry → deliver |
 | `test_l2_sight.py` | Unit tests for sight L2 |
@@ -137,16 +137,18 @@ Design note: Obsidian #320 `simWorld_LevelNavMeshNavigation_ForHRCMaterialTransp
 | `NavQueryService.cpp` | C++ NavQuery plugin implementation |
 | `INSTALL_NATIVE.md` | Install native plugin into SimWorld UE source |
 
-### File Reference — `cache/`
+### File Reference — `cache/` and run outputs
 
 | Path | Role |
 |------|------|
 | `cache/l0/*.npz` | Built L0 NavMesh masks |
 | `cache/l0/*.png` | L0 visualization previews |
 | `cache/registries/*.json` | Placement, zone, prop catalogs |
-| `cache/runs/compact_nav/` | Compact nav artifacts (`latest_*`) |
-| `cache/runs/site_transport_20m/` | Site transport trajectories, metrics PNG/JSON |
-| `cache/runs/construction_site/` | Construction-site run outputs |
+| `scenarios/compact_nav/out/` | Compact nav artifacts (`latest_*`) |
+| `scenarios/site_transport_20m/out/` | Site transport trajectories, metrics PNG/JSON |
+| `scenarios/construction_site/out/` | Construction-site run outputs (reserved) |
+
+> **Migration:** Run artifacts previously lived under `cache/runs/<scenario>/`. New runs write to `scenarios/<scenario>/out/`. Old `cache/runs/` trees are gitignored and safe to delete locally.
 
 ### Running Simulations
 
@@ -199,7 +201,7 @@ UE Editor crash mitigation: see `pie_spawn_safety.py`, `ue_client_guard` (in `gr
 - Add `scenarios/README.md` index (optional; covered in `dev/README.md`).
 - Package as installable subpackage (`simworld_level_nav`) to replace `sys.path` bootstrap.
 - Unified notebook for compact_nav visualization only (CLI remains canonical).
-- Gitignore large `cache/runs/*` timestamps; keep `latest_*` symlinks or copies.
+- Gitignore timestamped artifacts under `out/`; keep `latest_*` symlinks or copies.
 
 ---
 
@@ -224,7 +226,7 @@ UE Editor crash mitigation: see `pie_spawn_safety.py`, `ue_client_guard` (in `gr
 
 | ファイル | 役割 |
 |------|------|
-| `paths.py` | `cache/l0`、`cache/registries`、`cache/runs/*` の標準パス |
+| `paths.py` | `cache/l0`、`cache/registries`、シナリオ `out/` の標準パス |
 | `bootstrap.py` | シナリオ用 `sys.path` 初期化 |
 | `pie_spawn_safety.py` | PIE 向け destroy→spawn（クールダウン、安定待ち） |
 | `level_coords.py` | Level ローカル ↔ UE ワールド座標 |
@@ -314,7 +316,7 @@ Editor 用 BP 生成、VOL.1 プロップ、深度/Sight 有効化、carry/Sight
 
 #### `cache/`
 
-`cache/l0/`（L0 npz/png）、`cache/registries/`（JSON）、`cache/runs/*`（実行成果物）。
+`cache/l0/`（L0 npz/png）、`cache/registries/`（JSON）、`scenarios/<scenario>/out/`（実行成果物）。旧 `cache/runs/` は移行済み — ローカル削除可。
 
 ### シミュレーションの実行
 
@@ -351,4 +353,4 @@ L0 構築: `build_l0_nav_mask.py --resolution-cm 30`
 
 - 未使用だった `scenarios/construction_site/placement.py` の重複コード削除 — **完了**（薄い再エクスポートに置換）。
 - インストール可能サブパッケージ化で `bootstrap.py` 不要化。
-- `cache/runs` のタイムスタンプ成果物の gitignore 整理。
+- `out/` 配下のタイムスタンプ成果物の gitignore 整理。

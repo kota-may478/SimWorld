@@ -32,7 +32,7 @@ Tests **egocentric object recognition** on `/Game/Maps/Level` using SpotDog's **
 | `DETECTION.md` | Algorithm description and crash analysis |
 | `VISION_APPROACHES.md` | Notes on vision backend alternatives |
 | `cache/prop_placement_registry.json` | Fixed-seed layout (seed 42, 5 props) |
-| `cache/runs/*.json` | Per-run trajectories and RMSE summaries |
+| `out/*.json` | Per-run trajectories and RMSE summaries |
 
 ### Running Simulations
 
@@ -61,7 +61,7 @@ CLI flags on `run_depth_recognition_test.py`:
 | `--spawn-first` | off | Run spawn before test |
 | `--force-rebuild` | off | New prop picks/positions (avoid unless needed) |
 | `--allow-lit-fallback` | off | Deprecated lit-RGB fallback |
-| `--output-dir` | `cache/runs/` | Artifact directory |
+| `--output-dir` | `out/` | Artifact directory |
 | `PerceptionConfig.fov_deg` | `90` | Camera FOV |
 | `PerceptionConfig.min_mask_pixels` | `48` | Minimum mask area |
 | `PerceptionConfig.color_tolerance` | `6` | RGB match tolerance |
@@ -101,7 +101,8 @@ Registry path: `cache/prop_placement_registry.json` (reuse for identical layout)
 | `mask_calibration.py` 等 | キャリブ・デバッグ |
 | `test_*.py` | ユニットテスト |
 | `DETECTION.md` / `VISION_APPROACHES.md` | 設計ドキュメント |
-| `cache/*` | レジストリと実行成果物 |
+| `cache/*` | Registries (tracked) |
+| `out/*` | Run artifacts: JSON trajectories, distance/bearing PNGs (gitignored) |
 
 ### シミュレーションの実行
 
@@ -122,6 +123,7 @@ python dev/grid_env_depth_perception/run_depth_recognition_test.py
 | `--spawn-first` | off | 事前スポーン |
 | `--force-rebuild` | off | レイアウト再生成（非推奨頻用） |
 | `--allow-lit-fallback` | off | 非推奨 lit フォールバック |
+| `--output-dir` | `out/` | 成果物ディレクトリ |
 | `PerceptionConfig.*` | （モジュール内） | FOV・マスク閾値等 |
 
 ### 今後の拡張性

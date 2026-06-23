@@ -25,8 +25,9 @@
 | `_cursor_kernel_test.ipynb` | Minimal kernel connectivity notebook |
 | `verify_cursor_notebook_setup.sh` | Shell: validate Cursor + Jupyter + simworld kernel |
 | `start_jupyter_for_cursor.sh` | Shell: start Jupyter for remote Cursor editing |
-| `_integration_*.log` | Historical integration run logs (safe to delete) |
+| `_integration_*.log` | Historical integration run logs under `out/logs/` (safe to delete) |
 | `_integration_verify.log` | Latest verification log |
+| `out/` | Run artifacts: costmap PNGs, live_costmap frames, result plots (gitignored) |
 
 ### Running Simulations
 
@@ -62,7 +63,7 @@ Obstacle scan CLI flags in `costmap_obstacle_scan.py` and `_scan_costmap_obstacl
 
 - Delegate navigation to `grid_env_level_nav` layered L0+L2 stack instead of standalone costmap.
 - Structured LLM output validation with Pydantic + retry policy.
-- Move `_integration_*.log` under `cache/runs/` and gitignore.
+- Move `_integration_*.log` under `out/logs/` and gitignore.
 - End-to-end test using mock LLM for CI without API calls.
 
 ---
@@ -84,7 +85,8 @@ Obstacle scan CLI flags in `costmap_obstacle_scan.py` and `_scan_costmap_obstacl
 | `_verify_handoff_geometry.py` 等 `_debug_*` | デバッグ・検証 |
 | `_test_*` / `_cursor_kernel_test.ipynb` | Jupyter/カーネル接続確認 |
 | `verify_cursor_notebook_setup.sh` 等 | Cursor 用シェル |
-| `_integration_*.log` | 過去の統合ログ（削除可） |
+| `_integration_*.log` | 過去の統合ログ（`out/logs/`、削除可） |
+| `out/` | 実行成果物（コストマップ PNG、live_costmap、結果プロット、gitignore） |
 
 ### シミュレーションの実行
 
@@ -110,5 +112,5 @@ Obstacle scan CLI flags in `costmap_obstacle_scan.py` and `_scan_costmap_obstacl
 
 - `grid_env_level_nav` の L0+L2 層ナビへの移行。
 - Pydantic による LLM 出力検証とリトライ。
-- ログを `cache/runs/` へ集約し gitignore。
+- ログを `out/logs/` へ集約し gitignore。
 - モック LLM による CI 統合テスト。

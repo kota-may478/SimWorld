@@ -38,7 +38,7 @@ hri_agv ──► hri_spotdog_follow (room layout parity)
 
 - **UE connection**: UnrealCV listens on TCP port **9000**; only one Python client at a time. Use `release_ue_connection.py` or restart the Jupyter kernel before CLI scripts. See `grid_env_hri/ue_client_guard.py`.
 - **PIE vs Editor**: Most WSL scripts expect **Play-In-Editor (PIE)** on the target map. Editor-only scripts live under `*/scripts/*_editor.py`.
-- **Caches**: Run artifacts and registries go under each project's `cache/` (or dot-registries like `.level_semantic_registry.json`). Safe to delete for a clean rerun.
+- **Caches**: Built masks and registries go under each project's `cache/` (or dot-registries like `.level_semantic_registry.json`). **Run artifacts** (plots, metrics JSON, trajectories) go under `out/` — per scenario as `scenarios/<name>/out/` in `grid_env_level_nav`, or project-root `out/` elsewhere. Safe to delete for a clean rerun.
 - **Entry points**: Prefer documented `run_*.py` / scenario `run_test.py` over notebooks for reproducible runs. Notebooks are for interactive exploration.
 - **Tests**: `python -m unittest discover -s dev/<project> -p 'test_*.py' -v` where tests exist.
 
@@ -76,7 +76,7 @@ hri_agv ──► hri_spotdog_follow (room layout parity)
 
 - **UE 接続**: UnrealCV は TCP **9000**、同時 1 クライアント。CLI 前に `release_ue_connection.py` または Jupyter カーネル再起動。`grid_env_hri/ue_client_guard.py` 参照。
 - **PIE と Editor**: WSL スクリプトは多くが対象マップの **PIE** 前提。Editor 専用は `*/scripts/*_editor.py`。
-- **キャッシュ**: 実行成果物は各プロジェクトの `cache/` 等。削除して再実行可能。
+- **キャッシュ**: ビルド済みマスク・レジストリは各プロジェクトの `cache/` 等。**実行成果物**（プロット、メトリクス JSON、軌跡）は `out/` — `grid_env_level_nav` は `scenarios/<name>/out/`、他はプロジェクト直下の `out/`。削除して再実行可能。
 - **エントリ**: 再現性には `run_*.py` / シナリオの `run_test.py` を推奨。ノートブックは対話的探索用。
 - **テスト**: `python -m unittest discover -s dev/<project> -p 'test_*.py' -v`
 
