@@ -1,98 +1,131 @@
 # grid_env_depth_perception
 
-Depth camera + `object_mask` object recognition test on `/Game/Maps/Level`.
+## English
 
-## Scenario
+### Purpose
 
-- **Region**: local `(0, 0)` – `(30 m, 30 m)`, excluding `(0, 0)` – `(5 m, 5 m)` spawn exclusion.
-- **Props**: 5 of 73 Construction VOL.1 BPs (fixed seed `42`), placed on NavMesh.
-- **Robot**: SpotDog at local `(1 m, 1 m)`.
-- **Recognition**: `object_mask` color → prop type; depth → distance; pixel bearing → angle (relative to forward, ±180°).
-- **Navigation**: turn-then-go to each prop in **distance order** from spawn (each leg soft-resets to spawn first).
-- **Outputs**: time-series JSON, distance/bearing plots (GT dashed, estimate solid), RMSE per prop and overall.
+Tests **egocentric object recognition** on `/Game/Maps/Level` using SpotDog's **depth camera** and UnrealCV **`object_mask`** rendering. Five Construction VOL.1 props are placed in a 30 m work region; the robot navigates to each prop in distance order, logging distance/bearing estimates vs ground truth and computing RMSE.
 
-## Registry
+### File Reference
 
-Placement is stored in:
+| File | Role |
+|------|------|
+| `depth_object_perception.py` | Core perception: mask color → prop ID, depth → distance, pixel bearing → angle |
+| `object_mask_color.py` | Canonical color IDs from `vget /object/{name}/color` |
+| `prop_placement.py` | Placement registry I/O, NavMesh-valid prop positions |
+| `prop_signature.py` | Prop type signatures for mask matching |
+| `ground_truth.py` | GT distance/bearing from registry poses |
+| `robot_sensor.py` | Camera pose, depth fetch wrappers |
+| `pie_safety.py` | PIE destroy/spawn cooldown helpers (imports `grid_env_level_nav.pie_spawn_safety` patterns) |
+| `spawn_test_scene_pie.py` | PIE: spawn 5 props + SpotDog from registry |
+| `run_depth_recognition_test.py` | Full E2E: navigate to each prop, log JSON + RMSE plots |
+| `run_perception_smoke_test.py` | Short PIE regression gate |
+| `nav_mesh_nav.py` | NavFindPath-following navigation (default `--nav-mode navmesh`) |
+| `simple_nav.py` | Legacy turn-then-go navigation |
+| `plot_results.py` | Plot distance/bearing time series from run JSON |
+| `plot_from_run.py` | Regenerate plots from saved run directory |
+| `mask_calibration.py` | Mask color tolerance calibration utilities |
+| `compare_camera_masks.py` | Compare lit vs object_mask outputs |
+| `debug_mask_probe.py` | Interactive mask debugging |
+| `test_object_mask_color.py` | Unit tests for color parsing |
+| `test_ground_truth.py` | Unit tests for GT geometry |
+| `DETECTION.md` | Algorithm description and crash analysis |
+| `VISION_APPROACHES.md` | Notes on vision backend alternatives |
+| `cache/prop_placement_registry.json` | Fixed-seed layout (seed 42, 5 props) |
+| `cache/runs/*.json` | Per-run trajectories and RMSE summaries |
 
-`cache/prop_placement_registry.json`
+### Running Simulations
 
-Re-run spawn with the same registry for identical layout. Use `--force-rebuild` only when you intentionally want new prop picks/positions.
-
-## PIE workflow
-
-1. UE Editor: open **`/Game/Maps/Level`** → **Play (PIE)**.
-2. WSL: `conda activate simworld`
-3. Spawn scene:
+**No primary notebook.** Use CLI scripts:
 
 ```bash
+# 1. UE Editor: /Game/Maps/Level → Play (PIE)
+# 2. Spawn scene
 python dev/grid_env_depth_perception/spawn_test_scene_pie.py
-```
 
-4. Run recognition + navigation test:
-
-```bash
+# 3. Recognition + navigation test
 python dev/grid_env_depth_perception/run_depth_recognition_test.py
-# default: --nav-mode navmesh (NavFindPath). Legacy: --nav-mode simple
-```
-
-Or combined:
-
-```bash
+# or combined:
 python dev/grid_env_depth_perception/run_depth_recognition_test.py --spawn-first
 ```
 
-Results land in `cache/runs/`.
+Smoke test: `python dev/grid_env_depth_perception/run_perception_smoke_test.py`
 
-## Offline tests
+### Configurable Parameters
+
+CLI flags on `run_depth_recognition_test.py`:
+
+| Flag / parameter | Default | Effect |
+|------------------|---------|--------|
+| `--nav-mode` | `navmesh` | `navmesh` or `simple` |
+| `--spawn-first` | off | Run spawn before test |
+| `--force-rebuild` | off | New prop picks/positions (avoid unless needed) |
+| `--allow-lit-fallback` | off | Deprecated lit-RGB fallback |
+| `--output-dir` | `cache/runs/` | Artifact directory |
+| `PerceptionConfig.fov_deg` | `90` | Camera FOV |
+| `PerceptionConfig.min_mask_pixels` | `48` | Minimum mask area |
+| `PerceptionConfig.color_tolerance` | `6` | RGB match tolerance |
+
+Registry path: `cache/prop_placement_registry.json` (reuse for identical layout).
+
+### Future Extensibility
+
+- Share `depth_object_perception.py` imports only via installed package path instead of duplicate `sys.path` to `grid_env_level_nav`.
+- Fuse with `grid_env_level_nav` L2 FusionCam layer for unified perception stack.
+- Notebook wrapper for interactive single-prop probing.
+
+---
+
+## 日本語
+
+### 目的
+
+`/Game/Maps/Level` で SpotDog の **深度カメラ** と **`object_mask`** による **自己中心的对象認識** を検証。30 m 作業域に Construction VOL.1 プロップ 5 個を配置し、距離順にナビして推定距離・方位と真値の RMSE を記録。
+
+### ファイル一覧
+
+| ファイル | 役割 |
+|----------|------|
+| `depth_object_perception.py` | 認識コア（マスク・深度・方位） |
+| `object_mask_color.py` | オブジェクト色 ID |
+| `prop_placement.py` | 配置レジストリ |
+| `prop_signature.py` | プロップ型シグネチャ |
+| `ground_truth.py` | 真値幾何 |
+| `robot_sensor.py` | カメラ・深度取得 |
+| `pie_safety.py` | PIE 安全スポーン |
+| `spawn_test_scene_pie.py` | シーンスポーン |
+| `run_depth_recognition_test.py` | E2E テスト |
+| `run_perception_smoke_test.py` | 短時間回帰 |
+| `nav_mesh_nav.py` / `simple_nav.py` | NavMesh / レガシーナビ |
+| `plot_*.py` | 可視化 |
+| `mask_calibration.py` 等 | キャリブ・デバッグ |
+| `test_*.py` | ユニットテスト |
+| `DETECTION.md` / `VISION_APPROACHES.md` | 設計ドキュメント |
+| `cache/*` | レジストリと実行成果物 |
+
+### シミュレーションの実行
+
+**主ノートブックなし。** CLI:
 
 ```bash
-conda run -n simworld python -m unittest discover -s dev/grid_env_depth_perception -p 'test_*.py' -v
+python dev/grid_env_depth_perception/spawn_test_scene_pie.py
+python dev/grid_env_depth_perception/run_depth_recognition_test.py
 ```
 
-## Dependencies
+スモーク: `run_perception_smoke_test.py`
 
-Reuses:
+### 変更可能なパラメータ
 
-- `dev/grid_env_hri/grid_env_hri_simulation.py` — UE I/O, SpotDog
-- `dev/grid_env_level_nav/` — catalog, NavMesh, coordinates
-- `dev/hri_spotdog_follow/` patterns — camera pose, depth npy
+| フラグ / パラメータ | 既定 | 効果 |
+|---------------------|------|------|
+| `--nav-mode` | `navmesh` | NavMesh / simple |
+| `--spawn-first` | off | 事前スポーン |
+| `--force-rebuild` | off | レイアウト再生成（非推奨頻用） |
+| `--allow-lit-fallback` | off | 非推奨 lit フォールバック |
+| `PerceptionConfig.*` | （モジュール内） | FOV・マスク閾値等 |
 
-## Baseline (pre Phase 1–2, run `20260616_172013`)
+### 今後の拡張性
 
-| Metric | Value |
-|--------|-------|
-| Overall distance RMSE | 6.32 m |
-| Overall bearing RMSE | 8.00° |
-| Pairs | 313 |
-| E2E duration | ~9.6 min (5 legs) |
-
-## After Phase 1–2 (run `20260616_185613`, 5 legs; legs 3–5 nav timeout but sampled)
-
-| Metric | Value |
-|--------|-------|
-| Overall distance RMSE | **1.74 m** (was 6.32 m) |
-| Overall bearing RMSE | **5.26°** (was 8.00°) |
-| Pairs | 250 |
-
-## After Phase 4 NavMesh nav (run `20260616_224932`, 5 legs all reached)
-
-| Metric | Value |
-|--------|-------|
-| Overall distance RMSE | **2.93 m** |
-| Overall bearing RMSE | **5.53°** |
-| Pairs | 53 |
-| Legs reached | **5 / 5** |
-
-Use `--nav-mode navmesh` (default) for NavFindPath following; `--nav-mode simple` for legacy turn-then-go.
-
-Regression gate: `run_perception_smoke_test.py` (PIE). Full E2E: `run_depth_recognition_test.py`.
-
-## Notes
-
-- Each prop gets a unique `set_color` RGB; canonical ID from `vget /object/{name}/color` after spawn.
-- Lit-RGB fallback is **off** by default (`--allow-lit-fallback` to enable deprecated path).
-- RMSE is computed only on samples where the prop is in FOV **and** mask+depth detection succeeded.
-- Stop PIE only for UE Editor asset work (BP generation, native plugin compile). Python spawn/tests require **PIE running**.
-- **Avoid `--force-respawn`** unless necessary — batch destroy+spawn can crash Level PIE. Default reuse mode keeps existing actors.
-- See `DETECTION.md` for the full perception algorithm and crash analysis.
+- `grid_env_level_nav` L2 FusionCam との統合スタック。
+- 単一プロップ用対話ノートブック。
+- `sys.path` 依存のパッケージ化。

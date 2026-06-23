@@ -1,77 +1,95 @@
-# SpotDog Follow Human (Square Room)
+# hri_spotdog_follow
 
-This project is a new `dev` scenario based on `dev/hri_agv`.
+## English
 
-Main script:
-- `dev/hri_spotdog_follow/spotdog_follow_human_square_room.py`
+### Purpose
 
-## Behavior
+**SpotDog follows a walking Humanoid** in a 10 m × 10 m square room (same wall layout as `hri_agv`). Uses **camera-based human detection** for heading and **depth ranging** for ~1 m follow distance. On target loss, the robot **spins in place** to re-acquire. Optional OpenCV HOG or YOLO vision backends; real-time OpenCV monitor windows.
 
-Human:
-- Walks straight continuously.
-- If blocked (collision-like event), turns and keeps walking.
+### File Reference
 
-SpotDog:
-- Tries to keep following at approximately 1 meter.
-- Uses camera-based human detection for heading alignment.
-- Uses depth sensing (LiDAR-like ranging) for distance control.
-- If the human is not detected for a short period, spins in place to search.
-   - Default: continuous spin, about 1 full turn in 2 seconds.
+| File | Role |
+|------|------|
+| `spotdog_follow_human_square_room.py` | Full simulation: room spawn, human walk/turn-on-block, SpotDog follow/search, depth + vision pipeline, CSV log, monitor windows (jupytext source) |
+| `README.md` | This file (quick reference; superseded in structure by bilingual sections below) |
+| `HISTORY.md` | Changelog of vision/search tuning iterations |
 
-## Environment parity with `hri_agv`
+**Note:** There is no `.ipynb` in this folder; run the `.py` script directly or convert via jupytext.
 
-The room and wall setup is intentionally kept the same as `hri_agv`:
-- 10m x 10m square room (`ROOM_CM = 1000`)
-- Segmented wall spawning with the same parameters
+### Running Simulations
 
-## Run notes
+**Entry point:** `spotdog_follow_human_square_room.py` (no notebook)
 
-1. Start Unreal Engine level in Play mode.
-2. Run the script.
-3. After simulation, logs are saved to:
-   - `dev/hri_spotdog_follow/spotdog_follow_log.csv`
+1. Start Unreal Engine level in **Play** mode.
+2. `conda activate simworld`
+3. Run:
 
-During simulation, you can also watch:
-- SpotDog camera stream (with tracking/search overlay)
-- Real-time range sensor timeline window
+```bash
+python dev/hri_spotdog_follow/spotdog_follow_human_square_room.py
+```
 
-Window lifecycle:
-- Both monitor windows are opened right before simulation starts.
-- They stay open after simulation ends.
-- Close them manually by pressing `q` or `ESC` in an OpenCV window (or close the windows directly).
-- On each run, monitor/runtime states are reset before simulation starts (safe for repeated runs in interactive sessions).
+Logs: `dev/hri_spotdog_follow/spotdog_follow_log.csv`
 
-Related switches and parameters in the script:
-- `ENABLE_REALTIME_MONITOR`
-- `SEARCH_SPIN_PERIOD_S`
-- `SEARCH_LOST_GRACE_S`
-- `SEARCH_ROTATE_SLICE_S`
-- `VISION_ENABLE_CLAHE`
-- `VISION_ENABLE_TILED_SEARCH`
-- `VISION_FAR_UPSAMPLE`
-- `VISION_TEMPORAL_HOLD_S`
+Close monitor windows with `q` or `ESC` in the OpenCV window after the run.
 
-Far-distance robustness strategy (default ON):
-- CLAHE-based contrast enhancement before detection
-- Multi-scale search with upsampled pass for small/far targets
-- Tiled search to improve off-center and tiny-person recall
-- Short temporal hold to reduce one-frame detection drops
+### Configurable Parameters
 
-## Vision backend
+| Parameter | Effect |
+|-----------|--------|
+| `FOLLOW_DISTANCE_CM` | Target follow distance (~100 cm) |
+| `FOLLOW_DISTANCE_TOL_CM` | Deadband around target distance |
+| `ROBOT_HEADING_KP` | Heading correction gain |
+| `ROBOT_MAX_TURN_DEG_PER_STEP` | Max turn per control step |
+| `ROBOT_SPEED_MAX_FWD` / `ROBOT_SPEED_MAX_REV` | Forward/reverse speed limits |
+| `SEARCH_SPIN_PERIOD_S` | Full rotation period when searching |
+| `SEARCH_LOST_GRACE_S` | Delay before entering search mode |
+| `SEARCH_ROTATE_SLICE_S` | Rotation slice duration |
+| `ENABLE_REALTIME_MONITOR` | OpenCV live camera/range windows |
+| `VISION_USE_YOLO` | Switch HOG → YOLO (`ultralytics`) |
+| `VISION_ENABLE_CLAHE` | Contrast enhancement for far targets |
+| `VISION_ENABLE_TILED_SEARCH` | Tiled multi-scale search |
+| `VISION_FAR_UPSAMPLE` | Upsample pass for small/far person |
+| `VISION_TEMPORAL_HOLD_S` | Hold last detection briefly |
 
-Default backend is OpenCV HOG (portable, no extra package needed).
+### Future Extensibility
 
-Optional YOLO:
-- Install `ultralytics`.
-- Set `VISION_USE_YOLO = True` in the script.
-- Optionally set `VISION_YOLO_MODEL_PATH` to a local model file.
+- Add `spotdog_follow_human_square_room.ipynb` paired via jupytext for parity with `hri_agv`.
+- Integrate learned person detector exported from SimWorld ego-view datasets.
+- Share room-spawn code with `hri_agv` as a single `square_room_env.py` module.
 
-## Useful parameters to tune
+---
 
-- `FOLLOW_DISTANCE_CM`
-- `FOLLOW_DISTANCE_TOL_CM`
-- `ROBOT_HEADING_KP`
-- `ROBOT_MAX_TURN_DEG_PER_STEP`
-- `ROBOT_SPEED_MAX_FWD`
-- `ROBOT_SPEED_MAX_REV`
-- `VISION_HOG_SCALE`
+## 日本語
+
+### 目的
+
+**SpotDog が歩行する Humanoid を追従**（10 m 四方、`hri_agv` と同じ壁配置）。**カメラ検出**で方位、**深度**で約 1 m 追従。ロスト時は **その場旋回**で再捕捉。OpenCV HOG または YOLO、リアルタイム監視ウィンドウ。
+
+### ファイル一覧
+
+| ファイル | 役割 |
+|----------|------|
+| `spotdog_follow_human_square_room.py` | 部屋スポーン、人間/犬制御、ビジョン、CSV、監視 UI |
+| `HISTORY.md` | ビジョン・探索チューニング履歴 |
+
+**ノートブックはありません** — `.py` を直接実行。
+
+### シミュレーションの実行
+
+**エントリ:** `spotdog_follow_human_square_room.py`
+
+1. UE を **Play**。
+2. `conda activate simworld`
+3. `python dev/hri_spotdog_follow/spotdog_follow_human_square_room.py`
+
+ログ: `spotdog_follow_log.csv`。監視ウィンドウは `q` / `ESC` で閉じる。
+
+### 変更可能なパラメータ
+
+英語表と同じ（`FOLLOW_DISTANCE_CM`、`SEARCH_*`、`VISION_*` 等）。
+
+### 今後の拡張性
+
+- jupytext 付き `.ipynb` 追加。
+- SimWorld 自我視点データセット由来の学習検出器。
+- `hri_agv` と部屋スポーンコード共通化。

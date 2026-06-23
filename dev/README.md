@@ -46,7 +46,7 @@ hri_agv ──► hri_spotdog_follow (room layout parity)
 
 - `grid_env_level_nav/scenarios/` groups end-to-end scenarios (`compact_nav`, `site_transport_20m`, `construction_site`). Root-level `run_*.py` files are thin backward-compatible wrappers.
 - `grid_env_hri` is a **shared library**, not a standalone simulation notebook; other projects import it.
-- Legacy duplicate: `grid_env_level_nav/scenarios/construction_site/placement.py` mirrors the root `construction_site_placement.py` but is unused; root module is canonical.
+- `grid_env_level_nav/scenarios/construction_site/placement.py` re-exports root `construction_site_placement.py` (removed ~370-line duplicate).
 
 ---
 
@@ -84,4 +84,4 @@ hri_agv ──► hri_spotdog_follow (room layout parity)
 
 - `grid_env_level_nav/scenarios/` に E2E シナリオを集約。ルートの `run_*.py` は後方互換ラッパ。
 - `grid_env_hri` は **共有ライブラリ**（単体ノートブックシミュレーションではない）。
-- 未使用の重複: `scenarios/construction_site/placement.py` はルート `construction_site_placement.py` のコピー。正本はルート。
+- `scenarios/construction_site/placement.py` はルート `construction_site_placement.py` の再エクスポート（重複コード削除済み）。
