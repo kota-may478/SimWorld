@@ -31,19 +31,19 @@ DEFAULT_PROFILE = NavProfile(name="default")
 
 FAST_PROFILE = NavProfile(
     name="fast",
-    perception_interval_s=6.5,
+    perception_interval_s=5.5,
     l2_replan_cell_delta_threshold=10,
     enable_l1_by_default=True,
     site_max_open_loop_move_cm=250.0,
     moves_per_cycle=4,
-    site_robot_speed=290.0,
+    site_robot_speed=285.0,
     nav_warmup_settle_s=1.0,
     post_motion_settle_s=0.05,
     pre_leg1_settle_s=1.0,
-    depth_stride_px=16,
+    depth_stride_px=12,
     perception_standoff_cm=100.0,
-    standoff_backoff_max_cm=110.0,
-    standoff_backoff_speed=180.0,
+    standoff_backoff_max_cm=80.0,
+    standoff_backoff_speed=120.0,
 )
 
 PROFILES: Dict[str, NavProfile] = {

@@ -22,18 +22,18 @@ import layered_nav as ln  # noqa: E402
 def test_resolve_fast_profile() -> None:
     profile = resolve_profile("fast")
     assert profile.name == "fast"
-    assert profile.perception_interval_s == 6.5
-    assert profile.depth_stride_px == 16
-    assert profile.standoff_backoff_max_cm == 110.0
+    assert profile.perception_interval_s == 5.5
+    assert profile.depth_stride_px == 12
+    assert profile.standoff_backoff_max_cm == 80.0
     assert profile.l2_replan_cell_delta_threshold == 10
 
 
 def test_apply_fast_profile_updates_layered_nav() -> None:
     apply_profile_to_layered_nav(FAST_PROFILE)
     assert ln.MOVES_PER_CYCLE == 4
-    assert ln.SITE_ROBOT_SPEED == 290.0
-    assert ln.STANDOFF_BACKOFF_MAX_CM == 110.0
-    assert ln.STANDOFF_BACKOFF_SPEED == 180.0
+    assert ln.SITE_ROBOT_SPEED == 285.0
+    assert ln.STANDOFF_BACKOFF_MAX_CM == 80.0
+    assert ln.STANDOFF_BACKOFF_SPEED == 120.0
     assert ln.L2_REPLAN_CELL_DELTA_THRESHOLD == 10
     assert ln.PERCEPTION_STANDOFF_CM == 100.0
     apply_profile_to_layered_nav(resolve_profile("default"))
