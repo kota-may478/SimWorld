@@ -11,7 +11,35 @@ from perception_layer import EgocentricPerceptionConfig, apply_l2_obstacle_cells
 from work_region import world_xy_to_cell
 
 WorldXY = Tuple[float, float]
-L2_PROP_RADIUS_CM = 90.0
+L2_PROP_RADIUS_CM = 150.0
+L2_PROP_CLEARANCE_CM = 0.0
+
+# Conservative lethal footprint radius used by sight/fusion L2.  The generated
+# prop catalog does not yet expose measured UE bounds, so keep these values
+# explicit and biased toward not traversing recognized objects.
+L2_PROP_RADIUS_BY_TYPE_CM: Dict[str, float] = {
+    "barrel_01": 90.0,
+    "boxes_03a": 120.0,
+    "brickpalettestack_01a": 150.0,
+    "cablereel": 130.0,
+    "cinderstack_01a": 140.0,
+    "concretebag_01a": 130.0,
+    "constructionpylons_01d": 100.0,
+    "drywall_01a": 160.0,
+    "dumpster": 180.0,
+    "human_worker": 120.0,
+    "lightgenerator_01a": 160.0,
+    "portapotty_01": 150.0,
+    "rebar_01a": 180.0,
+    "roadblock_03b": 120.0,
+    "shipping_crate": 110.0,
+    "watertank_01a": 160.0,
+    "woodenpalette_01": 130.0,
+}
+
+
+def l2_radius_cm_for_prop_type(prop_type_id: str) -> float:
+    return L2_PROP_RADIUS_BY_TYPE_CM.get(prop_type_id, L2_PROP_RADIUS_CM) + L2_PROP_CLEARANCE_CM
 
 
 def estimate_world_xy_from_detection(
@@ -43,6 +71,8 @@ def l2_cells_for_world_disk(
     cells: List[Tuple[int, int]] = []
     for dgy in range(-cell_r, cell_r + 1):
         for dgx in range(-cell_r, cell_r + 1):
+            if math.hypot(dgx * res, dgy * res) > radius_cm + res * 0.5:
+                continue
             gx, gy = gx0 + dgx, gy0 + dgy
             if 0 <= gx < layers.width_cells and 0 <= gy < layers.height_cells:
                 cells.append((gx, gy))
@@ -71,7 +101,8 @@ def apply_l2_from_fusion_detections(
             bearing_deg=float(det.bearing_deg),
             camera_offset_forward_cm=camera_offset_forward_cm,
         )
-        for cell in l2_cells_for_world_disk(layers, (wx, wy)):
+        radius_cm = l2_radius_cm_for_prop_type(str(prop_type))
+        for cell in l2_cells_for_world_disk(layers, (wx, wy), radius_cm=radius_cm):
             if cell in seen:
                 continue
             seen.add(cell)

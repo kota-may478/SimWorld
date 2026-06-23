@@ -25,6 +25,7 @@ from l2_fusion import (  # noqa: E402
     L2_PROP_RADIUS_CM,
     estimate_world_xy_from_detection,
     l2_cells_for_world_disk,
+    l2_radius_cm_for_prop_type,
 )
 from l2_geom import GeomPerceptionConfig, _bearing_deg_robot_frame, _in_fov_cone, _prop_world_xy  # noqa: E402
 from perception_layer import EgocentricPerceptionConfig, apply_l2_obstacle_cells  # noqa: E402
@@ -42,6 +43,15 @@ VBP_SIGHT_COMMANDS = (
 
 HUMAN_PROP_TYPE_ID = "human_worker"
 DYNAMIC_PROP_TYPE_IDS = frozenset({HUMAN_PROP_TYPE_ID, "pedestrian", "robot_agent"})
+DYNAMIC_EVICT_MISS_THRESHOLD = 2
+ROBOT_L2_EXCLUDE_RADIUS_CM = 70.0
+
+# SLAM-like confidence for static prop observations
+CONF_HIT = 1.0           # confidence gain when slot is visible
+CONF_MISS_IN_RANGE = 0.3  # confidence loss when in range but not visible
+CONF_MAX = 5.0
+CONF_EVICT_THRESHOLD = 0.5  # evict slot when confidence drops below this
+LAST_RESORT_DECAY = 0.3     # multiply confidence on soft L2 reset
 
 
 @dataclass(frozen=True)
@@ -65,7 +75,9 @@ class SightMemory:
     """Static props: last seen world XY persists. Dynamic: only while visible."""
 
     static_last_seen_xy: Dict[str, WorldXY] = field(default_factory=dict)
+    static_confidence: Dict[str, float] = field(default_factory=dict)
     last_visible_dynamic: Set[str] = field(default_factory=set)
+    dynamic_miss_counts: Dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -88,6 +100,7 @@ class SightUpdateResult:
     cells_added: int
     cells_removed: int
     visible_actor_names: Tuple[str, ...]
+    visible_slot_ids: Tuple[str, ...]
     backend: str
 
     @property
@@ -402,15 +415,37 @@ def _apply_slot_cells(
     slot_id: str,
     center_xy: WorldXY,
     *,
+    prop_type_id: str,
     config: SightConfig,
     tracker: L2SlotCellTracker,
     l2_seen_cells: Set[GridCell],
+    robot_xy: Optional[WorldXY] = None,
 ) -> Tuple[int, int]:
-    desired = set(l2_cells_for_world_disk(layers, center_xy, radius_cm=config.prop_radius_cm))
+    radius_cm = max(config.prop_radius_cm, l2_radius_cm_for_prop_type(prop_type_id))
+    desired = set(l2_cells_for_world_disk(layers, center_xy, radius_cm=radius_cm))
+    if robot_xy is not None:
+        desired = {
+            cell
+            for cell in desired
+            if dist2d(
+                (
+                    layers.origin_xy[0] + (cell[0] + 0.5) * layers.resolution_cm,
+                    layers.origin_xy[1] + (cell[1] + 0.5) * layers.resolution_cm,
+                ),
+                robot_xy,
+            )
+            > ROBOT_L2_EXCLUDE_RADIUS_CM
+        }
     previous = tracker.cells_for(slot_id)
     to_remove = previous - desired
     to_add = desired - previous
+    other_owned: Set[GridCell] = set()
+    for other_id, other_cells in tracker.slot_to_cells.items():
+        if other_id != slot_id:
+            other_owned.update(other_cells)
     for gx, gy in to_remove:
+        if (gx, gy) in other_owned:
+            continue
         layers.clear_l2_cell(gx, gy)
         l2_seen_cells.discard((gx, gy))
     if to_add:
@@ -433,7 +468,14 @@ def _remove_slot_cells(
     l2_seen_cells: Set[GridCell],
 ) -> int:
     removed = tracker.pop_cells(slot_id)
+    if not removed:
+        return 0
+    other_owned: Set[GridCell] = set()
+    for cells in tracker.slot_to_cells.values():
+        other_owned.update(cells)
     for gx, gy in removed:
+        if (gx, gy) in other_owned:
+            continue
         layers.clear_l2_cell(gx, gy)
         l2_seen_cells.discard((gx, gy))
     return len(removed)
@@ -452,6 +494,7 @@ def update_l2_from_sight(
     l2_seen_cells: Set[GridCell],
     config: Optional[SightConfig] = None,
     extra_dynamic_actors: Optional[Sequence[str]] = None,
+    apply_cells: bool = True,
 ) -> SightUpdateResult:
     cfg = config or SightConfig()
     actor_to_type, _slot_to_type, dynamic_slots = build_actor_maps(
@@ -505,12 +548,25 @@ def update_l2_from_sight(
     cells_removed = 0
     detections: List[ObjectEstimate] = []
 
-    # Dynamic: drop slots that left FOV.
+    # Dynamic: drop slots that left FOV (with grace to avoid replan thrash).
     for slot_id in list(memory.last_visible_dynamic):
-        if slot_id not in visible_now:
-            cells_removed += _remove_slot_cells(
-                layers, slot_id, tracker=tracker, l2_seen_cells=l2_seen_cells
+        if slot_id in visible_now:
+            memory.dynamic_miss_counts.pop(slot_id, None)
+            continue
+        misses = memory.dynamic_miss_counts.get(slot_id, 0) + 1
+        memory.dynamic_miss_counts[slot_id] = misses
+        if misses < DYNAMIC_EVICT_MISS_THRESHOLD:
+            visible_now[slot_id] = VisibleTarget(
+                actor_name=slot_id,
+                prop_type_id=actor_to_type.get(slot_id, HUMAN_PROP_TYPE_ID),
+                slot_id=slot_id,
+                is_dynamic=True,
             )
+            continue
+        memory.dynamic_miss_counts.pop(slot_id, None)
+        cells_removed += _remove_slot_cells(
+            layers, slot_id, tracker=tracker, l2_seen_cells=l2_seen_cells
+        )
     memory.last_visible_dynamic = {
         slot_id
         for slot_id, target in visible_now.items()
@@ -533,14 +589,19 @@ def update_l2_from_sight(
         )
         if center_xy is None:
             continue
-        added, removed = _apply_slot_cells(
-            layers,
-            slot_id,
-            center_xy,
-            config=cfg,
-            tracker=tracker,
-            l2_seen_cells=l2_seen_cells,
-        )
+        added = 0
+        removed = 0
+        if apply_cells:
+            added, removed = _apply_slot_cells(
+                layers,
+                slot_id,
+                center_xy,
+                prop_type_id=target.prop_type_id,
+                config=cfg,
+                tracker=tracker,
+                l2_seen_cells=l2_seen_cells,
+                robot_xy=robot_xy,
+            )
         cells_added += added
         cells_removed += removed
         detections.append(
@@ -554,20 +615,40 @@ def update_l2_from_sight(
             )
         )
 
+    # Confidence: increment for visible static slots.
+    for slot_id, target in visible_now.items():
+        if not target.is_dynamic:
+            memory.static_confidence[slot_id] = min(
+                CONF_MAX, memory.static_confidence.get(slot_id, 0.0) + CONF_HIT
+            )
+
     # Static memory: keep L2 at last seen even when not currently visible.
+    # Also apply miss penalty when within sensor range but not detected.
+    slots_to_evict: List[str] = []
     for slot_id, center_xy in memory.static_last_seen_xy.items():
         if slot_id in visible_now:
             continue
         prop_type = actor_to_type.get(slot_id, "static_prop")
         if is_dynamic_slot(slot_id, dynamic_slots=dynamic_slots, prop_type_id=prop_type):
             continue
+        # Miss penalty: in sensor range but not visible → reduce confidence.
+        if dist2d(robot_xy, center_xy) <= cfg.max_range_cm:
+            conf = memory.static_confidence.get(slot_id, CONF_MAX) - CONF_MISS_IN_RANGE
+            if conf <= 0.0:
+                slots_to_evict.append(slot_id)
+                continue
+            memory.static_confidence[slot_id] = conf
+        if not apply_cells:
+            continue
         added, removed = _apply_slot_cells(
             layers,
             slot_id,
             center_xy,
+            prop_type_id=prop_type,
             config=cfg,
             tracker=tracker,
             l2_seen_cells=l2_seen_cells,
+            robot_xy=robot_xy,
         )
         cells_added += added
         cells_removed += removed
@@ -582,13 +663,70 @@ def update_l2_from_sight(
             )
         )
 
+    # Evict slots whose confidence decayed to zero (object moved or removed).
+    for slot_id in slots_to_evict:
+        memory.static_last_seen_xy.pop(slot_id, None)
+        memory.static_confidence.pop(slot_id, None)
+        cells_removed += _remove_slot_cells(
+            layers, slot_id, tracker=tracker, l2_seen_cells=l2_seen_cells
+        )
+
     return SightUpdateResult(
         detections=detections,
         cells_added=cells_added,
         cells_removed=cells_removed,
         visible_actor_names=tuple(t.actor_name for t in visible_now.values()),
+        visible_slot_ids=tuple(visible_now.keys()),
         backend=backend,
     )
+
+
+LAST_RESORT_EVICT_NEAR_RADIUS_CM = 600.0  # evict any slot within this radius of stuck pos
+
+
+def soft_l2_reset(
+    memory: SightMemory,
+    tracker: L2SlotCellTracker,
+    layers: LayeredCostmap,
+    l2_seen_cells: Set[GridCell],
+    *,
+    decay: float = LAST_RESORT_DECAY,
+    evict_threshold: float = CONF_EVICT_THRESHOLD,
+    stuck_world_xy: Optional[WorldXY] = None,
+    evict_near_radius_cm: float = LAST_RESORT_EVICT_NEAR_RADIUS_CM,
+) -> None:
+    """Decay slot confidences and evict low-confidence or nearby slots from L2.
+
+    - Slots whose confidence decays below evict_threshold are removed.
+    - Slots within evict_near_radius_cm of stuck_world_xy are always removed
+      regardless of confidence (they are physically blocking the escape path).
+    - Distant high-confidence slots (e.g. watertank seen in leg1 when
+      the current stuck pos is far away) are preserved so the planner still
+      avoids them after the LAST RESORT replan.
+    - Unowned L2 cells (stuck-corridor / hotspot marks) are also cleared.
+    """
+    for slot_id, center_xy in list(memory.static_last_seen_xy.items()):
+        conf = memory.static_confidence.get(slot_id, 1.0) * decay
+        near_stuck = (
+            stuck_world_xy is not None
+            and dist2d(stuck_world_xy, center_xy) < evict_near_radius_cm
+        )
+        if conf < evict_threshold or near_stuck:
+            memory.static_last_seen_xy.pop(slot_id, None)
+            memory.static_confidence.pop(slot_id, None)
+            _remove_slot_cells(layers, slot_id, tracker=tracker, l2_seen_cells=l2_seen_cells)
+        else:
+            memory.static_confidence[slot_id] = conf
+
+    # Clear unowned L2 cells (stuck-hotspot/corridor marks written directly).
+    owned: Set[GridCell] = set()
+    for cells in tracker.slot_to_cells.values():
+        owned.update(cells)
+    for gy in range(layers.height_cells):
+        for gx in range(layers.width_cells):
+            if layers.l2[gy, gx] > 0 and (gx, gy) not in owned and layers.l1[gy, gx] == 0:
+                layers.l2[gy, gx] = 0
+                l2_seen_cells.discard((gx, gy))
 
 
 def estimate_local_xy_from_detection(

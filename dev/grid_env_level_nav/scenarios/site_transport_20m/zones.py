@@ -34,6 +34,12 @@ class ForbiddenZone:
     note: str = ""
 
 
+# SW prop cluster: dumpster(400,450) lightgenerator(550,600) cablereel(650,400)
+#   portapotty(350,750) watertank(500,850).  All are physical obstacles that the
+#   robot cannot traverse.  Blocking them in L1 prevents LAST-RESORT replans from
+#   routing through the cluster when L2 is temporarily cleared.
+SW_CLUSTER_RECT_LOCAL_CM: RectLocal = (300.0, 250.0, 800.0, 950.0)
+
 # Inner work pit enclosed by fence/pylon/barrier props in layout_01.
 FORBIDDEN_ZONES_LAYOUT_01: Tuple[ForbiddenZone, ...] = (
     ForbiddenZone(
@@ -42,6 +48,15 @@ FORBIDDEN_ZONES_LAYOUT_01: Tuple[ForbiddenZone, ...] = (
         note=(
             f"Excavation / machinery zone enclosed by "
             f"{ROADBLOCKS_PER_SIDE * 4} {ROADBLOCK_BP_NAME} actors"
+        ),
+    ),
+    ForbiddenZone(
+        zone_id="sw_prop_cluster",
+        rect_local_cm=SW_CLUSTER_RECT_LOCAL_CM,
+        note=(
+            "Physical prop cluster in SW quadrant: dumpster, lightgenerator, "
+            "cablereel, portapotty, watertank.  Keeps LAST-RESORT L0+L1 replans "
+            "from routing through impassable obstacles."
         ),
     ),
 )

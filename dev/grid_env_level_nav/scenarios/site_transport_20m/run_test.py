@@ -11,6 +11,9 @@ import argparse
 import sys
 import time
 from pathlib import Path
+from typing import Optional
+
+import numpy as np
 
 _PKG = Path(__file__).resolve().parents[2]
 if str(_PKG) not in sys.path:
@@ -29,9 +32,12 @@ from carry import (  # noqa: E402
     begin_carry_from_material,
     deliver_carry_at_humanoid,
     pickup_standoff_xy,
+    reset_carry_attach_state,
+    reset_carry_from_previous_mission,
 )
 from grid_env_10k_pie_patrol import dist2d, get_pos2d, get_yaw  # noqa: E402
 from l0_crop import crop_l0_to_local_region  # noqa: E402
+from depth_object_perception import depth_npy_to_meters, fetch_depth_npy  # noqa: E402
 from l2_fusion import estimate_world_xy_from_detection  # noqa: E402
 from l2_geom import GeomPerceptionConfig, geom_detections  # noqa: E402
 from layered_nav import (  # noqa: E402
@@ -44,14 +50,32 @@ from l2_sight import (  # noqa: E402
     SightConfig,
     SightMemory,
     estimate_local_xy_from_detection,
+    soft_l2_reset,
     update_l2_from_sight,
 )
 from metrics import MissionRecorder, save_metrics_json  # noqa: E402
 from paths import L0_MASK_STRICT, SITE_TRANSPORT_20M_RUN_DIR  # noqa: E402
 from pie_safety import PieSessionLost, require_live_ucv, tick_settle  # noqa: E402
+from perception_layer import (  # noqa: E402
+    EgocentricPerceptionConfig,
+    apply_l2_obstacle_cells,
+    close_range_keepout_cells_from_depth,
+    obstacle_cells_from_depth_gated_by_detections,
+    update_l2_from_depth_image,
+)
 from placement import ensure_registry, to_placement_registry  # noqa: E402
 from region import REGION_SIZE_CM  # noqa: E402
-from robot_sensor import SENSOR_CAM_FORWARD_OFFSET_CM, SENSOR_FOV_DEG  # noqa: E402
+from robot_sensor import (  # noqa: E402
+    SENSOR_CAM_FORWARD_OFFSET_CM,
+    SENSOR_CAM_HEIGHT_OFFSET_CM,
+    SENSOR_CAM_PITCH_DEG,
+    SENSOR_FOV_DEG,
+    configure_sensor_camera,
+    fetch_mask_rgb,
+    resolve_sensor_camera_id,
+    restore_editor_viewmode_lit,
+    update_sensor_camera_pose,
+)
 from pie_spawn_safety import ensure_live_or_reconnect  # noqa: E402
 from runtime_sight_sources import ensure_runtime_site20_sight_sources  # noqa: E402
 from spawn_pie import spawn_site_transport_scene  # noqa: E402
@@ -60,6 +84,40 @@ from zones import apply_forbidden_zones_l1  # noqa: E402
 
 DEFAULT_L0 = L0_MASK_STRICT
 ARRIVE_TOLERANCE_CM = 130.0
+DEPTH_CLEARANCE_TRIGGER_CM = 125.0
+DEPTH_KEEP_OUT_RADIUS_CM = 100.0
+_RELEASE_UE = Path(__file__).resolve().parents[2] / "release_ue_connection.py"
+
+
+def _connect_ue_with_retry(*, attempts: int = 4, pause_s: float = 15.0):
+    """Connect to UnrealCV; retry after release when PIE has stale CloseWait."""
+    import subprocess
+
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, attempts + 1):
+        try:
+            if attempt == 1:
+                ue_client_guard.wait_for_unrealcv_banner_ready(timeout_s=30.0)
+            return ue_client_guard.prepare_ue_connection(force_new=True)
+        except ConnectionError as exc:
+            last_exc = exc
+            print(f"[Site20] UE connect attempt {attempt}/{attempts} failed")
+            if attempt >= attempts:
+                break
+            print(
+                "[Site20] release_ue_connection + wait "
+                "(if this repeats: PIE Stop → Play on Level)"
+            )
+            if _RELEASE_UE.is_file():
+                subprocess.run(
+                    [sys.executable, str(_RELEASE_UE)],
+                    check=False,
+                    timeout=120,
+                )
+            time.sleep(pause_s)
+    if last_exc is not None:
+        raise last_exc
+    raise ConnectionError("UnrealCV connect failed")
 
 
 def _parse_args() -> argparse.Namespace:
@@ -129,13 +187,15 @@ def main() -> int:
         return rc
 
     mission_t0 = time.time()
+    reset_carry_attach_state()
     success = False
     metrics: dict = {}
     trace = NavTrace()
     ucv = None
 
     try:
-        ucv, _ = ue_client_guard.prepare_ue_connection(force_new=True)
+        ucv, _ = _connect_ue_with_retry()
+        fresh_spawn = False
         if not args.skip_spawn:
             spawn_rc, ucv = spawn_site_transport_scene(
                 force_rebuild=args.force_rebuild_registry,
@@ -145,6 +205,7 @@ def main() -> int:
             )
             if spawn_rc != 0:
                 return spawn_rc
+            fresh_spawn = True
             registry = ensure_registry()
             tick_settle(ucv, settle_s=5.0, ticks=4)
             ucv = ensure_live_or_reconnect(ucv, reason="post spawn settle")
@@ -159,15 +220,36 @@ def main() -> int:
             print("[Site20] NavQueryService unavailable")
             return 2
 
-        ok_robot, robot_name = lnr.soft_reset_level_spotdog(
-            ucv, start, nav_actor=nav_actor
-        )
-        if not ok_robot:
-            print("[Site20] SpotDog unavailable")
-            return 2
+        robot_name = lnr.find_spotdog_actor(ucv) or geh.ROBOT_ACTOR_NAME
+        reset_carry_from_previous_mission(ucv, registry.carry_actor_name, robot_name=robot_name)
+        if fresh_spawn:
+            if not lnr.ensure_robot_upright_at_start(
+                ucv, robot_name, start, nav_actor=nav_actor
+            ):
+                print("[Site20] SpotDog upright recovery failed")
+                return 2
+            if not lnr.verify_spotdog_at_start(ucv, robot_name, start):
+                ok_robot, robot_name = lnr.prepare_spotdog_mission_start(
+                    ucv, start, nav_actor=nav_actor
+                )
+                if not ok_robot:
+                    print("[Site20] SpotDog unavailable after spawn verify")
+                    return 2
+        else:
+            ok_robot, robot_name = lnr.prepare_spotdog_mission_start(
+                ucv, start, nav_actor=nav_actor
+            )
+            if not ok_robot:
+                print("[Site20] SpotDog unavailable")
+                return 2
+        try:
+            ucv.enable_controller(robot_name, True)
+        except Exception:
+            pass
         if l2_mode == "sight":
             lnr.ensure_spotdog_sight_controller(ucv, robot_name)
-            ensure_runtime_site20_sight_sources(ucv)
+            if not fresh_spawn:
+                ensure_runtime_site20_sight_sources(ucv)
         robot_xy = get_pos2d(ucv, robot_name)
         robot_local = lc.world_xy_to_local(*robot_xy)
         print(
@@ -191,13 +273,109 @@ def main() -> int:
             fov_deg=SENSOR_FOV_DEG,
             max_range_cm=650.0,
             sensor_forward_cm=SENSOR_CAM_FORWARD_OFFSET_CM,
+            prop_radius_cm=80.0,
         )
+        sight_depth_cfg = EgocentricPerceptionConfig(
+            fov_deg=SENSOR_FOV_DEG,
+            max_range_cm=650.0,
+            min_obstacle_height_cm=35.0,
+            stride_px=6,
+            use_lethal=True,
+            camera_offset_forward_cm=SENSOR_CAM_FORWARD_OFFSET_CM,
+            camera_height_cm=SENSOR_CAM_HEIGHT_OFFSET_CM,
+        )
+        sight_depth_cam: dict = {"ready": False, "fusion_id": None}
 
-        def _reset_sight_memory(label: str) -> None:
-            sight_memory.static_last_seen_xy.clear()
+        def _reset_sight_memory(label: str, *, keep_static: bool = False) -> None:
             sight_memory.last_visible_dynamic.clear()
-            sight_tracker.slot_to_cells.clear()
-            print(f"[Site20] L2 sight memory reset ({label})")
+            sight_memory.dynamic_miss_counts.clear()
+            if keep_static:
+                # Between legs: evict only dynamic slots, preserve static map.
+                for slot_id in list(sight_tracker.slot_to_cells.keys()):
+                    if slot_id in (registry.humanoid_actor_name,) or slot_id.startswith("__"):
+                        for gx, gy in sight_tracker.slot_to_cells.pop(slot_id, set()):
+                            layers.l2[gy, gx] = 0
+                print(f"[Site20] L2 sight memory soft-reset ({label}, static map preserved)")
+            else:
+                sight_memory.static_last_seen_xy.clear()
+                sight_memory.static_confidence.clear()
+                for cells in sight_tracker.slot_to_cells.values():
+                    for gx, gy in cells:
+                        layers.l2[gy, gx] = 0
+                sight_tracker.slot_to_cells.clear()
+                print(f"[Site20] L2 sight memory reset ({label})")
+
+        def _soft_reset_l2(l2_seen_cells: set, stuck_world_xy=None) -> None:
+            soft_l2_reset(
+                sight_memory, sight_tracker, layers, l2_seen_cells,
+                stuck_world_xy=stuck_world_xy,
+            )
+
+        def _ensure_sight_depth_camera() -> int:
+            if not sight_depth_cam["ready"]:
+                fusion_id = resolve_sensor_camera_id(ucv)
+                configure_sensor_camera(ucv, fusion_id)
+                sight_depth_cam["fusion_id"] = fusion_id
+                sight_depth_cam["ready"] = True
+                print(f"[Site20] L2 sight depth camera ready fusion={fusion_id}")
+            return int(sight_depth_cam["fusion_id"])
+
+        def _apply_depth_for_ai_sight(detections) -> int:
+            nonlocal ucv
+            fusion_id = _ensure_sight_depth_camera()
+            update_sensor_camera_pose(ucv, robot_name, fusion_id)
+            tick_settle(ucv, settle_s=0.25, ticks=1)
+            depth_raw = fetch_depth_npy(ucv, fusion_id)
+            if depth_raw is None:
+                print("[Site20] L2 sight depth fetch skipped: no depth")
+                return 0
+            depth_m = depth_npy_to_meters(depth_raw)
+            finite_depth = depth_m[np.isfinite(depth_m) & (depth_m > 0.05) & (depth_m < 80.0)]
+            if finite_depth.size:
+                print(
+                    f"[Site20] depth sample: min={float(np.min(finite_depth)):.2f}m "
+                    f"p10={float(np.percentile(finite_depth, 10)):.2f}m "
+                    f"near1m={int(np.sum(finite_depth <= 1.0))}px "
+                    f"near{DEPTH_CLEARANCE_TRIGGER_CM / 100.0:.2f}m="
+                    f"{int(np.sum(finite_depth <= DEPTH_CLEARANCE_TRIGGER_CM / 100.0))}px "
+                    f"visible={len(detections)}"
+                )
+            robot_xy = get_pos2d(ucv, robot_name)
+            robot_yaw = get_yaw(ucv, robot_name)
+            cells = []
+            if detections:
+                cells.extend(
+                    obstacle_cells_from_depth_gated_by_detections(
+                        depth_m,
+                        layers,
+                        robot_xy=robot_xy,
+                        robot_yaw_deg=robot_yaw,
+                        detections=detections,
+                        config=sight_depth_cfg,
+                    )
+                )
+            cells.extend(
+                close_range_keepout_cells_from_depth(
+                    depth_m,
+                    layers,
+                    robot_xy=robot_xy,
+                    robot_yaw_deg=robot_yaw,
+                    config=sight_depth_cfg,
+                    min_clearance_cm=DEPTH_CLEARANCE_TRIGGER_CM,
+                    keepout_radius_cm=DEPTH_KEEP_OUT_RADIUS_CM,
+                    camera_pitch_deg=SENSOR_CAM_PITCH_DEG,
+                )
+            )
+            new_cells = [cell for cell in cells if cell not in sight_tracker.cells_for("__depth__")]
+            if cells or finite_depth.size:
+                print(f"[Site20] depth keepout cells: raw={len(cells)} new={len(new_cells)}")
+            if not new_cells:
+                return 0
+            n = apply_l2_obstacle_cells(layers, new_cells, config=sight_depth_cfg)
+            depth_cells = sight_tracker.cells_for("__depth__")
+            depth_cells.update(new_cells)
+            sight_tracker.set_cells("__depth__", depth_cells)
+            return n
 
         if l2_mode == "sight":
             placement_reg = to_placement_registry(registry)
@@ -220,7 +398,16 @@ def main() -> int:
                     tracker=sight_tracker,
                     l2_seen_cells=l2_seen_cells,
                     config=sight_cfg,
+                    apply_cells=True,
                 )
+                visible_slots = set(result.visible_slot_ids)
+                visible_detections = [
+                    det for det in result.detections if det.slot_id in visible_slots
+                ]
+                n_depth_cells = _apply_depth_for_ai_sight(visible_detections)
+                n_cells_added = result.cells_added + n_depth_cells
+                for cell in sight_tracker.cells_for("__depth__"):
+                    l2_seen_cells.add(cell)
                 for det in result.detections:
                     local_xy = estimate_local_xy_from_detection(
                         get_pos2d(ucv, robot_name),
@@ -233,11 +420,12 @@ def main() -> int:
                     print(
                         f"[Site20] L2 sight ({result.backend}): "
                         f"visible={len(result.visible_actor_names)} "
-                        f"+{result.cells_added}/-{result.cells_removed} cells"
+                        f"+{result.cells_added} ai +{n_depth_cells} depth "
+                        f"/-{result.cells_removed} cells"
                     )
                 return PerceiveOutcome(
                     detections=result.detections,
-                    cells_added=result.cells_added,
+                    cells_added=n_cells_added,
                     cells_removed=result.cells_removed,
                     l2_applied=True,
                 )
@@ -288,22 +476,10 @@ def main() -> int:
         elif l2_mode == "camera":
             from depth_object_perception import (  # noqa: WPS433
                 PerceptionConfig,
-                depth_npy_to_meters,
                 detect_objects,
             )
             from object_mask_color import sync_registry_mask_colors  # noqa: WPS433
-            from perception_layer import (  # noqa: WPS433
-                EgocentricPerceptionConfig,
-                update_l2_from_depth_image,
-            )
             from placement import apply_mask_colors_from_placement  # noqa: WPS433
-            from robot_sensor import (  # noqa: WPS433
-                configure_sensor_camera,
-                fetch_mask_rgb,
-                resolve_sensor_camera_id,
-                restore_editor_viewmode_lit,
-                update_sensor_camera_pose,
-            )
             from simworld.communicator.communicator import Communicator  # noqa: WPS433
 
             placement_reg = to_placement_registry(registry)
@@ -444,7 +620,9 @@ def main() -> int:
             layers,
             approach_local,
             perceive_fn=_perceive,
+            soft_reset_fn=_soft_reset_l2 if l2_mode == "sight" else None,
             robot_name=robot_name,
+            nav_actor=nav_actor,
             tolerance_cm=ARRIVE_TOLERANCE_CM,
             label="to-material",
             perception_interval_s=SITE_DEFAULT_PERCEPTION_INTERVAL_S,
@@ -469,18 +647,28 @@ def main() -> int:
             save_site_transport_artifacts(layers, registry, trace, metrics, output_dir=args.artifact_dir)
             return 4
         print(f"[Site20] carry: {carry_name}")
+        tick_settle(ucv, settle_s=2.0, ticks=3)
+        robot_xy = get_pos2d(ucv, robot_name)
+        print(
+            f"[Site20] leg2 start local={lc.world_xy_to_local(*robot_xy)} "
+            f"goal={human_local}"
+        )
         if l2_mode == "camera" and _reset_l2_perceive_counter is not None:
             _reset_l2_perceive_counter("leg2")
 
-        layers.reset_l2()
         if l2_mode == "sight":
-            _reset_sight_memory("leg2")
+            # Preserve static obstacle map from leg1; only reset dynamic tracking.
+            _reset_sight_memory("leg2", keep_static=True)
+        else:
+            layers.reset_l2()
         leg2_ok = navigate_layered_with_fusion(
             ucv,
             layers,
             human_local,
             perceive_fn=_perceive,
+            soft_reset_fn=_soft_reset_l2 if l2_mode == "sight" else None,
             robot_name=robot_name,
+            nav_actor=nav_actor,
             tolerance_cm=ARRIVE_TOLERANCE_CM,
             label="to-humanoid",
             perception_interval_s=SITE_DEFAULT_PERCEPTION_INTERVAL_S,
@@ -506,8 +694,6 @@ def main() -> int:
 
         if l2_mode == "camera":
             try:
-                from robot_sensor import restore_editor_viewmode_lit  # noqa: WPS433
-
                 restore_editor_viewmode_lit(ucv)
             except (ConnectionError, OSError, ValueError, RuntimeError):
                 pass

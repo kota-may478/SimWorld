@@ -32,6 +32,16 @@
         1270.0
       ],
       "note": "Excavation / machinery zone enclosed by 12 BP_Roadblock_03b actors"
+    },
+    {
+      "zone_id": "sw_prop_cluster",
+      "rect_local_cm": [
+        300.0,
+        250.0,
+        800.0,
+        950.0
+      ],
+      "note": "Physical prop cluster in SW quadrant: dumpster, lightgenerator, cablereel, portapotty, watertank.  Keeps LAST-RESORT L0+L1 replans from routing through impassable obstacles."
     }
   ],
   "props": [

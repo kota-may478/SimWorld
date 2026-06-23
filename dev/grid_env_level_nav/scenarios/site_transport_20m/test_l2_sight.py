@@ -29,6 +29,7 @@ from l2_sight import (  # noqa: E402
     build_actor_maps,
     is_dynamic_slot,
 )
+from perception_layer import L2_LETHAL_COST  # noqa: E402
 from placement import build_registry, to_placement_registry  # noqa: E402
 
 
@@ -59,6 +60,7 @@ class SightMemoryTest(unittest.TestCase):
             layers,
             "site20_prop_000",
             center,
+            prop_type_id="dumpster",
             config=cfg,
             tracker=tracker,
             l2_seen_cells=seen,
@@ -76,6 +78,24 @@ class SightMemoryTest(unittest.TestCase):
         self.assertEqual(n_removed, added)
         self.assertEqual(len(seen), 0)
         self.assertEqual(np.count_nonzero(layers.l2), 0)
+
+    def test_apply_slot_cells_uses_lethal_obstacle_footprint(self) -> None:
+        layers = _tiny_layers()
+        tracker = L2SlotCellTracker()
+        seen: set = set()
+        center = (-900.0, -2100.0)
+        added, _removed = _apply_slot_cells(
+            layers,
+            "site20_prop_000",
+            center,
+            prop_type_id="dumpster",
+            config=SightConfig(prop_radius_cm=60.0),
+            tracker=tracker,
+            l2_seen_cells=seen,
+        )
+
+        self.assertGreaterEqual(added, 80)
+        self.assertTrue(np.all(layers.l2[layers.l2 > 0] == L2_LETHAL_COST))
 
     def test_static_memory_persists_xy(self) -> None:
         memory = SightMemory()
