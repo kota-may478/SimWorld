@@ -64,7 +64,8 @@ from simple_nav import NavigationRunResult, navigate_to_target  # noqa: E402
 from simworld.communicator.communicator import Communicator  # noqa: E402
 
 CACHE_DIR = THIS_DIR / "cache"
-DEFAULT_OUTPUT_DIR = CACHE_DIR / "runs"
+OUT_DIR = THIS_DIR / "out"
+DEFAULT_OUTPUT_DIR = OUT_DIR
 
 
 def _spawn_scene() -> None:

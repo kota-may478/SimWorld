@@ -25,7 +25,7 @@ from path_planning_costmap import (
     plot_costmap_with_paths,
 )
 
-OUT = Path(__file__).resolve().parent / "live_costmap_test_run"
+OUT = Path(__file__).resolve().parent / "out" / "costmap_viz_test"
 OUT.mkdir(parents=True, exist_ok=True)
 
 origin = (100.0, 200.0)

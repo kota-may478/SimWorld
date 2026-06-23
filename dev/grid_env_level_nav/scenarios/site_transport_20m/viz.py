@@ -25,11 +25,11 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
 from costmap_layers import LayeredCostmap  # noqa: E402
-from paths import SITE_TRANSPORT_20M_RUN_DIR  # noqa: E402
+from paths import SITE_TRANSPORT_20M_OUT_DIR  # noqa: E402
 from placement import SiteTransportRegistry  # noqa: E402
 from region import REGION_SIZE_CM  # noqa: E402
 
-DEFAULT_ARTIFACT_DIR = SITE_TRANSPORT_20M_RUN_DIR
+DEFAULT_ARTIFACT_DIR = SITE_TRANSPORT_20M_OUT_DIR
 LocalXY = Tuple[float, float]
 
 

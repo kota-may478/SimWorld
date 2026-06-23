@@ -28,12 +28,12 @@ from bootstrap import setup_paths
 setup_paths(scenario="compact_nav")
 
 from placement import CompactNavRegistry  # noqa: E402
-from paths import COMPACT_NAV_RUN_DIR  # noqa: E402
+from paths import COMPACT_NAV_OUT_DIR  # noqa: E402
 from region import REGION_SIZE_CM  # noqa: E402
 from costmap_layers import LayeredCostmap  # noqa: E402
 
 THIS_DIR = Path(__file__).resolve().parent
-DEFAULT_ARTIFACT_DIR = COMPACT_NAV_RUN_DIR
+DEFAULT_ARTIFACT_DIR = COMPACT_NAV_OUT_DIR
 
 LocalXY = Tuple[float, float]
 

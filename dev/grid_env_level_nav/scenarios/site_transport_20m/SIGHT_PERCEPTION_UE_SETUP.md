@@ -753,7 +753,7 @@ PYTHONUNBUFFERED=1 ~/miniforge3/envs/simworld/bin/python \
 | `[Site20] PASS` | leg1+leg2 完了 |
 
 4. **あなた**は 成果物を **確認**する（任意）:  
-   `dev/grid_env_level_nav/cache/runs/site_transport_20m/latest_*`
+   `dev/grid_env_level_nav/scenarios/site_transport_20m/out/latest_*`
 
 ---
 

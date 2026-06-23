@@ -36,7 +36,7 @@ from grid_env_10k_pie_patrol import get_pos2d, get_yaw  # noqa: E402
 from l0_crop import crop_l0_to_local_region  # noqa: E402
 from l2_fusion import estimate_world_xy_from_detection  # noqa: E402
 from layered_nav import navigate_layered_with_fusion  # noqa: E402
-from paths import COMPACT_NAV_RUN_DIR, L0_MASK_STRICT  # noqa: E402
+from paths import L0_MASK_STRICT  # noqa: E402
 from pie_safety import PieSessionLost, require_live_ucv, tick_settle  # noqa: E402
 from placement import ensure_registry, to_placement_registry  # noqa: E402
 from region import REGION_SIZE_CM  # noqa: E402

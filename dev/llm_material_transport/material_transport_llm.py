@@ -89,9 +89,10 @@ def _find_project_root() -> Path:
 
 _root = _find_project_root()
 sys.path.append(str(_root))
-_output_dir = Path(__file__).resolve().parent if "__file__" in globals() else (_root / "dev" / "llm_material_transport")
-if str(_output_dir) not in sys.path:
-    sys.path.insert(0, str(_output_dir))
+_pkg_dir = Path(__file__).resolve().parent if "__file__" in globals() else (_root / "dev" / "llm_material_transport")
+if str(_pkg_dir) not in sys.path:
+    sys.path.insert(0, str(_pkg_dir))
+_artifact_dir = _pkg_dir / "out"
 
 from dotenv import load_dotenv
 from path_planning_costmap import (
@@ -1387,7 +1388,7 @@ def start_live_costmap_visualization() -> None:
     if not LIVE_COSTMAP_ENABLE:
         return
     costmap = ensure_transport_costmap()
-    output_dir = _output_dir / "live_costmap"
+    output_dir = _artifact_dir / "live_costmap"
     _live_costmap_viz = LiveCostmapVisualizer(
         costmap=costmap,
         output_dir=output_dir,
@@ -1590,7 +1591,7 @@ def ensure_transport_costmap(
                 camera_xy=scan_camera_xy,
                 exclude_actor_xy=excluded,
                 alignment_actors=align_actors,
-                save_debug_dir=_output_dir,
+                save_debug_dir=_artifact_dir,
             )
             print(
                 "[Costmap] Obstacle scan "
@@ -2032,7 +2033,7 @@ def execute_transport_task(
     time.sleep(1.0)
 
     if UE_PRE_NAV_SCREENSHOT_ENABLE:
-        save_ue_game_camera_png(_output_dir / UE_PRE_NAV_SCREENSHOT_FILENAME)
+        save_ue_game_camera_png(_artifact_dir / UE_PRE_NAV_SCREENSHOT_FILENAME)
 
     # --- Phase 1: マテリアル置き場へ移動 ---
     state = RobotState.NAVIGATING_TO_MATERIAL
@@ -2296,7 +2297,7 @@ else:
     ax.set_title("Robot–Material Distance over Time")
 
     plt.tight_layout()
-    output_path = _output_dir / "result.png"
+    output_path = _artifact_dir / "result.png"
     plt.savefig(output_path, dpi=150)
     if _matplotlib_show_enabled():
         plt.show()
@@ -2313,7 +2314,7 @@ if _transport_costmap is not None and _path_plan_history:
         )
         + f"\n  TOTAL: {total_planned_cost:.2f}"
     )
-    costmap_fig_path = _output_dir / "costmap_path.png"
+    costmap_fig_path = _artifact_dir / "costmap_path.png"
     plot_costmap_with_paths(
         _transport_costmap,
         _path_plan_history,

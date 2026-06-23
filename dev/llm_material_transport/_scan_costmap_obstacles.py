@@ -17,18 +17,22 @@ from costmap_obstacle_scan import enrich_costmap_with_obstacles
 
 from simworld.communicator.unrealcv import UnrealCV
 
+OUT_DIR = Path(__file__).resolve().parent / "out"
+
 
 def main() -> int:
     origin = (1425.755, -1711.4)
     ground_z = 3873.0
     ucv = UnrealCV(port=9000, ip="172.20.224.1")
     costmap = build_uniform_costmap(origin_xy=origin)
-    result = enrich_costmap_with_obstacles(ucv, costmap, ground_z_cm=ground_z)
+    result = enrich_costmap_with_obstacles(
+        ucv, costmap, ground_z_cm=ground_z, save_debug_dir=OUT_DIR
+    )
     print(result)
   # re-scan mask for pillar list (lightweight re-run not stored; print high-cost cells count)
     high = int((costmap.costs > 10).sum())
     print(f"high_cost_cells={high}")
-    print(f"debug PNG: {Path(__file__).resolve().parent / 'costmap_obstacles.png'}")
+    print(f"debug PNG: {OUT_DIR / 'costmap_obstacles.png'}")
     ucv.disconnect()
     return 0
 

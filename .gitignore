@@ -455,7 +455,8 @@ output*/
 # **/.ipynb_checkpoints/
 # *.ipynb
 
-# SimWorld dev: ephemeral cache (registries / mask npz in cache/ stay tracked)
+# SimWorld dev: ephemeral run artifacts (registries / mask npz in cache/ stay tracked)
+dev/**/out/
 dev/**/cache/runs/
 dev/**/cache/debug_*.png
 

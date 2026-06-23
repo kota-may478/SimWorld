@@ -54,7 +54,7 @@ from l2_sight import (  # noqa: E402
     update_l2_from_sight,
 )
 from metrics import MissionRecorder, save_metrics_json  # noqa: E402
-from paths import L0_MASK_STRICT, SITE_TRANSPORT_20M_RUN_DIR  # noqa: E402
+from paths import L0_MASK_STRICT  # noqa: E402
 from pie_safety import PieSessionLost, require_live_ucv, tick_settle  # noqa: E402
 from perception_layer import (  # noqa: E402
     EgocentricPerceptionConfig,

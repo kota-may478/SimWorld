@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Canonical cache and artifact paths for grid_env_level_nav."""
+"""Canonical cache, registry, and run-artifact paths for grid_env_level_nav."""
 
 from __future__ import annotations
 
@@ -9,10 +9,10 @@ PKG_DIR = Path(__file__).resolve().parent
 CACHE_DIR = PKG_DIR / "cache"
 L0_CACHE_DIR = CACHE_DIR / "l0"
 REGISTRY_DIR = CACHE_DIR / "registries"
-RUNS_DIR = CACHE_DIR / "runs"
-COMPACT_NAV_RUN_DIR = RUNS_DIR / "compact_nav"
-CONSTRUCTION_SITE_RUN_DIR = RUNS_DIR / "construction_site"
-SITE_TRANSPORT_20M_RUN_DIR = RUNS_DIR / "site_transport_20m"
+SCENARIOS_DIR = PKG_DIR / "scenarios"
+COMPACT_NAV_OUT_DIR = SCENARIOS_DIR / "compact_nav" / "out"
+CONSTRUCTION_SITE_OUT_DIR = SCENARIOS_DIR / "construction_site" / "out"
+SITE_TRANSPORT_20M_OUT_DIR = SCENARIOS_DIR / "site_transport_20m" / "out"
 
 L0_MASK_STRICT = L0_CACHE_DIR / "l0_mask_30cm_strict.npz"
 L0_MASK_DEFAULT = L0_CACHE_DIR / "l0_mask_30cm.npz"
@@ -31,3 +31,7 @@ ZONE_REGISTRY_100CM = REGISTRY_DIR / "zone_registry_100cm.json"
 LEGACY_L0_MASK_STRICT = CACHE_DIR / "l0_mask_30cm_strict.npz"
 LEGACY_COMPACT_NAV_REGISTRY = CACHE_DIR / "compact_nav_placement_registry.json"
 LEGACY_COMPACT_NAV_RUN = CACHE_DIR / "compact_nav_run"
+LEGACY_RUNS_DIR = CACHE_DIR / "runs"
+LEGACY_COMPACT_NAV_RUN_DIR = LEGACY_RUNS_DIR / "compact_nav"
+LEGACY_CONSTRUCTION_SITE_RUN_DIR = LEGACY_RUNS_DIR / "construction_site"
+LEGACY_SITE_TRANSPORT_20M_RUN_DIR = LEGACY_RUNS_DIR / "site_transport_20m"

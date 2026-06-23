@@ -22,7 +22,7 @@ from bootstrap import setup_paths
 setup_paths(scenario="compact_nav")
 
 from costmap_layers import LayeredCostmap  # noqa: E402
-from paths import COMPACT_NAV_RUN_DIR  # noqa: E402
+from paths import COMPACT_NAV_OUT_DIR  # noqa: E402
 from placement import ensure_registry  # noqa: E402
 from viz import NavTrace, save_compact_nav_artifacts  # noqa: E402
 
@@ -31,7 +31,7 @@ def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--npz", type=Path, required=True)
     p.add_argument("--trajectory", type=Path, required=True)
-    p.add_argument("--output-dir", type=Path, default=COMPACT_NAV_RUN_DIR)
+    p.add_argument("--output-dir", type=Path, default=COMPACT_NAV_OUT_DIR)
     return p.parse_args()
 
 
