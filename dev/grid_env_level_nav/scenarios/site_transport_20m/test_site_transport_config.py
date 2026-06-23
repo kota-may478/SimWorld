@@ -31,8 +31,10 @@ def test_apply_fast_profile_updates_layered_nav() -> None:
     assert ln.MOVES_PER_CYCLE == 4
     assert ln.SITE_ROBOT_SPEED == 275.0
     assert ln.L2_REPLAN_CELL_DELTA_THRESHOLD == 5
+    assert ln.PERCEPTION_STANDOFF_CM == 100.0
     apply_profile_to_layered_nav(resolve_profile("default"))
     assert ln.MOVES_PER_CYCLE == 2
+    assert ln.PERCEPTION_STANDOFF_CM == 50.0
 
 
 def test_build_timing_summary() -> None:

@@ -118,6 +118,10 @@ SITE_PLANNING_CLEARANCE_CM = 40.0
 SITE_PLANNING_CLEARANCE_COST = 300.0
 ROBOT_L2_SELF_EXCLUDE_RADIUS_CM = 70.0
 
+PERCEPTION_STANDOFF_CM = 0.0
+STANDOFF_BACKOFF_SPEED = 120.0
+STANDOFF_BACKOFF_MAX_CM = 80.0
+
 
 def _l2_cell_delta_warrants_replan(cells_added: int, cells_removed: int = 0) -> bool:
     """Replan on L2 updates only when cell delta exceeds threshold (path-block uses separate replan)."""
@@ -494,6 +498,92 @@ def _unstuck_backup(ucv: UnrealCV, robot_name: str, backup_cm: float = UNSTUCK_B
     duration_s = max(0.25, backup_cm / UNSTUCK_BACK_SPEED)
     _site_dog_move(ucv, robot_name, -UNSTUCK_BACK_SPEED, duration_s, direction=0)
 
+
+
+def _standoff_backoff_move(
+    ucv: UnrealCV,
+    robot_name: str,
+    robot_xy: WorldXY,
+    obstacle_xy: WorldXY,
+    backoff_cm: float,
+) -> WorldXY:
+    """Turn away from obstacle and move to restore standoff distance."""
+    from perception_standoff import away_bearing_deg  # noqa: WPS433
+
+    move_cm = min(STANDOFF_BACKOFF_MAX_CM, max(20.0, backoff_cm))
+    away_deg = away_bearing_deg(robot_xy, obstacle_xy)
+    try:
+        robot_yaw = get_yaw(ucv, robot_name)
+    except (ConnectionError, OSError, ValueError, RuntimeError):
+        robot_yaw = away_deg
+    turn_delta = _normalize_angle(away_deg - robot_yaw)
+    if abs(turn_delta) > SITE_ROTATE_THR_DEG:
+        clockwise = 1 if turn_delta > 0 else 0
+        _dog_rotate_chunked(ucv, robot_name, abs(turn_delta), clockwise)
+    duration_s = max(0.25, move_cm / STANDOFF_BACKOFF_SPEED)
+    _site_dog_move(ucv, robot_name, STANDOFF_BACKOFF_SPEED, duration_s, direction=0)
+    new_xy, _ = _safe_get_pos2d(ucv, robot_name)
+    return new_xy
+
+
+def _gate_perception_standoff(
+    ucv: UnrealCV,
+    robot_name: str,
+    pos_xy: WorldXY,
+    layers: LayeredCostmap,
+    *,
+    registry_positions: Sequence[WorldXY],
+    carry_motion_cb: Optional[CarrySyncFn],
+    nav_timing: Optional[NavTimingAccumulator],
+) -> Tuple[bool, WorldXY]:
+    """Backoff when too close to obstacles; return whether to run perceive."""
+    from perception_standoff import check_perception_standoff  # noqa: WPS433
+
+    if PERCEPTION_STANDOFF_CM <= 0.0:
+        return True, pos_xy
+
+    standoff = check_perception_standoff(
+        pos_xy,
+        layers,
+        registry_positions=registry_positions,
+        standoff_cm=PERCEPTION_STANDOFF_CM,
+    )
+    if not standoff.needs_backoff(PERCEPTION_STANDOFF_CM):
+        return True, pos_xy
+
+    backoff_cm = standoff.backoff_cm(PERCEPTION_STANDOFF_CM)
+    print(
+        f"  [SiteNav] standoff: {standoff.nearest_dist_cm:.0f}cm "
+        f"< {PERCEPTION_STANDOFF_CM:.0f}cm ({standoff.source}) "
+        f"→ backoff {backoff_cm:.0f}cm before perceive"
+    )
+    standoff_t0 = time.perf_counter()
+    pos_xy = _standoff_backoff_move(
+        ucv,
+        robot_name,
+        pos_xy,
+        standoff.obstacle_xy,  # type: ignore[arg-type]
+        backoff_cm,
+    )
+    if carry_motion_cb is not None:
+        carry_motion_cb()
+    if nav_timing is not None:
+        nav_timing.standoff_ms += (time.perf_counter() - standoff_t0) * 1000.0
+        nav_timing.standoff_events += 1
+
+    recheck = check_perception_standoff(
+        pos_xy,
+        layers,
+        registry_positions=registry_positions,
+        standoff_cm=PERCEPTION_STANDOFF_CM,
+    )
+    if recheck.needs_backoff(PERCEPTION_STANDOFF_CM):
+        print(
+            f"  [SiteNav] standoff: still {recheck.nearest_dist_cm:.0f}cm after backoff; "
+            f"defer perceive"
+        )
+        return False, pos_xy
+    return True, pos_xy
 
 def _normalize_angle(deg: float) -> float:
     while deg > 180.0:
@@ -886,6 +976,7 @@ def navigate_layered_with_fusion(
     carry_sync_name: Optional[str] = None,
     on_pose_sample: Optional[PoseSampleFn] = None,
     nav_timing: Optional[NavTimingAccumulator] = None,
+    extra_obstacle_positions_fn: Optional[Callable[[], Sequence[WorldXY]]] = None,
 ) -> bool:
     require_live_ucv(ucv, context="site transport fusion nav")
     goal_xy = local_xy_to_world(*goal_local_xy)
@@ -943,6 +1034,148 @@ def navigate_layered_with_fusion(
     if use_carry_sync:
         _sync_carry()
 
+    def _run_perceive_cycle(now: float) -> None:
+        nonlocal pos_xy, waypoints, wp_index, last_perception_t
+        perceive_t0 = time.perf_counter()
+        l2_count_before = _l2_occupied_count(layers)
+        l2_snapshot = layers.l2.copy()
+        l2_seen_snapshot = set(l2_seen_cells)
+        try:
+            outcome = _invoke_perceive(
+                perceive_fn, layers=layers, l2_seen_cells=l2_seen_cells
+            )
+        except Exception as exc:
+            print(f"  [SiteNav] perceive error: {exc}")
+            outcome = PerceiveOutcome(detections=[], l2_applied=False)
+        detections = outcome.detections
+        l2_count_after = _l2_occupied_count(layers)
+        if outcome.l2_applied:
+            if outcome.l2_changed and _l2_cell_delta_warrants_replan(
+                outcome.cells_added, outcome.cells_removed
+            ):
+                summary = detections_summary(detections) if detections else {}
+                new_wps = _timed_replan_on_merged_layers(
+                    layers,
+                    pos_xy,
+                    goal_xy,
+                    reason="l2_depth",
+                    trace=trace,
+                    l2_seen_cells=l2_seen_cells,
+                    nav_timing=nav_timing,
+                )
+                if new_wps is not None:
+                    waypoints = new_wps
+                    wp_index = _nearest_waypoint_index_ahead(pos_xy, waypoints, wp_index)
+                    print(
+                        f"  [SiteNav] L2 sight +{outcome.cells_added}/-{outcome.cells_removed} "
+                        f"cells detect={list(summary.keys())} "
+                        f"→ replan {len(waypoints)} WP (merged L0+L1+L2)"
+                    )
+                else:
+                    layers.l2[:, :] = l2_snapshot
+                    l2_seen_cells.clear()
+                    l2_seen_cells.update(l2_seen_snapshot)
+                    print(
+                        f"  [SiteNav] L2 sight +{outcome.cells_added}/-{outcome.cells_removed} "
+                        f"cells → replan failed; rolled back latest L2 update"
+                    )
+            elif outcome.l2_changed:
+                print(
+                    f"  [SiteNav] L2 sight delta +{outcome.cells_added}/-{outcome.cells_removed} "
+                    f"below replan threshold ({L2_REPLAN_CELL_DELTA_THRESHOLD}); skip replan"
+                )
+            else:
+                print(
+                    f"  [SiteNav] L2 sight: no map change "
+                    f"(active={len(detections)}, l2_cells={len(l2_seen_cells)})"
+                )
+        elif detections:
+            try:
+                robot_yaw_deg = get_yaw(ucv, robot_name)
+            except (ConnectionError, OSError, ValueError, RuntimeError) as exc:
+                print(f"  [SiteNav] L2 apply skipped (get_yaw): {exc}")
+                detections = []
+            if detections:
+                n_cells = apply_l2_from_fusion_detections(
+                    layers,
+                    detections,
+                    robot_xy=pos_xy,
+                    robot_yaw_deg=robot_yaw_deg,
+                    known_cells=l2_seen_cells,
+                )
+                summary = detections_summary(detections)
+                if n_cells > 0 and _l2_cell_delta_warrants_replan(n_cells):
+                    new_wps = _timed_replan_on_merged_layers(
+                        layers,
+                        pos_xy,
+                        goal_xy,
+                        reason="l2_perception",
+                        trace=trace,
+                        l2_seen_cells=l2_seen_cells,
+                        nav_timing=nav_timing,
+                    )
+                    if new_wps is not None:
+                        waypoints = new_wps
+                        wp_index = _nearest_waypoint_index_ahead(pos_xy, waypoints, wp_index)
+                        print(
+                            f"  [SiteNav] L2 +{n_cells} cells detect={list(summary.keys())} "
+                            f"→ replan {len(waypoints)} WP (merged L0+L1+L2)"
+                        )
+                    else:
+                        print(
+                            f"  [SiteNav] L2 +{n_cells} cells detect={list(summary.keys())} "
+                            f"→ replan failed (merged map)"
+                        )
+                elif n_cells > 0:
+                    print(
+                        f"  [SiteNav] L2 +{n_cells} cells below replan threshold "
+                        f"({L2_REPLAN_CELL_DELTA_THRESHOLD}); skip replan"
+                    )
+                else:
+                    print(
+                        f"  [SiteNav] L2 detect={list(summary.keys())} "
+                        f"(no new cells, l2_cells={len(l2_seen_cells)})"
+                    )
+        elif l2_count_after > l2_count_before:
+            depth_delta = l2_count_after - l2_count_before
+            _sync_seen_cells_from_l2(layers, l2_seen_cells)
+            if _l2_cell_delta_warrants_replan(depth_delta):
+                new_wps = _timed_replan_on_merged_layers(
+                    layers,
+                    pos_xy,
+                    goal_xy,
+                    reason="l2_depth",
+                    trace=trace,
+                    l2_seen_cells=l2_seen_cells,
+                    nav_timing=nav_timing,
+                )
+                if new_wps is not None:
+                    waypoints = new_wps
+                    wp_index = _nearest_waypoint_index_ahead(pos_xy, waypoints, wp_index)
+                    print(
+                        f"  [SiteNav] L2 depth +{depth_delta} cells "
+                        f"→ replan {len(waypoints)} WP (merged L0+L1+L2)"
+                    )
+                else:
+                    layers.l2[:, :] = l2_snapshot
+                    l2_seen_cells.clear()
+                    l2_seen_cells.update(l2_seen_snapshot)
+                    print(
+                        f"  [SiteNav] L2 depth +{depth_delta} cells "
+                        f"→ replan failed; rolled back latest L2 update"
+                    )
+            else:
+                print(
+                    f"  [SiteNav] L2 depth +{depth_delta} cells below replan threshold "
+                    f"({L2_REPLAN_CELL_DELTA_THRESHOLD}); skip replan"
+                )
+        else:
+            print(f"  [SiteNav] L2 perceive: 0 detections (l2_cells={len(l2_seen_cells)})")
+        if nav_timing is not None:
+            nav_timing.perceive_ms += (time.perf_counter() - perceive_t0) * 1000.0
+        last_perception_t = now
+
+
     while total_steps < max_total_steps:
         require_live_ucv(ucv, context=f"site nav step {total_steps}")
         pos_xy, ucv = _safe_get_pos2d(ucv, robot_name)
@@ -997,145 +1230,30 @@ def navigate_layered_with_fusion(
             and now - nav_t0 >= PERCEPTION_START_DELAY_S
             and _l2_perceive_pause_steps <= 0
         ):
-            perceive_t0 = time.perf_counter()
-            l2_count_before = _l2_occupied_count(layers)
-            l2_snapshot = layers.l2.copy()
-            l2_seen_snapshot = set(l2_seen_cells)
-            try:
-                outcome = _invoke_perceive(
-                    perceive_fn, layers=layers, l2_seen_cells=l2_seen_cells
-                )
-            except Exception as exc:
-                print(f"  [SiteNav] perceive error: {exc}")
-                outcome = PerceiveOutcome(detections=[], l2_applied=False)
-            detections = outcome.detections
-            l2_count_after = _l2_occupied_count(layers)
-            if outcome.l2_applied:
-                if outcome.l2_changed and _l2_cell_delta_warrants_replan(
-                    outcome.cells_added, outcome.cells_removed
-                ):
-                    summary = detections_summary(detections) if detections else {}
-                    new_wps = _timed_replan_on_merged_layers(
-                        layers,
-                        pos_xy,
-                        goal_xy,
-                        reason="l2_depth",
-                        trace=trace,
-                        l2_seen_cells=l2_seen_cells,
-                        nav_timing=nav_timing,
-                    )
-                    if new_wps is not None:
-                        waypoints = new_wps
-                        wp_index = _nearest_waypoint_index_ahead(pos_xy, waypoints, wp_index)
-                        print(
-                            f"  [SiteNav] L2 sight +{outcome.cells_added}/-{outcome.cells_removed} "
-                            f"cells detect={list(summary.keys())} "
-                            f"→ replan {len(waypoints)} WP (merged L0+L1+L2)"
-                        )
-                    else:
-                        layers.l2[:, :] = l2_snapshot
-                        l2_seen_cells.clear()
-                        l2_seen_cells.update(l2_seen_snapshot)
-                        print(
-                            f"  [SiteNav] L2 sight +{outcome.cells_added}/-{outcome.cells_removed} "
-                            f"cells → replan failed; rolled back latest L2 update"
-                        )
-                elif outcome.l2_changed:
-                    print(
-                        f"  [SiteNav] L2 sight delta +{outcome.cells_added}/-{outcome.cells_removed} "
-                        f"below replan threshold ({L2_REPLAN_CELL_DELTA_THRESHOLD}); skip replan"
-                    )
-                else:
-                    print(
-                        f"  [SiteNav] L2 sight: no map change "
-                        f"(active={len(detections)}, l2_cells={len(l2_seen_cells)})"
-                    )
-            elif detections:
-                try:
-                    robot_yaw_deg = get_yaw(ucv, robot_name)
-                except (ConnectionError, OSError, ValueError, RuntimeError) as exc:
-                    print(f"  [SiteNav] L2 apply skipped (get_yaw): {exc}")
-                    detections = []
-                if detections:
-                    n_cells = apply_l2_from_fusion_detections(
-                        layers,
-                        detections,
-                        robot_xy=pos_xy,
-                        robot_yaw_deg=robot_yaw_deg,
-                        known_cells=l2_seen_cells,
-                    )
-                    summary = detections_summary(detections)
-                    if n_cells > 0 and _l2_cell_delta_warrants_replan(n_cells):
-                        new_wps = _timed_replan_on_merged_layers(
-                            layers,
-                            pos_xy,
-                            goal_xy,
-                            reason="l2_perception",
-                            trace=trace,
-                            l2_seen_cells=l2_seen_cells,
-                            nav_timing=nav_timing,
-                        )
-                        if new_wps is not None:
-                            waypoints = new_wps
-                            wp_index = _nearest_waypoint_index_ahead(pos_xy, waypoints, wp_index)
-                            print(
-                                f"  [SiteNav] L2 +{n_cells} cells detect={list(summary.keys())} "
-                                f"→ replan {len(waypoints)} WP (merged L0+L1+L2)"
-                            )
-                        else:
-                            print(
-                                f"  [SiteNav] L2 +{n_cells} cells detect={list(summary.keys())} "
-                                f"→ replan failed (merged map)"
-                            )
-                    elif n_cells > 0:
-                        print(
-                            f"  [SiteNav] L2 +{n_cells} cells below replan threshold "
-                            f"({L2_REPLAN_CELL_DELTA_THRESHOLD}); skip replan"
-                        )
-                    else:
-                        print(
-                            f"  [SiteNav] L2 detect={list(summary.keys())} "
-                            f"(no new cells, l2_cells={len(l2_seen_cells)})"
-                        )
-            elif l2_count_after > l2_count_before:
-                depth_delta = l2_count_after - l2_count_before
-                _sync_seen_cells_from_l2(layers, l2_seen_cells)
-                if _l2_cell_delta_warrants_replan(depth_delta):
-                    new_wps = _timed_replan_on_merged_layers(
-                        layers,
-                        pos_xy,
-                        goal_xy,
-                        reason="l2_depth",
-                        trace=trace,
-                        l2_seen_cells=l2_seen_cells,
-                        nav_timing=nav_timing,
-                    )
-                    if new_wps is not None:
-                        waypoints = new_wps
-                        wp_index = _nearest_waypoint_index_ahead(pos_xy, waypoints, wp_index)
-                        print(
-                            f"  [SiteNav] L2 depth +{depth_delta} cells "
-                            f"→ replan {len(waypoints)} WP (merged L0+L1+L2)"
-                        )
-                    else:
-                        layers.l2[:, :] = l2_snapshot
-                        l2_seen_cells.clear()
-                        l2_seen_cells.update(l2_seen_snapshot)
-                        print(
-                            f"  [SiteNav] L2 depth +{depth_delta} cells "
-                            f"→ replan failed; rolled back latest L2 update"
-                        )
-                else:
-                    print(
-                        f"  [SiteNav] L2 depth +{depth_delta} cells below replan threshold "
-                        f"({L2_REPLAN_CELL_DELTA_THRESHOLD}); skip replan"
-                    )
+            registry_positions: Sequence[WorldXY] = ()
+            if extra_obstacle_positions_fn is not None:
+                registry_positions = extra_obstacle_positions_fn()
+            run_perceive, pos_xy = _gate_perception_standoff(
+                ucv,
+                robot_name,
+                pos_xy,
+                layers,
+                registry_positions=registry_positions,
+                carry_motion_cb=carry_motion_cb,
+                nav_timing=nav_timing,
+            )
+            if not run_perceive:
+                last_perception_t = now
             else:
-                print(f"  [SiteNav] L2 perceive: 0 detections (l2_cells={len(l2_seen_cells)})")
-            if nav_timing is not None:
-                nav_timing.perceive_ms += (time.perf_counter() - perceive_t0) * 1000.0
-            last_perception_t = now
-
+                if PERCEPTION_STANDOFF_CM > 0.0:
+                    last_motion_t = time.time()
+                    _nav_settle(
+                        ucv,
+                        settle_s=POST_MOTION_SETTLE_S,
+                        ticks=1,
+                        nav_timing=nav_timing,
+                    )
+                _run_perceive_cycle(now)
         for _ in range(MOVES_PER_CYCLE):
             if total_steps >= max_total_steps:
                 break
@@ -1424,8 +1542,8 @@ def navigate_to_slot(
     trace: Optional[NavTrace] = None,
     on_pose_sample: Optional[PoseSampleFn] = None,
     nav_timing: Optional[NavTimingAccumulator] = None,
+    extra_obstacle_positions_fn: Optional[Callable[[], Sequence[WorldXY]]] = None,
 ) -> bool:
-    """Navigate to semantic slot via ObjectRegistry goal + optional standoff."""
     from carry import pickup_standoff_xy  # noqa: WPS433
 
     goal_xy = object_registry.goal_xy(slot_id) if hasattr(object_registry, "goal_xy") else None
@@ -1458,6 +1576,7 @@ def navigate_to_slot(
         trace=trace,
         on_pose_sample=on_pose_sample,
         nav_timing=nav_timing,
+        extra_obstacle_positions_fn=extra_obstacle_positions_fn,
     )
 
 
@@ -1480,6 +1599,7 @@ def deliver_to(
     carry_sync_name: Optional[str] = None,
     on_pose_sample: Optional[PoseSampleFn] = None,
     nav_timing: Optional[NavTimingAccumulator] = None,
+    extra_obstacle_positions_fn: Optional[Callable[[], Sequence[WorldXY]]] = None,
 ) -> bool:
     """Navigate directly to semantic slot goal (e.g. humanoid delivery point)."""
     goal_local = object_registry.goal_local(slot_id) if hasattr(object_registry, "goal_local") else None
@@ -1506,4 +1626,5 @@ def deliver_to(
         carry_sync_name=carry_sync_name,
         on_pose_sample=on_pose_sample,
         nav_timing=nav_timing,
+        extra_obstacle_positions_fn=extra_obstacle_positions_fn,
     )

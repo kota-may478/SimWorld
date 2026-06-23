@@ -22,6 +22,7 @@ class NavProfile:
     post_motion_settle_s: float = 0.15
     pre_leg1_settle_s: float = 6.0
     depth_stride_px: int = 6
+    perception_standoff_cm: float = 50.0
 
 
 DEFAULT_PROFILE = NavProfile(name="default")
@@ -38,6 +39,7 @@ FAST_PROFILE = NavProfile(
     post_motion_settle_s=0.05,
     pre_leg1_settle_s=1.0,
     depth_stride_px=12,
+    perception_standoff_cm=100.0,
 )
 
 PROFILES: Dict[str, NavProfile] = {
@@ -45,6 +47,8 @@ PROFILES: Dict[str, NavProfile] = {
     "careful": DEFAULT_PROFILE,
     "fast": FAST_PROFILE,
 }
+
+PERCEPTION_STANDOFF_CM = FAST_PROFILE.perception_standoff_cm
 
 
 def resolve_profile(name: str) -> NavProfile:
@@ -66,3 +70,4 @@ def apply_profile_to_layered_nav(profile: NavProfile) -> None:
     ln.SITE_ROBOT_SPEED = profile.site_robot_speed
     ln.NAV_WARMUP_SETTLE_S = profile.nav_warmup_settle_s
     ln.POST_MOTION_SETTLE_S = profile.post_motion_settle_s
+    ln.PERCEPTION_STANDOFF_CM = profile.perception_standoff_cm

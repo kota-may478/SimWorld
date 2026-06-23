@@ -27,6 +27,8 @@ class NavTimingAccumulator:
     move_ms: float = 0.0
     replan_ms: float = 0.0
     settle_ms: float = 0.0
+    standoff_ms: float = 0.0
+    standoff_events: int = 0
     label: str = ""
 
     def add(self, other: "NavTimingAccumulator") -> None:
@@ -34,9 +36,11 @@ class NavTimingAccumulator:
         self.move_ms += other.move_ms
         self.replan_ms += other.replan_ms
         self.settle_ms += other.settle_ms
+        self.standoff_ms += other.standoff_ms
+        self.standoff_events += other.standoff_events
 
     def total_ms(self) -> float:
-        return self.perceive_ms + self.move_ms + self.replan_ms + self.settle_ms
+        return self.perceive_ms + self.move_ms + self.replan_ms + self.settle_ms + self.standoff_ms
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -45,6 +49,8 @@ class NavTimingAccumulator:
             "move_ms": round(self.move_ms, 2),
             "replan_ms": round(self.replan_ms, 2),
             "settle_ms": round(self.settle_ms, 2),
+            "standoff_ms": round(self.standoff_ms, 2),
+            "standoff_events": self.standoff_events,
             "total_ms": round(self.total_ms(), 2),
         }
 

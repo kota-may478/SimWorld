@@ -199,7 +199,10 @@ def main() -> int:
         print(f"[Site20] {exc}")
         return 1
     apply_profile_to_layered_nav(nav_profile)
-    print(f"[Site20] profile={nav_profile.name} perception_interval={nav_profile.perception_interval_s}s")
+    print(
+        f"[Site20] profile={nav_profile.name} perception_interval={nav_profile.perception_interval_s}s "
+        f"standoff={nav_profile.perception_standoff_cm:.0f}cm"
+    )
     l2_mode = "off" if args.no_l2 else args.l2_mode
     if not args.l0.is_file():
         print(f"[Site20] missing L0: {args.l0}")
@@ -325,6 +328,13 @@ def main() -> int:
         _reset_l2_perceive_counter = None
         object_registry = ObjectRegistry()
         depth_tracker = DepthCellTracker()
+
+        def _registry_obstacle_positions(*, exclude_slot: Optional[str] = None):
+            return [
+                entry.last_world_xy
+                for slot_id, entry in object_registry.entries.items()
+                if slot_id != exclude_slot and not entry.is_dynamic
+            ]
         sight_cfg = SightConfig(
             fov_deg=SENSOR_FOV_DEG,
             max_range_cm=650.0,
@@ -384,6 +394,22 @@ def main() -> int:
 
         def _apply_l2_depth(l2_seen_cells: set) -> int:
             nonlocal ucv
+            robot_xy = get_pos2d(ucv, robot_name)
+            if nav_profile.perception_standoff_cm > 0.0:
+                from perception_standoff import check_perception_standoff  # noqa: WPS433
+
+                standoff = check_perception_standoff(
+                    robot_xy,
+                    layers,
+                    registry_positions=_registry_obstacle_positions(),
+                    standoff_cm=nav_profile.perception_standoff_cm,
+                )
+                if standoff.needs_backoff(nav_profile.perception_standoff_cm):
+                    print(
+                        f"[Site20] L2_depth gated: {standoff.nearest_dist_cm:.0f}cm "
+                        f"< {nav_profile.perception_standoff_cm:.0f}cm ({standoff.source})"
+                    )
+                    return 0
             fusion_id = _ensure_sight_depth_camera()
             update_sensor_camera_pose(ucv, robot_name, fusion_id)
             tick_settle(ucv, settle_s=0.25, ticks=1)
@@ -714,6 +740,9 @@ def main() -> int:
             trace=trace,
             on_pose_sample=_on_pose,
             nav_timing=leg1_timing,
+            extra_obstacle_positions_fn=lambda: _registry_obstacle_positions(
+                exclude_slot=registry.material_actor_name
+            ),
         )
         leg1_time_s = time.time() - leg1_t0
         print(f"[Site20] leg1_time_s={leg1_time_s:.1f}")
@@ -768,6 +797,9 @@ def main() -> int:
             carry_sync_name=carry_name,
             on_pose_sample=_on_pose,
             nav_timing=leg2_timing,
+            extra_obstacle_positions_fn=lambda: _registry_obstacle_positions(
+                exclude_slot=registry.humanoid_actor_name
+            ),
         )
         leg2_time_s = time.time() - leg2_t0
         print(f"[Site20] leg2_time_s={leg2_time_s:.1f}")
