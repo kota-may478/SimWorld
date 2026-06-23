@@ -34,6 +34,14 @@ GridCell = Tuple[int, int]
 PATH_WP_SPACING_CM = 300.0
 
 
+# Log-odds occupancy (L2_depth): hit/miss updates, threshold → binary l2 cost.
+L2_LOG_ODDS_HIT = 0.85
+L2_LOG_ODDS_MISS = -0.40
+L2_LOG_ODDS_MIN = -4.0
+L2_LOG_ODDS_MAX = 6.0
+L2_LOG_ODDS_OCCUPIED = 0.5
+
+
 @dataclass
 class LayeredCostmap:
     l0: np.ndarray
@@ -42,12 +50,16 @@ class LayeredCostmap:
     lethal_cost: float = COSTMAP_LETHAL_COST
     l1: np.ndarray = field(init=False)
     l2: np.ndarray = field(init=False)
+    l2_log_odds: np.ndarray = field(init=False)
+    l2_static_latch: np.ndarray = field(init=False)
     _closed_zones: Set[str] = field(default_factory=set)
 
     def __post_init__(self) -> None:
         shape = self.l0.shape
         self.l1 = np.zeros(shape, dtype=np.float32)
         self.l2 = np.zeros(shape, dtype=np.float32)
+        self.l2_log_odds = np.zeros(shape, dtype=np.float32)
+        self.l2_static_latch = np.zeros(shape, dtype=bool)
 
     @classmethod
     def from_l0_cache(cls, path: Path | str) -> LayeredCostmap:
@@ -84,6 +96,36 @@ class LayeredCostmap:
 
     def reset_l2(self) -> None:
         self.l2.fill(0.0)
+        self.l2_log_odds.fill(0.0)
+        self.l2_static_latch.fill(False)
+
+    def sync_l2_from_log_odds(self, *, occupied_threshold: float = L2_LOG_ODDS_OCCUPIED) -> int:
+        """Project log-odds field to binary L2_depth cost (static latch always occupied)."""
+        occupied = (self.l2_log_odds >= occupied_threshold) | self.l2_static_latch
+        self.l2[:, :] = np.where(occupied, COSTMAP_LETHAL_COST, 0.0).astype(np.float32)
+        return int(np.count_nonzero(occupied))
+
+    def update_l2_log_odds_cell(
+        self,
+        gx: int,
+        gy: int,
+        delta: float,
+        *,
+        latch_static: bool = False,
+    ) -> None:
+        if not (0 <= gx < self.width_cells and 0 <= gy < self.height_cells):
+            return
+        if self.l2_static_latch[gy, gx] and delta < 0:
+            return
+        prev = float(self.l2_log_odds[gy, gx])
+        new_val = max(L2_LOG_ODDS_MIN, min(L2_LOG_ODDS_MAX, prev + delta))
+        self.l2_log_odds[gy, gx] = new_val
+        if latch_static and delta > 0:
+            self.l2_static_latch[gy, gx] = True
+        if self.l2_static_latch[gy, gx] or new_val >= L2_LOG_ODDS_OCCUPIED:
+            self.l2[gy, gx] = COSTMAP_LETHAL_COST
+        elif prev >= L2_LOG_ODDS_OCCUPIED and new_val < L2_LOG_ODDS_OCCUPIED:
+            self.l2[gy, gx] = 0.0
 
     def _write_zone_to_l1(
         self,
@@ -131,7 +173,10 @@ class LayeredCostmap:
 
     def clear_l2_cell(self, gx: int, gy: int) -> None:
         if 0 <= gx < self.width_cells and 0 <= gy < self.height_cells:
+            if self.l2_static_latch[gy, gx]:
+                return
             self.l2[gy, gx] = 0.0
+            self.l2_log_odds[gy, gx] = 0.0
 
     def merged_costs(self) -> np.ndarray:
         """Per-cell max of L0, L1, L2 (0 = no extra cost from layer)."""
@@ -177,5 +222,7 @@ class LayeredCostmap:
             "l0": self.l0.copy(),
             "l1": self.l1.copy(),
             "l2": self.l2.copy(),
+            "l2_log_odds": self.l2_log_odds.copy(),
+            "l2_static_latch": self.l2_static_latch.copy(),
             "merged": self.merged_costs(),
         }

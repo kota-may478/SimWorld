@@ -31,7 +31,6 @@ import nav_query as nq  # noqa: E402
 from carry import (  # noqa: E402
     begin_carry_from_material,
     deliver_carry_at_humanoid,
-    pickup_standoff_xy,
     reset_carry_attach_state,
     reset_carry_from_previous_mission,
 )
@@ -43,24 +42,21 @@ from l2_geom import GeomPerceptionConfig, geom_detections  # noqa: E402
 from layered_nav import (  # noqa: E402
     PerceiveOutcome,
     SITE_DEFAULT_PERCEPTION_INTERVAL_S,
-    navigate_layered_with_fusion,
+    deliver_to,
+    navigate_to_slot,
 )
-from l2_sight import (  # noqa: E402
-    L2SlotCellTracker,
+from object_registry import (  # noqa: E402
+    ObjectRegistry,
     SightConfig,
-    SightMemory,
     estimate_local_xy_from_detection,
-    soft_l2_reset,
-    update_l2_from_sight,
+    update_object_registry_from_sight,
 )
+from l2_depth import DepthCellTracker, soft_l2_depth_reset, update_l2_depth  # noqa: E402
 from metrics import MissionRecorder, save_metrics_json  # noqa: E402
 from paths import L0_MASK_STRICT  # noqa: E402
 from pie_safety import PieSessionLost, require_live_ucv, tick_settle  # noqa: E402
 from perception_layer import (  # noqa: E402
     EgocentricPerceptionConfig,
-    apply_l2_obstacle_cells,
-    close_range_keepout_cells_from_depth,
-    obstacle_cells_from_depth_gated_by_detections,
     update_l2_from_depth_image,
 )
 from placement import ensure_registry, to_placement_registry  # noqa: E402
@@ -276,15 +272,14 @@ def main() -> int:
 
         _perceive = _perceive_disabled
         _reset_l2_perceive_counter = None
-        sight_memory = SightMemory()
-        sight_tracker = L2SlotCellTracker()
+        object_registry = ObjectRegistry()
+        depth_tracker = DepthCellTracker()
         sight_cfg = SightConfig(
             fov_deg=SENSOR_FOV_DEG,
             max_range_cm=650.0,
             sensor_forward_cm=SENSOR_CAM_FORWARD_OFFSET_CM,
-            prop_radius_cm=80.0,
         )
-        sight_depth_cfg = EgocentricPerceptionConfig(
+        depth_cfg = EgocentricPerceptionConfig(
             fov_deg=SENSOR_FOV_DEG,
             max_range_cm=650.0,
             min_obstacle_height_cm=35.0,
@@ -292,29 +287,32 @@ def main() -> int:
             use_lethal=True,
             camera_offset_forward_cm=SENSOR_CAM_FORWARD_OFFSET_CM,
             camera_height_cm=SENSOR_CAM_HEIGHT_OFFSET_CM,
+            camera_pitch_deg=SENSOR_CAM_PITCH_DEG,
+            self_exclude_radius_cm=70.0,
+            use_log_odds=True,
+            latch_static=True,
         )
         sight_depth_cam: dict = {"ready": False, "fusion_id": None}
 
-        def _reset_sight_memory(label: str, *, keep_static: bool = False) -> None:
-            sight_memory.dynamic_last_seen_xy.clear()
-            if keep_static:
-                # Between legs: evict only dynamic slots, preserve static map.
-                for slot_id in list(sight_tracker.slot_to_cells.keys()):
-                    if slot_id in (registry.humanoid_actor_name,) or slot_id.startswith("__"):
-                        for gx, gy in sight_tracker.slot_to_cells.pop(slot_id, set()):
-                            layers.l2[gy, gx] = 0
-                print(f"[Site20] L2 sight memory soft-reset ({label}, static map preserved)")
+        def _reset_depth_state(label: str, *, carry_forward: bool = False) -> None:
+            if carry_forward:
+                depth_tracker.snapshot_occupied(layers)
+                object_registry.clear_dynamic()
+                print(
+                    f"[Site20] L2 depth carry-forward mask={len(depth_tracker.carry_forward_mask)} "
+                    f"({label})"
+                )
             else:
-                sight_memory.static_last_seen_xy.clear()
-                for cells in sight_tracker.slot_to_cells.values():
-                    for gx, gy in cells:
-                        layers.l2[gy, gx] = 0
-                sight_tracker.slot_to_cells.clear()
-                print(f"[Site20] L2 sight memory reset ({label})")
+                depth_tracker.active_cells.clear()
+                depth_tracker.clear_carry_forward()
+                object_registry.entries.clear()
+                print(f"[Site20] L2 depth + registry reset ({label})")
 
         def _soft_reset_l2(l2_seen_cells: set, stuck_world_xy=None) -> None:
-            soft_l2_reset(
-                sight_memory, sight_tracker, layers, l2_seen_cells,
+            soft_l2_depth_reset(
+                layers,
+                depth_tracker,
+                l2_seen_cells,
                 stuck_world_xy=stuck_world_xy,
             )
 
@@ -324,17 +322,17 @@ def main() -> int:
                 configure_sensor_camera(ucv, fusion_id)
                 sight_depth_cam["fusion_id"] = fusion_id
                 sight_depth_cam["ready"] = True
-                print(f"[Site20] L2 sight depth camera ready fusion={fusion_id}")
+                print(f"[Site20] L2_depth camera ready fusion={fusion_id}")
             return int(sight_depth_cam["fusion_id"])
 
-        def _apply_depth_for_ai_sight(detections) -> int:
+        def _apply_l2_depth(l2_seen_cells: set) -> int:
             nonlocal ucv
             fusion_id = _ensure_sight_depth_camera()
             update_sensor_camera_pose(ucv, robot_name, fusion_id)
             tick_settle(ucv, settle_s=0.25, ticks=1)
             depth_raw = fetch_depth_npy(ucv, fusion_id)
             if depth_raw is None:
-                print("[Site20] L2 sight depth fetch skipped: no depth")
+                print("[Site20] L2_depth fetch skipped: no depth")
                 return 0
             depth_m = depth_npy_to_meters(depth_raw)
             finite_depth = depth_m[np.isfinite(depth_m) & (depth_m > 0.05) & (depth_m < 80.0)]
@@ -344,87 +342,72 @@ def main() -> int:
                     f"p10={float(np.percentile(finite_depth, 10)):.2f}m "
                     f"near1m={int(np.sum(finite_depth <= 1.0))}px "
                     f"near{DEPTH_CLEARANCE_TRIGGER_CM / 100.0:.2f}m="
-                    f"{int(np.sum(finite_depth <= DEPTH_CLEARANCE_TRIGGER_CM / 100.0))}px "
-                    f"visible={len(detections)}"
+                    f"{int(np.sum(finite_depth <= DEPTH_CLEARANCE_TRIGGER_CM / 100.0))}px"
                 )
             robot_xy = get_pos2d(ucv, robot_name)
             robot_yaw = get_yaw(ucv, robot_name)
-            cells = []
-            if detections:
-                cells.extend(
-                    obstacle_cells_from_depth_gated_by_detections(
-                        depth_m,
-                        layers,
-                        robot_xy=robot_xy,
-                        robot_yaw_deg=robot_yaw,
-                        detections=detections,
-                        config=sight_depth_cfg,
-                    )
-                )
-            cells.extend(
-                close_range_keepout_cells_from_depth(
-                    depth_m,
-                    layers,
-                    robot_xy=robot_xy,
-                    robot_yaw_deg=robot_yaw,
-                    config=sight_depth_cfg,
-                    min_clearance_cm=DEPTH_CLEARANCE_TRIGGER_CM,
-                    keepout_radius_cm=DEPTH_KEEP_OUT_RADIUS_CM,
-                    camera_pitch_deg=SENSOR_CAM_PITCH_DEG,
-                )
+            result = update_l2_depth(
+                depth_m,
+                layers,
+                robot_xy=robot_xy,
+                robot_yaw_deg=robot_yaw,
+                config=depth_cfg,
+                tracker=depth_tracker,
+                camera_pitch_deg=SENSOR_CAM_PITCH_DEG,
+                close_range_clearance_cm=DEPTH_CLEARANCE_TRIGGER_CM,
+                close_range_keepout_cm=DEPTH_KEEP_OUT_RADIUS_CM,
             )
-            prev_depth = sight_tracker.pop_cells("__depth__")
-            if prev_depth:
-                other_owned: set = set()
-                for other_id, other_cells in sight_tracker.slot_to_cells.items():
-                    other_owned.update(other_cells)
-                for gx, gy in prev_depth:
-                    if (gx, gy) in other_owned:
-                        continue
-                    layers.l2[gy, gx] = 0
-                    l2_seen_cells.discard((gx, gy))
-            if not cells:
-                return 0
-            if finite_depth.size:
-                print(f"[Site20] depth keepout cells: frame={len(cells)}")
-            n = apply_l2_obstacle_cells(layers, cells, config=sight_depth_cfg)
-            sight_tracker.set_cells("__depth__", set(cells))
-            for cell in cells:
+            for cell in depth_tracker.active_cells:
                 l2_seen_cells.add(cell)
-            return n
+            if result.l2_changed:
+                print(
+                    f"[Site20] L2_depth: +{result.hit_cells} hits "
+                    f"-{result.cleared_cells} cleared +{result.keepout_cells} keepout"
+                )
+            return result.total_cells_added
 
         if l2_mode == "sight":
             placement_reg = to_placement_registry(registry)
             placement_reg_holder["reg"] = placement_reg
+            for prop in placement_reg.props:
+                from l2_geom import _prop_world_xy  # noqa: WPS433
+
+                object_registry.upsert(
+                    slot_id=prop.slot_id,
+                    prop_type_id=prop.prop_type_id,
+                    world_xy=_prop_world_xy(prop),
+                    is_dynamic=False,
+                )
+            object_registry.upsert(
+                slot_id=registry.material_actor_name,
+                prop_type_id="shipping_crate",
+                world_xy=_material_goal_xy(registry),
+                is_dynamic=False,
+            )
+            object_registry.upsert(
+                slot_id=registry.humanoid_actor_name,
+                prop_type_id="human_worker",
+                world_xy=lc.local_xy_to_world(*human_local),
+                is_dynamic=True,
+            )
             print(
-                f"[Site20] L2 sight enabled: FOV={sight_cfg.fov_deg}° "
+                f"[Site20] L2_depth + ObjectRegistry: FOV={sight_cfg.fov_deg}° "
                 f"range={sight_cfg.max_range_cm}cm interval={SITE_DEFAULT_PERCEPTION_INTERVAL_S}s "
-                f"static=persist dynamic=sticky-until-rescan"
+                f"log-odds=on static-latch=on"
             )
 
             def _perceive_sight(*, layers, l2_seen_cells):
-                result = update_l2_from_sight(
+                reg_result = update_object_registry_from_sight(
                     ucv,
-                    layers,
+                    object_registry,
                     robot_name=robot_name,
                     placement_reg=placement_reg_holder["reg"],
                     humanoid_actor_name=registry.humanoid_actor_name,
                     material_actor_name=registry.material_actor_name,
-                    memory=sight_memory,
-                    tracker=sight_tracker,
-                    l2_seen_cells=l2_seen_cells,
                     config=sight_cfg,
-                    apply_cells=True,
                 )
-                visible_slots = set(result.visible_slot_ids)
-                visible_detections = [
-                    det for det in result.detections if det.slot_id in visible_slots
-                ]
-                n_depth_cells = _apply_depth_for_ai_sight(visible_detections)
-                n_cells_added = result.cells_added + n_depth_cells
-                for cell in sight_tracker.cells_for("__depth__"):
-                    l2_seen_cells.add(cell)
-                for det in result.detections:
+                n_depth_cells = _apply_l2_depth(l2_seen_cells)
+                for det in reg_result.detections:
                     local_xy = estimate_local_xy_from_detection(
                         get_pos2d(ucv, robot_name),
                         get_yaw(ucv, robot_name),
@@ -432,17 +415,17 @@ def main() -> int:
                         sensor_forward_cm=sight_cfg.sensor_forward_cm,
                     )
                     trace.record_l2_estimate(local_xy)
-                if result.visible_actor_names or result.l2_changed:
+                if reg_result.visible_actor_names or n_depth_cells > 0:
                     print(
-                        f"[Site20] L2 sight ({result.backend}): "
-                        f"visible={len(result.visible_actor_names)} "
-                        f"+{result.cells_added} ai +{n_depth_cells} depth "
-                        f"/-{result.cells_removed} cells"
+                        f"[Site20] perceive ({reg_result.backend}): "
+                        f"visible={len(reg_result.visible_actor_names)} "
+                        f"registry+{reg_result.entries_added}/-{reg_result.entries_evicted} "
+                        f"depth+{n_depth_cells} cells"
                     )
                 return PerceiveOutcome(
-                    detections=result.detections,
-                    cells_added=n_cells_added,
-                    cells_removed=result.cells_removed,
+                    detections=list(reg_result.detections),
+                    cells_added=n_depth_cells,
+                    cells_removed=0,
                     l2_applied=True,
                 )
 
@@ -622,21 +605,21 @@ def main() -> int:
 
         material_xy = _material_goal_xy(registry)
         robot_xy = get_pos2d(ucv, robot_name)
-        approach_xy = pickup_standoff_xy(material_xy, robot_xy)
-        approach_local = lc.world_xy_to_local(*approach_xy)
-        print(f"[Site20] leg1 material @ {material_xy}, approach @ {approach_xy}")
+        print(f"[Site20] leg1 material @ {material_xy}")
         tick_settle(ucv, settle_s=6.0, ticks=4)
         ucv = ensure_live_or_reconnect(ucv, reason="pre leg1 settle")
 
         layers.reset_l2()
         if l2_mode == "sight":
-            _reset_sight_memory("leg1")
-        leg1_ok = navigate_layered_with_fusion(
+            _reset_depth_state("leg1")
+        leg1_ok = navigate_to_slot(
             ucv,
             layers,
-            approach_local,
+            registry.material_actor_name,
+            object_registry=object_registry,
             perceive_fn=_perceive,
             soft_reset_fn=_soft_reset_l2 if l2_mode == "sight" else None,
+            fallback_goal_local=material_local,
             robot_name=robot_name,
             nav_actor=nav_actor,
             tolerance_cm=ARRIVE_TOLERANCE_CM,
@@ -673,16 +656,17 @@ def main() -> int:
             _reset_l2_perceive_counter("leg2")
 
         if l2_mode == "sight":
-            # Preserve static obstacle map from leg1; only reset dynamic tracking.
-            _reset_sight_memory("leg2", keep_static=True)
+            _reset_depth_state("leg2", carry_forward=True)
         else:
             layers.reset_l2()
-        leg2_ok = navigate_layered_with_fusion(
+        leg2_ok = deliver_to(
             ucv,
             layers,
-            human_local,
+            registry.humanoid_actor_name,
+            object_registry=object_registry,
             perceive_fn=_perceive,
             soft_reset_fn=_soft_reset_l2 if l2_mode == "sight" else None,
+            fallback_goal_local=human_local,
             robot_name=robot_name,
             nav_actor=nav_actor,
             tolerance_cm=ARRIVE_TOLERANCE_CM,

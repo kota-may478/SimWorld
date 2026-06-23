@@ -86,9 +86,9 @@ def save_site_transport_artifacts(
     )
     paths["costmap_npz"] = npz_path
 
-    costmap_png = output_dir / f"site_transport_costmap_{stamp}.png"
+    costmap_png = output_dir / f"costMap_{stamp}.png"
     _save_costmap_png(layers, registry, trace, costmap_png)
-    paths["costmap_png"] = costmap_png
+    paths["costMap"] = costmap_png
 
     summary_png = output_dir / f"site_transport_metrics_summary_{stamp}.png"
     _save_metrics_summary_png(registry, trace, metrics, summary_png)

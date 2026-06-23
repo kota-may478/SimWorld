@@ -8,8 +8,9 @@
 
 - **L0** — static NavMesh mask (offline `.npz`)
 - **L1** — zone closures (human work areas)
-- **L2** — dynamic obstacles from FusionCam depth, AI Sight, or geometry fusion
-- **A\*** planning, SpotDog execution, carry/deliver workflows
+- **L2_depth** — depth-only obstacle footprints (FusionCam depth + robot pose, log-odds + static latch)
+- **ObjectRegistry** — AI Sight semantic slot tracking (goals only, never rasterized to costmap)
+- **A\*** planning on `max(L0, L1, L2_depth)`; registry queried for `navigate_to_slot` / `deliver_to`
 
 Design note: Obsidian #320 `simWorld_LevelNavMeshNavigation_ForHRCMaterialTransport.md`
 
@@ -28,7 +29,7 @@ Design note: Obsidian #320 `simWorld_LevelNavMeshNavigation_ForHRCMaterialTransp
 | `build_l0_nav_mask.py` | CLI: sample NavMesh into L0 `.npz` |
 | `nav_query.py` | Python wrapper for UE NavFindPath / NavQueryService |
 | `costmap_layers.py` | Merge L0+L1+L2 into lethal/planning grids |
-| `perception_layer.py` | Generic L2 perception → costmap cells |
+| `perception_layer.py` | L2_depth: pitch-aware depth projection, ray clearing, log-odds |
 | `layered_nav_perception.py` | Higher-level L2 fusion orchestration |
 | `level_nav_robot.py` | SpotDog motion, replan loop, step execution |
 | `level_nav_adapter.py` | Adapter between costmap and robot commands |
@@ -87,16 +88,19 @@ Design note: Obsidian #320 `simWorld_LevelNavMeshNavigation_ForHRCMaterialTransp
 | `zones.py` | L1 zone definitions for site |
 | `l0_crop.py` | Crop L0 to 20 m region |
 | `l2_fusion.py` | FusionCam L2 layer |
-| `l2_sight.py` | AI Sight perception L2 |
-| `l2_geom.py` | Geometry-based L2 fusion |
+| `l2_depth.py` | L2_depth pipeline (ungated FOV, carry-forward mask, soft reset) |
+| `object_registry.py` | AI Sight → semantic slot registry (no costmap writes) |
+| `l2_sight.py` | Backward-compat shim → `object_registry.py` |
+| `l2_geom.py` | Geometry-based sight fallback (registry seed only) |
 | `runtime_sight_sources.py` | Runtime Sight stimulus configuration |
-| `layered_nav.py` | Full L0+L1+L2 nav with replanning |
+| `layered_nav.py` | Full L0+L1+L2_depth nav; `navigate_to_slot` / `deliver_to` |
 | `carry.py` | Material pickup, carry attach, deliver to humanoid |
 | `metrics.py` | Run metrics aggregation |
 | `viz.py` | Trajectory/metrics plots → `scenarios/site_transport_20m/out/` |
 | `spawn_pie.py` | PIE scene spawn |
 | `run_test.py` | **E2E entry**: spawn → nav → carry → deliver |
-| `test_l2_sight.py` | Unit tests for sight L2 |
+| `test_l2_sight.py` | Unit tests for ObjectRegistry |
+| `test_l2_depth.py` | Offline NPY replay tests for L2_depth |
 | `test_l2_geom.py` | Unit tests for geom L2 |
 | `CARRY_ATTACH_UE_SETUP.md` | UE Blueprint setup for carry attach |
 | `SIGHT_PERCEPTION_UE_SETUP.md` | UE setup for AI Sight on props |
@@ -213,8 +217,9 @@ UE Editor crash mitigation: see `pie_spawn_safety.py`, `ue_client_guard` (in `gr
 
 - **L0** — 静的 NavMesh マスク（オフライン `.npz`）
 - **L1** — ゾーン閉鎖（人作業域）
-- **L2** — FusionCam 深度・AI Sight・幾何融合による動的障害
-- **A\*** 経路計画、SpotDog 実行、運搬・受け渡し
+- **L2_depth** — 深度のみの障害フットプリント（FusionCam 深度 + ロボット姿勢、log-odds + static latch）
+- **ObjectRegistry** — AI Sight によるセマンティックスロット追跡（目標のみ、コストマップ非描画）
+- **A\*** は `max(L0, L1, L2_depth)` で計画；`navigate_to_slot` / `deliver_to` でレジストリ参照
 
 設計メモ: Obsidian #320
 
@@ -286,16 +291,18 @@ UE Editor crash mitigation: see `pie_spawn_safety.py`, `ue_client_guard` (in `gr
 | `zones.py` | L1 ゾーン定義 |
 | `l0_crop.py` | L0 を 20 m にクロップ |
 | `l2_fusion.py` | FusionCam L2 |
-| `l2_sight.py` | AI Sight L2 |
-| `l2_geom.py` | 幾何ベース L2 |
+| `l2_depth.py` | L2_depth パイプライン（非ゲート FOV、carry-forward マスク） |
+| `object_registry.py` | AI Sight → セマンティックスロットレジストリ |
+| `l2_sight.py` | 後方互換シム → `object_registry.py` |
+| `l2_geom.py` | 幾何ベース Sight フォールバック（レジストリ初期値のみ） |
 | `runtime_sight_sources.py` | Sight 刺激のランタイム設定 |
-| `layered_nav.py` | L0+L1+L2 再計画ナビ |
+| `layered_nav.py` | L0+L1+L2_depth 再計画ナビ；`navigate_to_slot` / `deliver_to` |
 | `carry.py` | ピックアップ、運搬アタッチ、Humanoid へ受け渡し |
 | `metrics.py` | 実行メトリクス集約 |
 | `viz.py` | 軌跡/メトリクス図 |
 | `spawn_pie.py` | PIE シーンスポーン |
 | `run_test.py` | **E2E**: spawn → nav → carry → deliver |
-| `test_l2_sight.py` / `test_l2_geom.py` | L2 ユニットテスト |
+| `test_l2_sight.py` / `test_l2_depth.py` / `test_l2_geom.py` | L2 ユニットテスト |
 | `CARRY_ATTACH_UE_SETUP.md` | 運搬アタッチ UE セットアップ |
 | `SIGHT_PERCEPTION_UE_SETUP.md` | プロップ AI Sight セットアップ |
 

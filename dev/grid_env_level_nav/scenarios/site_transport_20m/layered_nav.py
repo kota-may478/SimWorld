@@ -961,7 +961,7 @@ def navigate_layered_with_fusion(
                         layers,
                         pos_xy,
                         goal_xy,
-                        reason="l2_sight",
+                        reason="l2_depth",
                         trace=trace,
                         l2_seen_cells=l2_seen_cells,
                     )
@@ -1307,3 +1307,103 @@ def navigate_layered_with_fusion(
     if trace is not None:
         trace.l2_cell_count = len(l2_seen_cells)
     return False
+
+
+def navigate_to_slot(
+    ucv: UnrealCV,
+    layers: LayeredCostmap,
+    slot_id: str,
+    *,
+    object_registry: object,
+    perceive_fn: PerceiveFn,
+    standoff_fn: Optional[Callable[[WorldXY, WorldXY], WorldXY]] = None,
+    fallback_goal_local: Optional[Tuple[float, float]] = None,
+    soft_reset_fn: Optional[Callable[[Set[Tuple[int, int]], WorldXY], None]] = None,
+    robot_name: str = ROBOT_ACTOR,
+    nav_actor: Optional[str] = None,
+    tolerance_cm: float = 120.0,
+    label: str = "",
+    perception_interval_s: float = SITE_DEFAULT_PERCEPTION_INTERVAL_S,
+    max_total_steps: int = PATH_MAX_TOTAL_STEPS,
+    trace: Optional[NavTrace] = None,
+    on_pose_sample: Optional[PoseSampleFn] = None,
+) -> bool:
+    """Navigate to semantic slot via ObjectRegistry goal + optional standoff."""
+    from carry import pickup_standoff_xy  # noqa: WPS433
+
+    goal_xy = object_registry.goal_xy(slot_id) if hasattr(object_registry, "goal_xy") else None
+    if goal_xy is None and fallback_goal_local is not None:
+        goal_xy = local_xy_to_world(*fallback_goal_local)
+    if goal_xy is None:
+        print(f"  [SiteNav] navigate_to_slot: unknown slot {slot_id}")
+        return False
+
+    robot_xy = get_pos2d(ucv, robot_name)
+    if standoff_fn is not None:
+        approach_xy = standoff_fn(goal_xy, robot_xy)
+    else:
+        approach_xy = pickup_standoff_xy(goal_xy, robot_xy)
+    approach_local = world_xy_to_local(*approach_xy)
+    nav_label = label or f"to-slot-{slot_id}"
+    print(f"  [SiteNav] navigate_to_slot {slot_id} goal={goal_xy} approach={approach_xy}")
+    return navigate_layered_with_fusion(
+        ucv,
+        layers,
+        approach_local,
+        perceive_fn=perceive_fn,
+        soft_reset_fn=soft_reset_fn,
+        robot_name=robot_name,
+        nav_actor=nav_actor,
+        tolerance_cm=tolerance_cm,
+        label=nav_label,
+        perception_interval_s=perception_interval_s,
+        max_total_steps=max_total_steps,
+        trace=trace,
+        on_pose_sample=on_pose_sample,
+    )
+
+
+def deliver_to(
+    ucv: UnrealCV,
+    layers: LayeredCostmap,
+    slot_id: str,
+    *,
+    object_registry: object,
+    perceive_fn: PerceiveFn,
+    fallback_goal_local: Optional[Tuple[float, float]] = None,
+    soft_reset_fn: Optional[Callable[[Set[Tuple[int, int]], WorldXY], None]] = None,
+    robot_name: str = ROBOT_ACTOR,
+    nav_actor: Optional[str] = None,
+    tolerance_cm: float = 120.0,
+    label: str = "",
+    perception_interval_s: float = SITE_DEFAULT_PERCEPTION_INTERVAL_S,
+    max_total_steps: int = PATH_MAX_TOTAL_STEPS,
+    trace: Optional[NavTrace] = None,
+    carry_sync_name: Optional[str] = None,
+    on_pose_sample: Optional[PoseSampleFn] = None,
+) -> bool:
+    """Navigate directly to semantic slot goal (e.g. humanoid delivery point)."""
+    goal_local = object_registry.goal_local(slot_id) if hasattr(object_registry, "goal_local") else None
+    if goal_local is None:
+        goal_local = fallback_goal_local
+    if goal_local is None:
+        print(f"  [SiteNav] deliver_to: unknown slot {slot_id}")
+        return False
+    nav_label = label or f"deliver-to-{slot_id}"
+    print(f"  [SiteNav] deliver_to {slot_id} goal_local={goal_local}")
+    return navigate_layered_with_fusion(
+        ucv,
+        layers,
+        goal_local,
+        perceive_fn=perceive_fn,
+        soft_reset_fn=soft_reset_fn,
+        robot_name=robot_name,
+        nav_actor=nav_actor,
+        tolerance_cm=tolerance_cm,
+        label=nav_label,
+        perception_interval_s=perception_interval_s,
+        max_total_steps=max_total_steps,
+        trace=trace,
+        carry_sync_name=carry_sync_name,
+        on_pose_sample=on_pose_sample,
+    )
