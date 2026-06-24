@@ -131,8 +131,14 @@ def update_l2_depth(
         keepout_radius_cm=close_range_keepout_cm,
         camera_pitch_deg=camera_pitch_deg,
     )
-    near_frac = _depth_near_fraction(depth_m, close_range_clearance_cm / 100.0)
-    if near_frac > KEEPOUT_NEAR_FRACTION_SKIP:
+    from perception_layer import min_forward_depth_m  # noqa: WPS433
+
+    clearance_m = close_range_clearance_cm / 100.0
+    min_fwd_m = min_forward_depth_m(depth_m, fov_deg=cfg.fov_deg)
+    near_frac = _depth_near_fraction(depth_m, clearance_m)
+    if near_frac > KEEPOUT_NEAR_FRACTION_SKIP and (
+        min_fwd_m is None or min_fwd_m >= clearance_m
+    ):
         keepout = []
     elif len(keepout) > MAX_KEEPOUT_CELLS_PER_FRAME:
         keepout = keepout[:MAX_KEEPOUT_CELLS_PER_FRAME]

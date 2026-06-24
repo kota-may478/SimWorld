@@ -114,9 +114,11 @@ PROGRESS_REGRESS_THRESHOLD_CM = 350.0
 MAX_TURN_ONLY_STEPS = 12
 MAX_L2_FLUSH_COUNT = 3
 LAST_RESORT_PERCEIVE_PAUSE_STEPS = 40
-SITE_PLANNING_CLEARANCE_CM = 40.0
+SITE_PLANNING_CLEARANCE_CM = 100.0
 SITE_PLANNING_CLEARANCE_COST = 300.0
 ROBOT_L2_SELF_EXCLUDE_RADIUS_CM = 70.0
+ROBOT_BODY_CLEARANCE_CM = 45.0
+NEAR_OBSTACLE_SLOW_CM = 220.0
 
 PERCEPTION_STANDOFF_CM = 0.0
 STANDOFF_BACKOFF_SPEED = 120.0
@@ -227,6 +229,165 @@ def _site_dog_rotate(
     cmd = f"vbp {robot_name} Rotate_Angle {duration_s} {angle_deg} {clockwise}"
     geh._ue_request(ucv, cmd, timeout_s=max(20.0, duration_s + 10.0))  # noqa: SLF001
     time.sleep(duration_s)
+
+
+def _dynamic_max_move_cm(
+    nearest_dist_cm: float,
+    forward_depth_cm: Optional[float],
+) -> float:
+    """Shrink open-loop moves when L2 or forward depth shows nearby obstacles."""
+    refs = [
+        d
+        for d in (nearest_dist_cm, forward_depth_cm)
+        if d is not None and math.isfinite(d) and d < float("inf")
+    ]
+    if not refs:
+        return SITE_MAX_OPEN_LOOP_MOVE_CM
+    nearest = min(refs)
+    if nearest >= NEAR_OBSTACLE_SLOW_CM:
+        return SITE_MAX_OPEN_LOOP_MOVE_CM
+    if nearest >= PERCEPTION_STANDOFF_CM + 40.0:
+        return min(SITE_MAX_OPEN_LOOP_MOVE_CM, 140.0)
+    if nearest >= PERCEPTION_STANDOFF_CM:
+        return 70.0
+    return 35.0
+
+
+def _clamp_segment_move(command: SegmentCommand, max_move_cm: float) -> SegmentCommand:
+    if command.move_cm <= max_move_cm:
+        return command
+    return SegmentCommand(
+        turn_deg=command.turn_deg,
+        turn_clockwise=command.turn_clockwise,
+        move_cm=max(0.0, max_move_cm),
+    )
+
+
+def _nearest_standoff_dist_cm(
+    pos_xy: WorldXY,
+    layers: LayeredCostmap,
+    registry_positions: Sequence[WorldXY],
+) -> float:
+    from perception_standoff import check_perception_standoff  # noqa: WPS433
+
+    if PERCEPTION_STANDOFF_CM <= 0.0:
+        return float("inf")
+    check = check_perception_standoff(
+        pos_xy,
+        layers,
+        registry_positions=registry_positions,
+        standoff_cm=PERCEPTION_STANDOFF_CM,
+    )
+    return check.nearest_dist_cm
+
+
+def _depth_backoff_move(
+    ucv: UnrealCV,
+    robot_name: str,
+    *,
+    forward_depth_cm: float,
+    carry_motion_cb: Optional[CarrySyncFn],
+) -> None:
+    """Reverse when forward depth is inside standoff but no L2 anchor exists."""
+    deficit_cm = max(0.0, PERCEPTION_STANDOFF_CM - forward_depth_cm + 20.0)
+    backup_cm = min(STANDOFF_BACKOFF_MAX_CM, max(25.0, deficit_cm))
+    duration_s = max(0.25, backup_cm / STANDOFF_BACKOFF_SPEED)
+    print(
+        f"  [SiteNav] depth standoff: forward {forward_depth_cm:.0f}cm "
+        f"< {PERCEPTION_STANDOFF_CM:.0f}cm → reverse {backup_cm:.0f}cm"
+    )
+    _site_dog_move(ucv, robot_name, -STANDOFF_BACKOFF_SPEED, duration_s, direction=0)
+    if carry_motion_cb is not None:
+        carry_motion_cb()
+
+
+def _ensure_move_standoff(
+    ucv: UnrealCV,
+    robot_name: str,
+    pos_xy: WorldXY,
+    layers: LayeredCostmap,
+    *,
+    registry_positions: Sequence[WorldXY],
+    forward_depth_cm: Optional[float],
+    carry_motion_cb: Optional[CarrySyncFn],
+    nav_timing: Optional[NavTimingAccumulator],
+    depth_refresh_fn: Optional[Callable[[], Optional[float]]] = None,
+) -> Tuple[bool, WorldXY, Optional[float], float]:
+    """Backoff before forward motion when map or depth violates standoff."""
+    from perception_standoff import check_perception_standoff  # noqa: WPS433
+
+    nearest_dist = _nearest_standoff_dist_cm(pos_xy, layers, registry_positions)
+    if PERCEPTION_STANDOFF_CM <= 0.0:
+        return True, pos_xy, forward_depth_cm, nearest_dist
+
+    standoff = check_perception_standoff(
+        pos_xy,
+        layers,
+        registry_positions=registry_positions,
+        standoff_cm=PERCEPTION_STANDOFF_CM,
+    )
+    depth_violation = (
+        forward_depth_cm is not None and forward_depth_cm < PERCEPTION_STANDOFF_CM
+    )
+    if not standoff.needs_backoff(PERCEPTION_STANDOFF_CM) and not depth_violation:
+        return True, pos_xy, forward_depth_cm, nearest_dist
+
+    standoff_t0 = time.perf_counter()
+    if standoff.needs_backoff(PERCEPTION_STANDOFF_CM) and standoff.obstacle_xy is not None:
+        backoff_cm = standoff.backoff_cm(
+            PERCEPTION_STANDOFF_CM,
+            max_cm=STANDOFF_BACKOFF_MAX_CM,
+        )
+        print(
+            f"  [SiteNav] move standoff: {standoff.nearest_dist_cm:.0f}cm "
+            f"< {PERCEPTION_STANDOFF_CM:.0f}cm ({standoff.source}) "
+            f"→ backoff {backoff_cm:.0f}cm"
+        )
+        pos_xy = _standoff_backoff_move(
+            ucv,
+            robot_name,
+            pos_xy,
+            standoff.obstacle_xy,
+            backoff_cm,
+        )
+    elif depth_violation and forward_depth_cm is not None:
+        _depth_backoff_move(
+            ucv,
+            robot_name,
+            forward_depth_cm=forward_depth_cm,
+            carry_motion_cb=carry_motion_cb,
+        )
+        pos_xy, ucv = _safe_get_pos2d(ucv, robot_name)
+
+    if depth_refresh_fn is not None:
+        forward_depth_cm = depth_refresh_fn()
+
+    if carry_motion_cb is not None:
+        carry_motion_cb()
+    if nav_timing is not None:
+        nav_timing.standoff_ms += (time.perf_counter() - standoff_t0) * 1000.0
+        nav_timing.standoff_events += 1
+
+    if depth_refresh_fn is not None:
+        forward_depth_cm = depth_refresh_fn()
+
+    nearest_dist = _nearest_standoff_dist_cm(pos_xy, layers, registry_positions)
+    recheck = check_perception_standoff(
+        pos_xy,
+        layers,
+        registry_positions=registry_positions,
+        standoff_cm=PERCEPTION_STANDOFF_CM,
+    )
+    depth_violation = (
+        forward_depth_cm is not None and forward_depth_cm < PERCEPTION_STANDOFF_CM - 5.0
+    )
+    if recheck.needs_backoff(PERCEPTION_STANDOFF_CM) or depth_violation:
+        print(
+            f"  [SiteNav] move standoff: still too close "
+            f"(map={recheck.nearest_dist_cm:.0f}cm depth={forward_depth_cm})"
+        )
+        return False, pos_xy, forward_depth_cm, nearest_dist
+    return True, pos_xy, forward_depth_cm, nearest_dist
 
 
 def _open_loop_move_target(
@@ -571,7 +732,10 @@ def _gate_perception_standoff(
     if not standoff.needs_backoff(PERCEPTION_STANDOFF_CM):
         return True, pos_xy
 
-    backoff_cm = standoff.backoff_cm(PERCEPTION_STANDOFF_CM)
+    backoff_cm = standoff.backoff_cm(
+        PERCEPTION_STANDOFF_CM,
+        max_cm=STANDOFF_BACKOFF_MAX_CM,
+    )
     print(
         f"  [SiteNav] standoff: {standoff.nearest_dist_cm:.0f}cm "
         f"< {PERCEPTION_STANDOFF_CM:.0f}cm ({standoff.source}) "
@@ -997,6 +1161,8 @@ def navigate_layered_with_fusion(
     on_pose_sample: Optional[PoseSampleFn] = None,
     nav_timing: Optional[NavTimingAccumulator] = None,
     extra_obstacle_positions_fn: Optional[Callable[[], Sequence[WorldXY]]] = None,
+    forward_depth_cm_fn: Optional[Callable[[], Optional[float]]] = None,
+    depth_refresh_fn: Optional[Callable[[], Optional[float]]] = None,
 ) -> bool:
     require_live_ucv(ucv, context="site transport fusion nav")
     goal_xy = local_xy_to_world(*goal_local_xy)
@@ -1310,6 +1476,42 @@ def navigate_layered_with_fusion(
                 continue
 
             if command.move_cm > 1e-3:
+                registry_positions: Sequence[WorldXY] = ()
+                if extra_obstacle_positions_fn is not None:
+                    registry_positions = extra_obstacle_positions_fn()
+                nearest_pre = _nearest_standoff_dist_cm(pos_xy, layers, registry_positions)
+                forward_depth_cm: Optional[float] = None
+                if PERCEPTION_STANDOFF_CM > 0.0:
+                    need_depth = nearest_pre < NEAR_OBSTACLE_SLOW_CM
+                    if depth_refresh_fn is not None and need_depth:
+                        forward_depth_cm = depth_refresh_fn()
+                    elif forward_depth_cm_fn is not None:
+                        forward_depth_cm = forward_depth_cm_fn()
+                ok_move, pos_xy, forward_depth_cm, nearest_dist = _ensure_move_standoff(
+                    ucv,
+                    robot_name,
+                    pos_xy,
+                    layers,
+                    registry_positions=registry_positions,
+                    forward_depth_cm=forward_depth_cm,
+                    carry_motion_cb=carry_motion_cb,
+                    nav_timing=nav_timing,
+                    depth_refresh_fn=depth_refresh_fn,
+                )
+                if not ok_move:
+                    last_motion_t = time.time()
+                    continue
+                allowed_move = _dynamic_max_move_cm(nearest_dist, forward_depth_cm)
+                if forward_depth_cm is not None:
+                    depth_cap = max(
+                        0.0,
+                        forward_depth_cm - ROBOT_BODY_CLEARANCE_CM - 10.0,
+                    )
+                    allowed_move = min(allowed_move, depth_cap)
+                command = _clamp_segment_move(command, allowed_move)
+                if command.move_cm <= 1e-3:
+                    total_steps += 1
+                    continue
                 costmap = _planning_costmap(layers)
                 move_target = _open_loop_move_target(pos_xy, waypoint_xy)
                 if not world_segment_is_traversable(
@@ -1402,6 +1604,36 @@ def navigate_layered_with_fusion(
                             unstuck_attempts = 0
                             last_progress_xy = stuck_xy
                         moves_since_progress = 0
+                    continue
+
+            registry_positions_move: Sequence[WorldXY] = ()
+            if extra_obstacle_positions_fn is not None:
+                registry_positions_move = extra_obstacle_positions_fn()
+
+            forward_depth_cm: Optional[float] = None
+            if command.move_cm > 1e-3 and depth_refresh_fn is not None:
+                forward_depth_cm = depth_refresh_fn()
+
+            if command.move_cm > 1e-3 and PERCEPTION_STANDOFF_CM > 0.0:
+                can_move, pos_xy, forward_depth_cm, nearest_dist = _ensure_move_standoff(
+                    ucv,
+                    robot_name,
+                    pos_xy,
+                    layers,
+                    registry_positions=registry_positions_move,
+                    forward_depth_cm=forward_depth_cm,
+                    carry_motion_cb=carry_motion_cb,
+                    nav_timing=nav_timing,
+                    depth_refresh_fn=depth_refresh_fn,
+                )
+                if not can_move:
+                    total_steps += 1
+                    last_motion_t = time.time()
+                    continue
+                max_move_cm = _dynamic_max_move_cm(nearest_dist, forward_depth_cm)
+                command = _clamp_segment_move(command, max_move_cm)
+                if command.move_cm <= 1e-3:
+                    total_steps += 1
                     continue
 
             move_t0 = time.perf_counter()
@@ -1563,6 +1795,8 @@ def navigate_to_slot(
     on_pose_sample: Optional[PoseSampleFn] = None,
     nav_timing: Optional[NavTimingAccumulator] = None,
     extra_obstacle_positions_fn: Optional[Callable[[], Sequence[WorldXY]]] = None,
+    forward_depth_cm_fn: Optional[Callable[[], Optional[float]]] = None,
+    depth_refresh_fn: Optional[Callable[[], Optional[float]]] = None,
 ) -> bool:
     from carry import pickup_standoff_xy  # noqa: WPS433
 
@@ -1597,6 +1831,8 @@ def navigate_to_slot(
         on_pose_sample=on_pose_sample,
         nav_timing=nav_timing,
         extra_obstacle_positions_fn=extra_obstacle_positions_fn,
+        forward_depth_cm_fn=forward_depth_cm_fn,
+        depth_refresh_fn=depth_refresh_fn,
     )
 
 
@@ -1620,6 +1856,8 @@ def deliver_to(
     on_pose_sample: Optional[PoseSampleFn] = None,
     nav_timing: Optional[NavTimingAccumulator] = None,
     extra_obstacle_positions_fn: Optional[Callable[[], Sequence[WorldXY]]] = None,
+    forward_depth_cm_fn: Optional[Callable[[], Optional[float]]] = None,
+    depth_refresh_fn: Optional[Callable[[], Optional[float]]] = None,
 ) -> bool:
     """Navigate directly to semantic slot goal (e.g. humanoid delivery point)."""
     goal_local = object_registry.goal_local(slot_id) if hasattr(object_registry, "goal_local") else None
@@ -1647,4 +1885,6 @@ def deliver_to(
         on_pose_sample=on_pose_sample,
         nav_timing=nav_timing,
         extra_obstacle_positions_fn=extra_obstacle_positions_fn,
+        forward_depth_cm_fn=forward_depth_cm_fn,
+        depth_refresh_fn=depth_refresh_fn,
     )

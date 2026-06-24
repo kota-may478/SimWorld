@@ -16,6 +16,7 @@ from perception_layer import (  # noqa: E402
     bresenham_line,
     close_range_keepout_cells_from_depth,
     depth_hits_from_image,
+    min_forward_depth_m,
     obstacle_cells_from_depth,
     update_l2_from_depth_image,
 )
@@ -80,6 +81,14 @@ class TestPerceptionLayer(unittest.TestCase):
             keepout_radius_cm=100.0,
         )
         self.assertGreater(len(cells), 0)
+
+    def test_min_forward_depth_m(self) -> None:
+        depth = np.full((64, 64), 3.0, dtype=np.float32)
+        depth[40:50, 28:36] = 0.6
+        fwd = min_forward_depth_m(depth, fov_deg=90.0)
+        self.assertIsNotNone(fwd)
+        assert fwd is not None
+        self.assertAlmostEqual(fwd, 0.6, places=2)
 
     def test_log_odds_sync_to_l2(self) -> None:
         layers = LayeredCostmap.from_l0_array(np.ones((10, 10), dtype=np.float32), resolution_cm=30.0)

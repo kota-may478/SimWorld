@@ -36,7 +36,7 @@ from carry import (  # noqa: E402
 )
 from grid_env_10k_pie_patrol import dist2d, get_pos2d, get_yaw  # noqa: E402
 from l0_crop import crop_l0_to_local_region  # noqa: E402
-from depth_object_perception import depth_npy_to_meters, fetch_depth_npy  # noqa: E402
+from depth_object_perception import depth_npy_to_meters, depth_npy_unit_hint, fetch_depth_npy  # noqa: E402
 from l2_fusion import estimate_world_xy_from_detection  # noqa: E402
 from l2_geom import GeomPerceptionConfig, geom_detections  # noqa: E402
 from layered_nav import (  # noqa: E402
@@ -63,6 +63,7 @@ from paths import L0_MASK_STRICT  # noqa: E402
 from pie_safety import PieSessionLost, require_live_ucv, tick_settle  # noqa: E402
 from perception_layer import (  # noqa: E402
     EgocentricPerceptionConfig,
+    min_forward_depth_m,
     update_l2_from_depth_image,
 )
 from placement import ensure_registry, to_placement_registry  # noqa: E402
@@ -77,6 +78,7 @@ from robot_sensor import (  # noqa: E402
     resolve_sensor_camera_id,
     restore_editor_viewmode_lit,
     update_sensor_camera_pose,
+    uses_engine_follow_camera,
 )
 from pie_spawn_safety import ensure_live_or_reconnect  # noqa: E402
 from runtime_sight_sources import ensure_runtime_site20_sight_sources  # noqa: E402
@@ -87,7 +89,7 @@ from zones import apply_forbidden_zones_l1  # noqa: E402
 DEFAULT_L0 = L0_MASK_STRICT
 ARRIVE_TOLERANCE_CM = 130.0
 DEPTH_CLEARANCE_TRIGGER_CM = 100.0
-DEPTH_KEEP_OUT_RADIUS_CM = 60.0
+DEPTH_KEEP_OUT_RADIUS_CM = 100.0
 _RELEASE_UE = Path(__file__).resolve().parents[2] / "release_ue_connection.py"
 
 
@@ -354,6 +356,53 @@ def main() -> int:
             latch_static=True,
         )
         sight_depth_cam: dict = {"ready": False, "fusion_id": None}
+        depth_cache: dict = {"min_fwd_cm": None, "unit": "unknown", "min_scene_m": None}
+
+        def _record_depth_sample(depth_raw: np.ndarray, depth_m: np.ndarray) -> Optional[float]:
+            unit = depth_npy_unit_hint(depth_raw)
+            depth_cache["unit"] = unit
+            finite_depth = depth_m[np.isfinite(depth_m) & (depth_m > 0.05) & (depth_m < 80.0)]
+            min_fwd_m = min_forward_depth_m(
+                depth_m,
+                fov_deg=SENSOR_FOV_DEG,
+            )
+            min_fwd_cm = min_fwd_m * 100.0 if min_fwd_m is not None else None
+            depth_cache["min_fwd_cm"] = min_fwd_cm
+            if finite_depth.size:
+                depth_cache["min_scene_m"] = float(np.min(finite_depth))
+                fwd_txt = f"forward={min_fwd_cm:.0f}cm " if min_fwd_cm is not None else ""
+                print(
+                    f"[Site20] depth sample unit={unit} min={float(np.min(finite_depth)):.2f}m "
+                    f"{fwd_txt}"
+                    f"p10={float(np.percentile(finite_depth, 10)):.2f}m "
+                    f"near{DEPTH_CLEARANCE_TRIGGER_CM / 100.0:.2f}m="
+                    f"{int(np.sum(finite_depth <= DEPTH_CLEARANCE_TRIGGER_CM / 100.0))}px"
+                )
+            return min_fwd_cm
+
+        def _fetch_depth_m_for_nav() -> Optional[np.ndarray]:
+            fusion_id = _ensure_sight_depth_camera()
+            if not uses_engine_follow_camera(ucv, fusion_id):
+                update_sensor_camera_pose(ucv, robot_name, fusion_id)
+                tick_settle(ucv, settle_s=0.08, ticks=1)
+            depth_raw = fetch_depth_npy(ucv, fusion_id)
+            if depth_raw is None:
+                return None
+            return depth_npy_to_meters(depth_raw)
+
+        def _refresh_forward_depth_cm() -> Optional[float]:
+            nonlocal ucv
+            fusion_id = _ensure_sight_depth_camera()
+            if not uses_engine_follow_camera(ucv, fusion_id):
+                update_sensor_camera_pose(ucv, robot_name, fusion_id)
+            depth_raw = fetch_depth_npy(ucv, fusion_id)
+            if depth_raw is None:
+                return depth_cache.get("min_fwd_cm")
+            depth_m = depth_npy_to_meters(depth_raw)
+            return _record_depth_sample(depth_raw, depth_m)
+
+        def _cached_forward_depth_cm() -> Optional[float]:
+            return depth_cache.get("min_fwd_cm")
 
         def _reset_depth_state(label: str, *, carry_forward: bool = False) -> None:
             if carry_forward:
@@ -411,22 +460,15 @@ def main() -> int:
                     )
                     return 0
             fusion_id = _ensure_sight_depth_camera()
-            update_sensor_camera_pose(ucv, robot_name, fusion_id)
-            tick_settle(ucv, settle_s=0.25, ticks=1)
+            if not uses_engine_follow_camera(ucv, fusion_id):
+                update_sensor_camera_pose(ucv, robot_name, fusion_id)
+                tick_settle(ucv, settle_s=0.08, ticks=1)
             depth_raw = fetch_depth_npy(ucv, fusion_id)
             if depth_raw is None:
                 print("[Site20] L2_depth fetch skipped: no depth")
                 return 0
             depth_m = depth_npy_to_meters(depth_raw)
-            finite_depth = depth_m[np.isfinite(depth_m) & (depth_m > 0.05) & (depth_m < 80.0)]
-            if finite_depth.size:
-                print(
-                    f"[Site20] depth sample: min={float(np.min(finite_depth)):.2f}m "
-                    f"p10={float(np.percentile(finite_depth, 10)):.2f}m "
-                    f"near1m={int(np.sum(finite_depth <= 1.0))}px "
-                    f"near{DEPTH_CLEARANCE_TRIGGER_CM / 100.0:.2f}m="
-                    f"{int(np.sum(finite_depth <= DEPTH_CLEARANCE_TRIGGER_CM / 100.0))}px"
-                )
+            _record_depth_sample(depth_raw, depth_m)
             robot_xy = get_pos2d(ucv, robot_name)
             robot_yaw = get_yaw(ucv, robot_name)
             result = update_l2_depth(
@@ -743,6 +785,8 @@ def main() -> int:
             extra_obstacle_positions_fn=lambda: _registry_obstacle_positions(
                 exclude_slot=registry.material_actor_name
             ),
+            forward_depth_cm_fn=_cached_forward_depth_cm,
+            depth_refresh_fn=_refresh_forward_depth_cm if l2_mode == "sight" else None,
         )
         leg1_time_s = time.time() - leg1_t0
         print(f"[Site20] leg1_time_s={leg1_time_s:.1f}")
@@ -800,6 +844,8 @@ def main() -> int:
             extra_obstacle_positions_fn=lambda: _registry_obstacle_positions(
                 exclude_slot=registry.humanoid_actor_name
             ),
+            forward_depth_cm_fn=_cached_forward_depth_cm,
+            depth_refresh_fn=_refresh_forward_depth_cm if l2_mode == "sight" else None,
         )
         leg2_time_s = time.time() - leg2_t0
         print(f"[Site20] leg2_time_s={leg2_time_s:.1f}")

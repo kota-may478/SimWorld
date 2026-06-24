@@ -414,6 +414,33 @@ def update_l2_from_depth_image(
     return hit_count
 
 
+def min_forward_depth_m(
+    depth_m: np.ndarray,
+    *,
+    fov_deg: float = DEFAULT_FOV_DEG,
+    cone_half_deg: float = 22.0,
+) -> Optional[float]:
+    """Minimum valid slant-range depth (m) in the forward cone (lower image band)."""
+    if depth_m.ndim != 2:
+        return None
+    h, w = depth_m.shape
+    if h < 2 or w < 2:
+        return None
+    cx = (w - 1) / 2.0
+    half_fov_rad = math.radians(fov_deg / 2.0)
+    if half_fov_rad <= 1e-6:
+        return None
+    half_width_px = (w / 2.0) * math.tan(math.radians(cone_half_deg)) / math.tan(half_fov_rad)
+    u0 = max(0, int(cx - half_width_px))
+    u1 = min(w, int(cx + half_width_px) + 1)
+    v0 = h // 3
+    roi = depth_m[v0:h, u0:u1]
+    valid = roi[np.isfinite(roi) & (roi > 0.05) & (roi < 80.0)]
+    if valid.size == 0:
+        return None
+    return float(np.min(valid))
+
+
 def fetch_robot_depth_m(ucv, robot_name: str, camera_id: int = 0) -> Optional[np.ndarray]:
     """Best-effort depth capture from UnrealCV (returns meters, HxW)."""
     try:

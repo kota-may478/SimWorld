@@ -41,10 +41,10 @@ class StandoffCheck:
             return False
         return self.nearest_dist_cm < standoff_cm
 
-    def backoff_cm(self, standoff_cm: float, *, margin_cm: float = 15.0) -> float:
+    def backoff_cm(self, standoff_cm: float, *, margin_cm: float = 15.0, max_cm: float = 80.0) -> float:
         if not self.needs_backoff(standoff_cm):
             return 0.0
-        return min(80.0, max(0.0, standoff_cm - self.nearest_dist_cm + margin_cm))
+        return min(max_cm, max(0.0, standoff_cm - self.nearest_dist_cm + margin_cm))
 
 
 def _cell_center_xy(layers: LayeredCostmap, gx: int, gy: int) -> WorldXY:

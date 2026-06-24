@@ -19,6 +19,11 @@ DEFAULT_LIT_COLOR_TOLERANCE = 20
 LIT_DEPTH_MIN_M = 0.8
 LIT_DEPTH_MAX_M = 25.0
 MAX_LIT_FRAME_FRACTION = 0.22
+# UnrealCV depth npy on Level / SpotDog FusionCam is slant range in **cm**
+# (65504 ≈ sky / no hit). See dev/grid_env_level_semantic/level_semantic_scan.py.
+DEPTH_SKY_THRESHOLD_RAW = 5000.0
+DEPTH_CM_MEDIAN_THRESHOLD = 25.0
+DEPTH_CM_P90_THRESHOLD = 40.0
 
 
 @dataclass(frozen=True)
@@ -43,17 +48,30 @@ class ObjectEstimate:
     confidence: float
 
 
-def depth_npy_to_meters(depth: np.ndarray) -> np.ndarray:
-    """Convert UnrealCV depth npy to meters (handles cm vs m heuristics)."""
+def depth_npy_unit_hint(depth: np.ndarray) -> str:
+    """Return ``cm`` or ``m`` for raw UnrealCV depth npy values."""
+    valid = depth[np.isfinite(depth) & (depth > 0.0) & (depth < DEPTH_SKY_THRESHOLD_RAW)]
+    if valid.size == 0:
+        return "unknown"
+    median = float(np.median(valid))
+    p90 = float(np.percentile(valid, 90))
+    if median > DEPTH_CM_MEDIAN_THRESHOLD or p90 > DEPTH_CM_P90_THRESHOLD:
+        return "cm"
+    return "m"
+
+
+def depth_npy_to_meters(depth: np.ndarray, *, unit: Optional[str] = None) -> np.ndarray:
+    """Convert UnrealCV depth npy to meters.
+
+    SpotDog FusionCam / Level PIE depth is usually **cm** slant range. Synthetic
+    offline arrays in unit tests use **m** (median well below 25).
+    """
     out = depth.astype(np.float64, copy=True)
     finite = np.isfinite(out) & (out > 0.0)
-    # Sky / invalid sentinel in Level scans
-    out[finite & (out > 5000.0)] = np.nan
-    # Values typically < 20 are meters; larger values are cm in SpotDog demos.
-    meter_mask = finite & (out < 20.0)
-    cm_mask = finite & ~meter_mask
-    out[meter_mask] = out[meter_mask]
-    out[cm_mask] = out[cm_mask] / 100.0
+    out[finite & (out >= DEPTH_SKY_THRESHOLD_RAW)] = np.nan
+    resolved = unit or depth_npy_unit_hint(depth)
+    if resolved == "cm":
+        out[finite] = out[finite] / 100.0
     return out
 
 
