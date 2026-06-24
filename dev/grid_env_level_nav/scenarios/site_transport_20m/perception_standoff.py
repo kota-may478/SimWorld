@@ -116,6 +116,21 @@ def depth_confirms_clearance(
     )
 
 
+def depth_shows_obstacle(
+    forward_depth_cm: Optional[float],
+    standoff_cm: float,
+    *,
+    margin_cm: float = 5.0,
+) -> bool:
+    """True when live forward depth indicates an obstacle inside standoff."""
+    return (
+        standoff_cm > 0.0
+        and forward_depth_cm is not None
+        and math.isfinite(forward_depth_cm)
+        and forward_depth_cm < standoff_cm - margin_cm
+    )
+
+
 def nearest_environment_distance_cm(
     robot_xy: WorldXY,
     layers: LayeredCostmap,
@@ -180,6 +195,25 @@ def _angle_delta_deg(a: float, b: float) -> float:
     return delta
 
 
+def _sight_confirms_obstacle_at_cell(
+    cell_xy: WorldXY,
+    robot_xy: WorldXY,
+    robot_yaw_deg: float,
+    *,
+    registry_positions: Sequence[WorldXY],
+    cone_half_deg: float,
+    cell_radius_cm: float,
+) -> bool:
+    """True when AI registry confirms an obstacle at/near this cell."""
+    for reg_xy in registry_positions:
+        bearing = _bearing_deg(robot_xy, reg_xy)
+        if abs(_angle_delta_deg(bearing, robot_yaw_deg)) > cone_half_deg:
+            continue
+        if dist2d(cell_xy, reg_xy) <= cell_radius_cm:
+            return True
+    return False
+
+
 def evict_stale_l2_in_forward_cone(
     robot_xy: WorldXY,
     robot_yaw_deg: float,
@@ -188,17 +222,25 @@ def evict_stale_l2_in_forward_cone(
     forward_depth_cm: float,
     standoff_cm: float,
     l2_seen_cells: Optional[Set[GridCell]] = None,
-    cone_half_deg: float = 45.0,
-    depth_margin_cm: float = 15.0,
+    registry_positions: Sequence[WorldXY] = (),
+    cone_half_deg: float = 55.0,
+    depth_margin_cm: float = 10.0,
 ) -> int:
-    """Clear non-latched L2 cells in the forward cone contradicted by live depth."""
+    """Clear non-latched L2 cells in the forward cone contradicted by live depth.
+
+    Skips latched cells and any cell where AI sight (l2_seen_cells) or the object
+    registry confirms an obstacle in that sector. Only runs when live depth confirms
+    at least standoff_cm clearance ahead.
+    """
     if not depth_confirms_clearance(forward_depth_cm, standoff_cm):
         return 0
     lethal_thresh = L2_LETHAL_COST * 0.5
-    max_dist_cm = min(forward_depth_cm - depth_margin_cm, standoff_cm + 40.0)
+    max_dist_cm = forward_depth_cm - depth_margin_cm
     if max_dist_cm <= layers.resolution_cm:
         return 0
     removed = 0
+    skipped_sight = 0
+    cell_radius_cm = layers.resolution_cm * 1.2
     radius_cells = max(1, int(math.ceil(max_dist_cm / layers.resolution_cm)))
     costmap = layers.to_costmap2d()
     grid = costmap.world_xy_to_grid(robot_xy, clamp=True)
@@ -222,10 +264,31 @@ def evict_stale_l2_in_forward_cone(
             bearing = _bearing_deg(robot_xy, cell_xy)
             if abs(_angle_delta_deg(bearing, robot_yaw_deg)) > cone_half_deg:
                 continue
+            if _sight_confirms_obstacle_at_cell(
+                cell_xy,
+                robot_xy,
+                robot_yaw_deg,
+                registry_positions=registry_positions,
+                cone_half_deg=cone_half_deg,
+                cell_radius_cm=cell_radius_cm,
+            ):
+                skipped_sight += 1
+                continue
             layers.clear_l2_cell(gx, gy)
             if l2_seen_cells is not None:
                 l2_seen_cells.discard((gx, gy))
             removed += 1
+            print(
+                f"  [L2-trust] evicted stale L2 ({gx},{gy}) "
+                f"dist={dist_cm:.0f}cm bearing={bearing:.0f}° "
+                f"(depth={forward_depth_cm:.0f}cm)"
+            )
+    if removed or skipped_sight:
+        print(
+            f"  [L2-trust] forward cone eviction: removed={removed} "
+            f"skipped_sight={skipped_sight} cone±{cone_half_deg:.0f}° "
+            f"depth={forward_depth_cm:.0f}cm"
+        )
     return removed
 
 

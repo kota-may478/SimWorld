@@ -35,10 +35,12 @@ def test_apply_fast_profile_updates_layered_nav() -> None:
     assert ln.SITE_ROBOT_SPEED == 285.0
     assert ln.STANDOFF_BACKOFF_MAX_CM == 100.0
     assert ln.STANDOFF_BACKOFF_SPEED == 140.0
-    assert ln.SITE_PLANNING_CLEARANCE_CM == 100.0
+    assert ln.SITE_PLANNING_CLEARANCE_CM == 150.0
     assert ln.L2_REPLAN_CELL_DELTA_THRESHOLD == 10
     assert ln.MAX_TURN_DEG_PER_STEP == 27.0
     assert ln.PERCEPTION_STANDOFF_CM == 100.0
+    assert ln.STANDOFF_EVICT_CONE_HALF_DEG == 50.0
+    assert ln.STANDOFF_EVICT_DEPTH_MARGIN_CM == 20.0
     apply_profile_to_layered_nav(resolve_profile("default"))
     assert ln.MOVES_PER_CYCLE == 2
     assert ln.PERCEPTION_STANDOFF_CM == 50.0
@@ -90,3 +92,25 @@ def test_timing_breakdown_rows() -> None:
     assert rows["Movement"] == "120.00 s"
     assert rows["Mapping / perception (SLAM/L2)"] == "45.00 s"
     assert rows["Leg 1 wall time"] == "300.00 s"
+    breakdown = timing_breakdown_rows(metrics)
+    bucket_rows = [
+        (label, value)
+        for label, value in breakdown
+        if label not in {
+            "Total mission time",
+            "Nav wall time (leg1+leg2)",
+            "Accounted nav time",
+            "Leg 1 wall time",
+            "Leg 2 wall time",
+            "Tracked motion time",
+            "Object proximity violation rate (≤1m)",
+        }
+        and not label.startswith("Residual")
+        and "cache" not in label.lower()
+    ]
+    durations = [float(v.replace(" s", "")) for _, v in bucket_rows if v.endswith(" s")]
+    assert durations == sorted(durations, reverse=True)
+    labels = [label for label, _ in timing_breakdown_rows(metrics)]
+    move_idx = labels.index("Movement")
+    perceive_idx = labels.index("Mapping / perception (SLAM/L2)")
+    assert move_idx < perceive_idx

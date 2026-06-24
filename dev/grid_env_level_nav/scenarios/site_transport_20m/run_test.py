@@ -517,21 +517,42 @@ def main() -> int:
             nonlocal ucv
             if robot_xy is None:
                 robot_xy = get_pos2d(ucv, robot_name)
-            if nav_profile.perception_standoff_cm > 0.0:
-                from perception_standoff import check_perception_standoff  # noqa: WPS433
+            standoff_cm = nav_profile.perception_standoff_cm
+            forward_depth_cm = depth_frame.min_fwd_cm
+            if standoff_cm > 0.0:
+                from perception_standoff import (  # noqa: WPS433
+                    check_perception_standoff,
+                    depth_confirms_clearance,
+                    depth_shows_obstacle,
+                    evict_stale_l2_in_forward_cone,
+                )
 
-                forward_depth_cm = depth_frame.min_fwd_cm
+                if depth_confirms_clearance(forward_depth_cm, standoff_cm):
+                    if robot_yaw is None:
+                        robot_yaw = get_yaw(ucv, robot_name)
+                    removed = evict_stale_l2_in_forward_cone(
+                        robot_xy,
+                        robot_yaw,
+                        layers,
+                        forward_depth_cm=float(forward_depth_cm),  # type: ignore[arg-type]
+                        standoff_cm=standoff_cm,
+                        l2_seen_cells=l2_seen_cells,
+                        registry_positions=_registry_obstacle_positions(),
+                        cone_half_deg=nav_profile.standoff_evict_cone_half_deg,
+                        depth_margin_cm=nav_profile.standoff_evict_depth_margin_cm,
+                    )
                 standoff = check_perception_standoff(
                     robot_xy,
                     layers,
                     registry_positions=_registry_obstacle_positions(),
-                    standoff_cm=nav_profile.perception_standoff_cm,
+                    standoff_cm=standoff_cm,
                     forward_depth_cm=forward_depth_cm,
                 )
-                if standoff.needs_backoff(nav_profile.perception_standoff_cm):
+                depth_obstacle = depth_shows_obstacle(forward_depth_cm, standoff_cm)
+                if standoff.needs_backoff(standoff_cm) and not depth_obstacle:
                     print(
                         f"[Site20] L2_depth gated: {standoff.nearest_dist_cm:.0f}cm "
-                        f"< {nav_profile.perception_standoff_cm:.0f}cm ({standoff.source})"
+                        f"< {standoff_cm:.0f}cm ({standoff.source})"
                     )
                     return 0
             if depth_frame.get_depth_m() is None:

@@ -129,12 +129,15 @@ def save_site_transport_artifacts(
 def _save_metrics_summary_png(metrics: Dict[str, Any], output_path: Path) -> None:
     from metrics import timing_breakdown_rows  # noqa: WPS433
 
-    fig = plt.figure(figsize=(14, 10))
+    rows = timing_breakdown_rows(metrics)
+    table_height = max(1.75, len(rows) * 0.22)
+    fig_height = max(11.0, 4.8 + table_height)
+    fig = plt.figure(figsize=(14, fig_height))
     gs = fig.add_gridspec(
         4,
         2,
-        height_ratios=[0.11, 0.07, 1.55, 0.62],
-        hspace=0.42,
+        height_ratios=[0.10, 0.06, table_height, 0.55],
+        hspace=0.38,
         wspace=0.28,
     )
 
@@ -145,7 +148,7 @@ def _save_metrics_summary_png(metrics: Dict[str, Any], output_path: Path) -> Non
     _draw_compact_mission_stats(ax_stats, metrics)
 
     ax_table = fig.add_subplot(gs[2, :])
-    _draw_timing_breakdown_table(ax_table, timing_breakdown_rows(metrics))
+    _draw_timing_breakdown_table(ax_table, rows)
 
     ax_viol_time = fig.add_subplot(gs[3, 0])
     _draw_violation_time_rates(ax_viol_time, metrics)
@@ -358,8 +361,11 @@ def _draw_timing_breakdown_table(ax, rows: Sequence[Tuple[str, str]]) -> None:
         bbox=[0.0, 0.0, 1.0, 0.92],
     )
     table.auto_set_font_size(False)
-    table.set_fontsize(9.5)
-    table.scale(1.0, 1.42)
+    row_count = len(rows) + 1
+    font_size = 8.5 if row_count > 18 else 9.5
+    row_scale = 1.18 if row_count > 18 else 1.42
+    table.set_fontsize(font_size)
+    table.scale(1.0, row_scale)
     for (row, col), cell in table.get_celld().items():
         if row == 0:
             cell.set_facecolor("#e7f5ff")

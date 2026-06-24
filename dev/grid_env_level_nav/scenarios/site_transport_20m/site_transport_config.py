@@ -32,6 +32,8 @@ class NavProfile:
     depth_pose_delta_max_cm: float = 5.0
     depth_move_invalidate_cm: float = 30.0
     depth_camera_settle_s: float = 0.08
+    standoff_evict_cone_half_deg: float = 45.0
+    standoff_evict_depth_margin_cm: float = 15.0
 
 
 DEFAULT_PROFILE = NavProfile(name="default")
@@ -48,8 +50,10 @@ FAST_PROFILE = NavProfile(
     post_motion_settle_s=0.05,
     pre_leg1_settle_s=1.0,
     depth_stride_px=12,
-    planning_clearance_cm=100.0,
+    planning_clearance_cm=150.0,
     perception_standoff_cm=100.0,
+    standoff_evict_cone_half_deg=50.0,
+    standoff_evict_depth_margin_cm=20.0,
     standoff_backoff_max_cm=100.0,
     standoff_backoff_speed=140.0,
     sight_registry_every_n=2,
@@ -92,4 +96,6 @@ def apply_profile_to_layered_nav(profile: NavProfile) -> None:
     ln.PERCEPTION_STANDOFF_CM = profile.perception_standoff_cm
     ln.STANDOFF_BACKOFF_MAX_CM = profile.standoff_backoff_max_cm
     ln.STANDOFF_BACKOFF_SPEED = profile.standoff_backoff_speed
+    ln.STANDOFF_EVICT_CONE_HALF_DEG = profile.standoff_evict_cone_half_deg
+    ln.STANDOFF_EVICT_DEPTH_MARGIN_CM = profile.standoff_evict_depth_margin_cm
     ln.MAX_TURN_DEG_PER_STEP = profile.max_turn_deg_per_step

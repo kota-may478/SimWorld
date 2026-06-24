@@ -187,6 +187,8 @@ NEAR_OBSTACLE_SLOW_CM = 220.0
 PERCEPTION_STANDOFF_CM = 0.0
 STANDOFF_BACKOFF_SPEED = 120.0
 STANDOFF_BACKOFF_MAX_CM = 80.0
+STANDOFF_EVICT_CONE_HALF_DEG = 55.0
+STANDOFF_EVICT_DEPTH_MARGIN_CM = 10.0
 
 
 def _l2_cell_delta_warrants_replan(cells_added: int, cells_removed: int = 0) -> bool:
@@ -371,6 +373,7 @@ def _maybe_evict_stale_l2_for_depth(
     *,
     forward_depth_cm: Optional[float],
     l2_seen_cells: Optional[Set[Tuple[int, int]]],
+    registry_positions: Sequence[WorldXY] = (),
     robot_yaw_deg: Optional[float] = None,
 ) -> None:
     from perception_standoff import (  # noqa: WPS433
@@ -385,19 +388,17 @@ def _maybe_evict_stale_l2_for_depth(
             robot_yaw_deg = get_yaw(ucv, robot_name)
         except (ConnectionError, OSError, ValueError, RuntimeError):
             return
-    removed = evict_stale_l2_in_forward_cone(
+    evict_stale_l2_in_forward_cone(
         pos_xy,
         robot_yaw_deg,
         layers,
         forward_depth_cm=float(forward_depth_cm),  # type: ignore[arg-type]
         standoff_cm=PERCEPTION_STANDOFF_CM,
         l2_seen_cells=l2_seen_cells,
+        registry_positions=registry_positions,
+        cone_half_deg=STANDOFF_EVICT_CONE_HALF_DEG,
+        depth_margin_cm=STANDOFF_EVICT_DEPTH_MARGIN_CM,
     )
-    if removed:
-        print(
-            f"  [SiteNav] depth-trust: evicted {removed} stale L2 cell(s) "
-            f"(forward {forward_depth_cm:.0f}cm >= {PERCEPTION_STANDOFF_CM:.0f}cm)"
-        )
 
 
 def _depth_backoff_move(
@@ -456,6 +457,7 @@ def _ensure_move_standoff(
         layers,
         forward_depth_cm=forward_depth_cm,
         l2_seen_cells=l2_seen_cells,
+        registry_positions=registry_positions,
         robot_yaw_deg=robot_yaw_deg,
     )
 
@@ -539,6 +541,7 @@ def _ensure_move_standoff(
         layers,
         forward_depth_cm=forward_depth_cm,
         l2_seen_cells=l2_seen_cells,
+        registry_positions=registry_positions,
         robot_yaw_deg=robot_yaw_deg,
     )
 
@@ -911,6 +914,7 @@ def _gate_perception_standoff(
         layers,
         forward_depth_cm=forward_depth_cm,
         l2_seen_cells=l2_seen_cells,
+        registry_positions=registry_positions,
         robot_yaw_deg=robot_yaw_deg,
     )
 

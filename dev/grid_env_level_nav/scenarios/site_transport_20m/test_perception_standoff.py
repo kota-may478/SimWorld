@@ -22,6 +22,7 @@ from perception_standoff import (  # noqa: E402
     StandoffCheck,
     check_perception_standoff,
     depth_confirms_clearance,
+    depth_shows_obstacle,
     evict_stale_l2_in_forward_cone,
     nearest_environment_distance_cm,
     nearest_l2_obstacle_cm,
@@ -122,6 +123,30 @@ def test_nearest_environment_distance_depth_when_no_map_obstacle() -> None:
     assert source == "depth"
 
 
+def test_depth_shows_obstacle() -> None:
+    assert depth_shows_obstacle(80.0, 100.0)
+    assert not depth_shows_obstacle(120.0, 100.0)
+    assert not depth_shows_obstacle(None, 100.0)
+
+
+def test_evict_stale_l2_evicts_even_when_in_seen_cells() -> None:
+    """Depth-painted cells in l2_seen_cells are still evicted when depth shows clear."""
+    layers = _empty_layers()
+    layers.l2[10, 10] = L2_LETHAL_COST
+    seen: set[tuple[int, int]] = {(10, 10)}
+    removed = evict_stale_l2_in_forward_cone(
+        (500.0, 500.0),
+        0.0,
+        layers,
+        forward_depth_cm=150.0,
+        standoff_cm=100.0,
+        l2_seen_cells=seen,
+    )
+    assert removed >= 1
+    assert (10, 10) not in seen
+    assert layers.l2[10, 10] <= 0.0
+
+
 def test_evict_stale_l2_in_forward_cone() -> None:
     layers = _empty_layers()
     layers.l2[10, 10] = L2_LETHAL_COST
@@ -134,3 +159,18 @@ def test_evict_stale_l2_in_forward_cone() -> None:
     )
     assert removed >= 1
     assert layers.l2[10, 10] <= 0.0
+
+
+def test_evict_stale_l2_skips_registry_confirmed_sector() -> None:
+    layers = _empty_layers()
+    layers.l2[10, 10] = L2_LETHAL_COST
+    removed = evict_stale_l2_in_forward_cone(
+        (500.0, 500.0),
+        0.0,
+        layers,
+        forward_depth_cm=150.0,
+        standoff_cm=100.0,
+        registry_positions=[(525.0, 525.0)],
+    )
+    assert removed == 0
+    assert layers.l2[10, 10] >= L2_LETHAL_COST * 0.5

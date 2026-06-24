@@ -398,61 +398,74 @@ def timing_breakdown_rows(metrics: Mapping[str, Any]) -> List[Tuple[str, str]]:
     nav_wall = timing.get("nav_wall_time_s")
     if nav_wall is not None:
         rows.append(("Nav wall time (leg1+leg2)", _fmt_s(nav_wall)))
-    bucket_specs = (
-        ("Movement", _ms_to_s(totals.get("move_ms"))),
-        ("  ↳ translate", _ms_to_s(totals.get("translate_ms"))),
-        ("  ↳ rotate", _ms_to_s(totals.get("rotate_ms"))),
-        ("Mapping / perception (SLAM/L2)", _ms_to_s(totals.get("perceive_ms"))),
-        ("  ↳ depth fetch (perceive)", _ms_to_s(totals.get("depth_fetch_ms"))),
-        ("  ↳ L2 update", _ms_to_s(totals.get("l2_update_ms"))),
-        ("  ↳ sight registry", _ms_to_s(totals.get("sight_registry_ms"))),
-        ("Replan", _ms_to_s(totals.get("replan_ms"))),
-        ("Settle", _ms_to_s(totals.get("settle_ms"))),
-        ("Standoff", _ms_to_s(totals.get("standoff_ms"))),
-        ("  ↳ map backoff", _ms_to_s(totals.get("backoff_ms"))),
-        ("  ↳ depth reverse", _ms_to_s(totals.get("depth_reverse_ms"))),
-        ("Depth refresh (nav)", _ms_to_s(totals.get("depth_refresh_ms"))),
-        ("  ↳ async prefetch wait", _ms_to_s(totals.get("async_wait_ms"))),
-        (
-            "  ↳ prefetch hits",
-            (
-                str(int(totals.get("prefetch_hits")))
-                if totals.get("prefetch_hits") is not None
-                else "—"
-            ),
-        ),
-        ("Pose query", _ms_to_s(totals.get("pose_query_ms"))),
-        ("Move gate spin", _ms_to_s(totals.get("move_gate_spin_ms"))),
-        ("Loop overhead", _ms_to_s(totals.get("loop_overhead_ms"))),
-        ("  ↳ waypoint select", _ms_to_s(totals.get("waypoint_select_ms"))),
-        ("  ↳ stuck check", _ms_to_s(totals.get("stuck_check_ms"))),
-        ("  ↳ replan decision", _ms_to_s(totals.get("replan_decision_ms"))),
-        ("  ↳ costmap scan", _ms_to_s(totals.get("costmap_scan_ms"))),
-        ("  ↳ nav branch", _ms_to_s(totals.get("nav_branch_ms"))),
-        ("  ↳ loop residual", _ms_to_s(totals.get("loop_residual_ms"))),
-    )
-    for label, value in bucket_specs:
-        if value is None:
+
+    ms_bucket_labels: Dict[str, str] = {
+        "move_ms": "Movement",
+        "translate_ms": "  ↳ translate",
+        "rotate_ms": "  ↳ rotate",
+        "perceive_ms": "Mapping / perception (SLAM/L2)",
+        "depth_fetch_ms": "  ↳ depth fetch (perceive)",
+        "l2_update_ms": "  ↳ L2 update",
+        "sight_registry_ms": "  ↳ sight registry",
+        "perceive_pose_ms": "  ↳ perceive pose",
+        "camera_settle_ms": "  ↳ camera settle",
+        "replan_ms": "Replan",
+        "settle_ms": "Settle",
+        "standoff_ms": "Standoff",
+        "backoff_ms": "  ↳ map backoff",
+        "depth_reverse_ms": "  ↳ depth reverse",
+        "depth_refresh_ms": "Depth refresh (nav)",
+        "async_wait_ms": "  ↳ async prefetch wait",
+        "prefetch_hit_ms": "  ↳ prefetch hit wait",
+        "pose_query_ms": "Pose query",
+        "move_gate_spin_ms": "Move gate spin",
+        "loop_overhead_ms": "Loop overhead",
+        "waypoint_select_ms": "  ↳ waypoint select",
+        "stuck_check_ms": "  ↳ stuck check",
+        "replan_decision_ms": "  ↳ replan decision",
+        "costmap_scan_ms": "  ↳ costmap scan",
+        "nav_branch_ms": "  ↳ nav branch",
+        "loop_residual_ms": "  ↳ loop residual",
+        "loop_overhead_breakdown_ms": "  ↳ loop overhead breakdown",
+    }
+    sortable: List[Tuple[float, str, str]] = []
+    for key, label in ms_bucket_labels.items():
+        raw = totals.get(key)
+        if raw is None:
             continue
-        if isinstance(value, str):
-            if value != "—" and value != "0":
-                rows.append((label, value))
+        ms = float(raw)
+        if ms <= 0.0:
             continue
-        if value > 0.0:
-            rows.append((label, _fmt_s(value)))
+        sortable.append((ms, label, _fmt_s(_ms_to_s(ms))))
+    sortable.sort(key=lambda item: item[0], reverse=True)
+    for _, label, value in sortable:
+        rows.append((label, value))
+
     accounted = totals.get("accounted_ms")
     if accounted is not None:
         rows.append(("Accounted nav time", _fmt_s(_ms_to_s(accounted))))
+
     residual_ms = totals.get("residual_ms")
     if residual_ms is not None:
         pct = totals.get("residual_pct")
         residual_s = float(residual_ms) / 1000.0
         suffix = f" ({pct:.1f}%)" if pct is not None else ""
         rows.append(("Residual (unaccounted)", f"{residual_s:.2f} s{suffix}"))
+
+    count_specs = (
+        ("standoff_events", "Standoff events"),
+        ("prefetch_hits", "Prefetch hits"),
+    )
+    for key, label in count_specs:
+        raw = totals.get(key)
+        if raw is not None and int(raw) > 0:
+            rows.append((label, str(int(raw))))
+
     hits = totals.get("depth_cache_hits")
     misses = totals.get("depth_cache_misses")
     if hits is not None and misses is not None and (hits or misses):
         rows.append(("Depth cache hits/misses", f"{hits}/{misses}"))
+
     leg1 = timing.get("leg1_time_s", metrics.get("leg1_time_s"))
     leg2 = timing.get("leg2_time_s", metrics.get("leg2_time_s"))
     if leg1 is not None:
