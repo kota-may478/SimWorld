@@ -111,7 +111,7 @@ def save_site_transport_artifacts(
         summary_png = output_dir / f"metricsSummary_{suffix}.png"
     else:
         summary_png = output_dir / f"site_transport_metrics_summary_{suffix}.png"
-    _save_metrics_summary_png(registry, trace, metrics, summary_png, layers=layers)
+    _save_metrics_summary_png(metrics, summary_png)
     paths["metrics_summary_png"] = summary_png
 
     traj_path = output_dir / f"site_transport_trajectory_{suffix}.json"
@@ -126,45 +126,34 @@ def save_site_transport_artifacts(
     return paths
 
 
-def _save_metrics_summary_png(
-    registry: SiteTransportRegistry,
-    trace: NavTrace,
-    metrics: Dict[str, Any],
-    output_path: Path,
-    *,
-    layers: Optional[LayeredCostmap] = None,
-) -> None:
+def _save_metrics_summary_png(metrics: Dict[str, Any], output_path: Path) -> None:
     from metrics import timing_breakdown_rows  # noqa: WPS433
 
-    fig = plt.figure(figsize=(18, 11))
+    fig = plt.figure(figsize=(14, 10))
     gs = fig.add_gridspec(
-        3,
-        3,
-        height_ratios=[0.12, 1.15, 0.85],
-        width_ratios=[1.5, 0.75, 0.75],
-        hspace=0.38,
-        wspace=0.32,
+        4,
+        2,
+        height_ratios=[0.11, 0.07, 1.55, 0.62],
+        hspace=0.42,
+        wspace=0.28,
     )
 
     ax_status = fig.add_subplot(gs[0, :])
     _draw_status_banner(ax_status, metrics)
 
-    ax_merged = fig.add_subplot(gs[1, :2])
-    if layers is not None:
-        _draw_merged_costmap_panel(ax_merged, layers, registry, trace, metrics)
-    else:
-        _draw_mission_map(ax_merged, registry, trace, metrics)
+    ax_stats = fig.add_subplot(gs[1, :])
+    _draw_compact_mission_stats(ax_stats, metrics)
 
-    ax_viol_time = fig.add_subplot(gs[1, 2])
-    _draw_violation_time_rates(ax_viol_time, metrics)
-
-    ax_viol_vel = fig.add_subplot(gs[2, 2])
-    _draw_violation_velocity_rates(ax_viol_vel, metrics)
-
-    ax_table = fig.add_subplot(gs[2, :2])
+    ax_table = fig.add_subplot(gs[2, :])
     _draw_timing_breakdown_table(ax_table, timing_breakdown_rows(metrics))
 
-    fig.subplots_adjust(top=0.96, bottom=0.06, left=0.06, right=0.98)
+    ax_viol_time = fig.add_subplot(gs[3, 0])
+    _draw_violation_time_rates(ax_viol_time, metrics)
+
+    ax_viol_vel = fig.add_subplot(gs[3, 1])
+    _draw_violation_velocity_rates(ax_viol_vel, metrics)
+
+    fig.subplots_adjust(top=0.97, bottom=0.05, left=0.07, right=0.97)
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
@@ -316,22 +305,61 @@ def _draw_violation_rate_bars(
         )
 
 
+def _draw_compact_mission_stats(ax, metrics: Dict[str, Any]) -> None:
+    timing = metrics.get("timing_summary") or {}
+    totals = timing.get("totals") or {}
+    viol = metrics.get("violations") or {}
+    parts: List[str] = []
+    nav_wall = timing.get("nav_wall_time_s")
+    if nav_wall is not None:
+        parts.append(f"nav wall {float(nav_wall):.1f} s")
+    leg1 = timing.get("leg1_time_s", metrics.get("leg1_time_s"))
+    leg2 = timing.get("leg2_time_s", metrics.get("leg2_time_s"))
+    if leg1 is not None and leg2 is not None:
+        parts.append(f"leg1 {float(leg1):.1f} s · leg2 {float(leg2):.1f} s")
+    standoff_events = totals.get("standoff_events")
+    if standoff_events is not None:
+        parts.append(f"standoff events {int(standoff_events)}")
+    hits = totals.get("depth_cache_hits")
+    misses = totals.get("depth_cache_misses")
+    if hits is not None and misses is not None:
+        parts.append(f"depth cache {int(hits)}/{int(misses)} hits/misses")
+    prefetch_hits = totals.get("prefetch_hits")
+    if prefetch_hits is not None:
+        parts.append(f"prefetch hits {int(prefetch_hits)}")
+    tracked = viol.get("tracked_motion_time_s")
+    if tracked is not None:
+        parts.append(f"tracked motion {float(tracked):.1f} s")
+    ax.axis("off")
+    ax.text(
+        0.5,
+        0.5,
+        "  ·  ".join(parts) if parts else "—",
+        ha="center",
+        va="center",
+        fontsize=9,
+        color="#444444",
+        transform=ax.transAxes,
+    )
+
+
 def _draw_timing_breakdown_table(ax, rows: Sequence[Tuple[str, str]]) -> None:
     ax.axis("off")
-    ax.set_title("Time breakdown", loc="left", fontsize=12, fontweight="bold")
+    ax.set_title("Time breakdown", loc="left", fontsize=13, fontweight="bold", pad=8)
     if not rows:
         ax.text(0.02, 0.5, "No timing data", transform=ax.transAxes, fontsize=10)
         return
     table = ax.table(
         cellText=[[label, value] for label, value in rows],
         colLabels=["Metric", "Value"],
-        loc="center",
+        loc="upper center",
         cellLoc="left",
-        colWidths=[0.62, 0.28],
+        colWidths=[0.68, 0.22],
+        bbox=[0.0, 0.0, 1.0, 0.92],
     )
     table.auto_set_font_size(False)
-    table.set_fontsize(9)
-    table.scale(1.0, 1.35)
+    table.set_fontsize(9.5)
+    table.scale(1.0, 1.42)
     for (row, col), cell in table.get_celld().items():
         if row == 0:
             cell.set_facecolor("#e7f5ff")
