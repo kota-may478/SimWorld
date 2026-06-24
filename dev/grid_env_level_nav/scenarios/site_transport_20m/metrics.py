@@ -48,6 +48,9 @@ class NavTimingAccumulator:
     loop_overhead_ms: float = 0.0
     depth_cache_hits: int = 0
     depth_cache_misses: int = 0
+    async_wait_ms: float = 0.0
+    prefetch_hit_ms: float = 0.0
+    prefetch_hits: int = 0
 
     def add(self, other: "NavTimingAccumulator") -> None:
         self.perceive_ms += other.perceive_ms
@@ -69,6 +72,9 @@ class NavTimingAccumulator:
         self.loop_overhead_ms += other.loop_overhead_ms
         self.depth_cache_hits += other.depth_cache_hits
         self.depth_cache_misses += other.depth_cache_misses
+        self.async_wait_ms += other.async_wait_ms
+        self.prefetch_hit_ms += other.prefetch_hit_ms
+        self.prefetch_hits += other.prefetch_hits
 
     def accounted_ms(self) -> float:
         return (
@@ -86,9 +92,18 @@ class NavTimingAccumulator:
     def total_ms(self) -> float:
         return self.accounted_ms()
 
-    def sync_cache_stats(self, hits: int, misses: int) -> None:
+    def sync_cache_stats(
+        self,
+        hits: int,
+        misses: int,
+        *,
+        async_wait_ms: float = 0.0,
+        prefetch_hits: int = 0,
+    ) -> None:
         self.depth_cache_hits = hits
         self.depth_cache_misses = misses
+        self.async_wait_ms = async_wait_ms
+        self.prefetch_hits = prefetch_hits
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -112,6 +127,9 @@ class NavTimingAccumulator:
             "loop_overhead_ms": round(self.loop_overhead_ms, 2),
             "depth_cache_hits": self.depth_cache_hits,
             "depth_cache_misses": self.depth_cache_misses,
+            "async_wait_ms": round(self.async_wait_ms, 2),
+            "prefetch_hit_ms": round(self.prefetch_hit_ms, 2),
+            "prefetch_hits": self.prefetch_hits,
             "accounted_ms": round(self.accounted_ms(), 2),
             "total_ms": round(self.total_ms(), 2),
         }
@@ -358,13 +376,28 @@ def timing_breakdown_rows(metrics: Mapping[str, Any]) -> List[Tuple[str, str]]:
         ("  ↳ map backoff", _ms_to_s(totals.get("backoff_ms"))),
         ("  ↳ depth reverse", _ms_to_s(totals.get("depth_reverse_ms"))),
         ("Depth refresh (nav)", _ms_to_s(totals.get("depth_refresh_ms"))),
+        ("  ↳ async prefetch wait", _ms_to_s(totals.get("async_wait_ms"))),
+        (
+            "  ↳ prefetch hits",
+            (
+                str(int(totals.get("prefetch_hits")))
+                if totals.get("prefetch_hits") is not None
+                else "—"
+            ),
+        ),
         ("Pose query", _ms_to_s(totals.get("pose_query_ms"))),
         ("Move gate spin", _ms_to_s(totals.get("move_gate_spin_ms"))),
         ("Loop overhead", _ms_to_s(totals.get("loop_overhead_ms"))),
     )
-    for label, seconds in bucket_specs:
-        if seconds is not None and seconds > 0.0:
-            rows.append((label, _fmt_s(seconds)))
+    for label, value in bucket_specs:
+        if value is None:
+            continue
+        if isinstance(value, str):
+            if value != "—" and value != "0":
+                rows.append((label, value))
+            continue
+        if value > 0.0:
+            rows.append((label, _fmt_s(value)))
     accounted = totals.get("accounted_ms")
     if accounted is not None:
         rows.append(("Accounted nav time", _fmt_s(_ms_to_s(accounted))))

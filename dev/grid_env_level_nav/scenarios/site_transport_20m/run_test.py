@@ -46,6 +46,7 @@ from layered_nav import (  # noqa: E402
 )
 from object_registry import (  # noqa: E402
     ObjectRegistry,
+    RegistryUpdateResult,
     SightConfig,
     estimate_local_xy_from_detection,
     update_object_registry_from_sight,
@@ -358,6 +359,8 @@ def main() -> int:
         )
         sight_depth_cam: dict = {"ready": False, "fusion_id": None}
         depth_frame = DepthFrameCache()
+        SIGHT_REGISTRY_EVERY_N = 1
+        perceive_cycle = {"n": 0}
         active_nav_timing: dict = {"acc": None}
         depth_meta: dict = {"unit": "unknown", "min_scene_m": None}
 
@@ -390,28 +393,42 @@ def main() -> int:
                 tick_settle(ucv, settle_s=0.08, ticks=1)
             return fetch_depth_npy(ucv, fusion_id)
 
+        def _sync_depth_timing_stats() -> None:
+            acc = active_nav_timing["acc"]
+            if acc is None:
+                return
+            acc.sync_cache_stats(
+                depth_frame.hits,
+                depth_frame.misses,
+                async_wait_ms=depth_frame.async_wait_ms,
+                prefetch_hits=depth_frame.prefetch_hits,
+            )
+
         def _refresh_forward_depth_cm(*, in_perceive: bool = False) -> Optional[float]:
             nonlocal ucv
             t0 = time.perf_counter()
             pose = get_pos2d(ucv, robot_name)
             force = not depth_frame.is_fresh(pose, max_age_s=depth_frame.stale_max_s)
             prev_misses = depth_frame.misses
-            result = depth_frame.refresh_forward_depth_cm(
+            prev_async_wait = depth_frame.async_wait_ms
+            result = depth_frame.get_or_wait(
                 pose,
                 _fetch_depth_raw_for_cache,
                 _record_depth_sample,
+                max_wait_s=0.15,
                 force=force,
-                max_age_s=depth_frame.ttl_s,
+                max_age_s=depth_frame.ttl_s if not force else depth_frame.stale_max_s,
             )
             acc = active_nav_timing["acc"]
             if acc is not None and depth_frame.misses > prev_misses:
                 elapsed = (time.perf_counter() - t0) * 1000.0
+                async_delta = depth_frame.async_wait_ms - prev_async_wait
+                sync_elapsed = max(0.0, elapsed - async_delta)
                 if in_perceive:
-                    acc.depth_fetch_ms += elapsed
+                    acc.depth_fetch_ms += sync_elapsed
                 else:
-                    acc.depth_refresh_ms += elapsed
-            if acc is not None:
-                acc.sync_cache_stats(depth_frame.hits, depth_frame.misses)
+                    acc.depth_refresh_ms += sync_elapsed
+            _sync_depth_timing_stats()
             return result
 
         def _cached_forward_depth_cm() -> Optional[float]:
@@ -425,6 +442,7 @@ def main() -> int:
 
         def _reset_depth_state(label: str, *, carry_forward: bool = False) -> None:
             depth_frame.invalidate(label)
+            perceive_cycle["n"] = 0
             if carry_forward:
                 depth_tracker.snapshot_occupied(layers)
                 object_registry.clear_dynamic()
@@ -544,19 +562,34 @@ def main() -> int:
             )
 
             def _perceive_sight(*, layers, l2_seen_cells):
-                reg_t0 = time.perf_counter()
-                reg_result = update_object_registry_from_sight(
-                    ucv,
-                    object_registry,
-                    robot_name=robot_name,
-                    placement_reg=placement_reg_holder["reg"],
-                    humanoid_actor_name=registry.humanoid_actor_name,
-                    material_actor_name=registry.material_actor_name,
-                    config=sight_cfg,
+                perceive_cycle["n"] += 1
+                run_sight = (
+                    SIGHT_REGISTRY_EVERY_N <= 1
+                    or perceive_cycle["n"] % SIGHT_REGISTRY_EVERY_N == 1
                 )
-                acc = active_nav_timing["acc"]
-                if acc is not None:
-                    acc.sight_registry_ms += (time.perf_counter() - reg_t0) * 1000.0
+                if run_sight:
+                    reg_t0 = time.perf_counter()
+                    reg_result = update_object_registry_from_sight(
+                        ucv,
+                        object_registry,
+                        robot_name=robot_name,
+                        placement_reg=placement_reg_holder["reg"],
+                        humanoid_actor_name=registry.humanoid_actor_name,
+                        material_actor_name=registry.material_actor_name,
+                        config=sight_cfg,
+                    )
+                    acc = active_nav_timing["acc"]
+                    if acc is not None:
+                        acc.sight_registry_ms += (time.perf_counter() - reg_t0) * 1000.0
+                else:
+                    reg_result = RegistryUpdateResult(
+                        detections=(),
+                        visible_actor_names=(),
+                        visible_slot_ids=(),
+                        backend="skipped",
+                        entries_added=0,
+                        entries_evicted=0,
+                    )
                 n_depth_cells = _apply_l2_depth(l2_seen_cells)
                 for det in reg_result.detections:
                     local_xy = estimate_local_xy_from_detection(
@@ -835,7 +868,7 @@ def main() -> int:
             on_move_cm_fn=_on_move_cm_fn if l2_mode == "sight" else None,
         )
         leg1_time_s = time.time() - leg1_t0
-        leg1_timing.sync_cache_stats(depth_frame.hits, depth_frame.misses)
+        _sync_depth_timing_stats()
         print(f"[Site20] leg1_time_s={leg1_time_s:.1f}")
         if not leg1_ok:
             print("[Site20] FAIL: leg1 material approach")
@@ -902,7 +935,7 @@ def main() -> int:
             on_move_cm_fn=_on_move_cm_fn if l2_mode == "sight" else None,
         )
         leg2_time_s = time.time() - leg2_t0
-        leg2_timing.sync_cache_stats(depth_frame.hits, depth_frame.misses)
+        _sync_depth_timing_stats()
         print(f"[Site20] leg2_time_s={leg2_time_s:.1f}")
         if not leg2_ok:
             print("[Site20] FAIL: leg2 humanoid approach")

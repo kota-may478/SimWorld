@@ -25,6 +25,9 @@ class DepthFrameCache:
     move_invalidate_cm: float = 30.0
     hits: int = 0
     misses: int = 0
+    prefetch_started: int = 0
+    prefetch_hits: int = 0
+    async_wait_ms: float = 0.0
     _depth_raw: Optional[np.ndarray] = field(default=None, repr=False)
     _depth_m: Optional[np.ndarray] = field(default=None, repr=False)
     min_fwd_cm: Optional[float] = None
@@ -68,6 +71,50 @@ class DepthFrameCache:
 
     def get_depth_m(self) -> Optional[np.ndarray]:
         return self._depth_m
+
+    def prefetch_async(
+        self,
+        pose_xy: WorldXY,
+        fetch_raw_fn: FetchRawFn,
+        record_fn: RecordFn,
+    ) -> None:
+        """Warm depth cache on main thread after motion (UnrealCV is single-client)."""
+        if self.is_fresh(pose_xy):
+            return
+        self.prefetch_started += 1
+        if (
+            self.refresh_forward_depth_cm(
+                pose_xy,
+                fetch_raw_fn,
+                record_fn,
+                force=True,
+                max_age_s=self.ttl_s,
+            )
+            is not None
+        ):
+            self.prefetch_hits += 1
+
+    def get_or_wait(
+        self,
+        pose_xy: WorldXY,
+        fetch_raw_fn: FetchRawFn,
+        record_fn: RecordFn,
+        *,
+        max_wait_s: float = 0.15,
+        force: bool = False,
+        max_age_s: Optional[float] = None,
+    ) -> Optional[float]:
+        del max_wait_s
+        if not force and self.is_fresh(pose_xy, max_age_s=max_age_s):
+            self.hits += 1
+            return self.min_fwd_cm
+        return self.refresh_forward_depth_cm(
+            pose_xy,
+            fetch_raw_fn,
+            record_fn,
+            force=True,
+            max_age_s=max_age_s,
+        )
 
     def refresh_forward_depth_cm(
         self,

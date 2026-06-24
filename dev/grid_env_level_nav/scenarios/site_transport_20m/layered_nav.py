@@ -1284,6 +1284,7 @@ def navigate_layered_with_fusion(
     depth_refresh_fn: Optional[Callable[[], Optional[float]]] = None,
     depth_invalidate_fn: Optional[Callable[[str], None]] = None,
     on_move_cm_fn: Optional[Callable[[float], None]] = None,
+    depth_prefetch_fn: Optional[Callable[[], None]] = None,
 ) -> bool:
     require_live_ucv(ucv, context="site transport fusion nav")
     goal_xy = local_xy_to_world(*goal_local_xy)
@@ -1793,6 +1794,8 @@ def navigate_layered_with_fusion(
                     ticks=1,
                     nav_timing=nav_timing,
                 )
+            if command.move_cm > 1e-3 and depth_prefetch_fn is not None:
+                depth_prefetch_fn()
             moves_executed += 1
             total_steps += 1
             steps_on_wp += 1
@@ -1917,6 +1920,7 @@ def navigate_to_slot(
     depth_refresh_fn: Optional[Callable[[], Optional[float]]] = None,
     depth_invalidate_fn: Optional[Callable[[str], None]] = None,
     on_move_cm_fn: Optional[Callable[[float], None]] = None,
+    depth_prefetch_fn: Optional[Callable[[], None]] = None,
 ) -> bool:
     from carry import pickup_standoff_xy  # noqa: WPS433
 
@@ -1955,6 +1959,7 @@ def navigate_to_slot(
         depth_refresh_fn=depth_refresh_fn,
         depth_invalidate_fn=depth_invalidate_fn,
         on_move_cm_fn=on_move_cm_fn,
+        depth_prefetch_fn=depth_prefetch_fn,
     )
 
 
@@ -1982,6 +1987,7 @@ def deliver_to(
     depth_refresh_fn: Optional[Callable[[], Optional[float]]] = None,
     depth_invalidate_fn: Optional[Callable[[str], None]] = None,
     on_move_cm_fn: Optional[Callable[[float], None]] = None,
+    depth_prefetch_fn: Optional[Callable[[], None]] = None,
 ) -> bool:
     """Navigate directly to semantic slot goal (e.g. humanoid delivery point)."""
     goal_local = object_registry.goal_local(slot_id) if hasattr(object_registry, "goal_local") else None
@@ -2013,4 +2019,5 @@ def deliver_to(
         depth_refresh_fn=depth_refresh_fn,
         depth_invalidate_fn=depth_invalidate_fn,
         on_move_cm_fn=on_move_cm_fn,
+        depth_prefetch_fn=depth_prefetch_fn,
     )
