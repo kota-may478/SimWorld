@@ -26,6 +26,12 @@ class NavProfile:
     perception_standoff_cm: float = 50.0
     standoff_backoff_max_cm: float = 80.0
     standoff_backoff_speed: float = 120.0
+    sight_registry_every_n: int = 1
+    max_turn_deg_per_step: float = 18.0
+    depth_cache_ttl_s: float = 0.3
+    depth_pose_delta_max_cm: float = 5.0
+    depth_move_invalidate_cm: float = 30.0
+    depth_camera_settle_s: float = 0.08
 
 
 DEFAULT_PROFILE = NavProfile(name="default")
@@ -46,6 +52,12 @@ FAST_PROFILE = NavProfile(
     perception_standoff_cm=100.0,
     standoff_backoff_max_cm=100.0,
     standoff_backoff_speed=140.0,
+    sight_registry_every_n=2,
+    max_turn_deg_per_step=27.0,
+    depth_cache_ttl_s=0.55,
+    depth_pose_delta_max_cm=12.0,
+    depth_move_invalidate_cm=120.0,
+    depth_camera_settle_s=0.05,
 )
 
 PROFILES: Dict[str, NavProfile] = {
@@ -80,3 +92,4 @@ def apply_profile_to_layered_nav(profile: NavProfile) -> None:
     ln.PERCEPTION_STANDOFF_CM = profile.perception_standoff_cm
     ln.STANDOFF_BACKOFF_MAX_CM = profile.standoff_backoff_max_cm
     ln.STANDOFF_BACKOFF_SPEED = profile.standoff_backoff_speed
+    ln.MAX_TURN_DEG_PER_STEP = profile.max_turn_deg_per_step

@@ -35,6 +35,8 @@ class NavTimingAccumulator:
     depth_fetch_ms: float = 0.0
     l2_update_ms: float = 0.0
     sight_registry_ms: float = 0.0
+    perceive_pose_ms: float = 0.0
+    camera_settle_ms: float = 0.0
     # Move sub-buckets (subset of move_ms)
     translate_ms: float = 0.0
     rotate_ms: float = 0.0
@@ -62,6 +64,8 @@ class NavTimingAccumulator:
         self.depth_fetch_ms += other.depth_fetch_ms
         self.l2_update_ms += other.l2_update_ms
         self.sight_registry_ms += other.sight_registry_ms
+        self.perceive_pose_ms += other.perceive_pose_ms
+        self.camera_settle_ms += other.camera_settle_ms
         self.translate_ms += other.translate_ms
         self.rotate_ms += other.rotate_ms
         self.backoff_ms += other.backoff_ms
@@ -117,6 +121,8 @@ class NavTimingAccumulator:
             "depth_fetch_ms": round(self.depth_fetch_ms, 2),
             "l2_update_ms": round(self.l2_update_ms, 2),
             "sight_registry_ms": round(self.sight_registry_ms, 2),
+            "perceive_pose_ms": round(self.perceive_pose_ms, 2),
+            "camera_settle_ms": round(self.camera_settle_ms, 2),
             "translate_ms": round(self.translate_ms, 2),
             "rotate_ms": round(self.rotate_ms, 2),
             "backoff_ms": round(self.backoff_ms, 2),

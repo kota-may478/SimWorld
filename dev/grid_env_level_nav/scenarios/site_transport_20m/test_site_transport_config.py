@@ -25,7 +25,8 @@ def test_resolve_fast_profile() -> None:
     assert profile.perception_interval_s == 5.5
     assert profile.depth_stride_px == 12
     assert profile.standoff_backoff_max_cm == 100.0
-    assert profile.l2_replan_cell_delta_threshold == 10
+    assert profile.sight_registry_every_n == 2
+    assert profile.max_turn_deg_per_step == 27.0
 
 
 def test_apply_fast_profile_updates_layered_nav() -> None:
@@ -36,6 +37,7 @@ def test_apply_fast_profile_updates_layered_nav() -> None:
     assert ln.STANDOFF_BACKOFF_SPEED == 140.0
     assert ln.SITE_PLANNING_CLEARANCE_CM == 100.0
     assert ln.L2_REPLAN_CELL_DELTA_THRESHOLD == 10
+    assert ln.MAX_TURN_DEG_PER_STEP == 27.0
     assert ln.PERCEPTION_STANDOFF_CM == 100.0
     apply_profile_to_layered_nav(resolve_profile("default"))
     assert ln.MOVES_PER_CYCLE == 2

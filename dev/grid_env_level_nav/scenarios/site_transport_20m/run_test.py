@@ -358,8 +358,13 @@ def main() -> int:
             latch_static=True,
         )
         sight_depth_cam: dict = {"ready": False, "fusion_id": None}
-        depth_frame = DepthFrameCache()
-        SIGHT_REGISTRY_EVERY_N = 1
+        depth_frame = DepthFrameCache(
+            ttl_s=nav_profile.depth_cache_ttl_s,
+            pose_delta_max_cm=nav_profile.depth_pose_delta_max_cm,
+            move_invalidate_cm=nav_profile.depth_move_invalidate_cm,
+        )
+        SIGHT_REGISTRY_EVERY_N = nav_profile.sight_registry_every_n
+        depth_camera_settle_s = nav_profile.depth_camera_settle_s
         perceive_cycle = {"n": 0}
         active_nav_timing: dict = {"acc": None}
         depth_meta: dict = {"unit": "unknown", "min_scene_m": None}
@@ -388,9 +393,13 @@ def main() -> int:
         def _fetch_depth_raw_for_cache() -> Optional[np.ndarray]:
             nonlocal ucv
             fusion_id = _ensure_sight_depth_camera()
+            acc = active_nav_timing["acc"]
             if not uses_engine_follow_camera(ucv, fusion_id):
+                cam_t0 = time.perf_counter()
                 update_sensor_camera_pose(ucv, robot_name, fusion_id)
-                tick_settle(ucv, settle_s=0.08, ticks=1)
+                tick_settle(ucv, settle_s=depth_camera_settle_s, ticks=1)
+                if acc is not None:
+                    acc.camera_settle_ms += (time.perf_counter() - cam_t0) * 1000.0
             return fetch_depth_npy(ucv, fusion_id)
 
         def _sync_depth_timing_stats() -> None:
@@ -420,14 +429,15 @@ def main() -> int:
                 max_age_s=depth_frame.ttl_s if not force else depth_frame.stale_max_s,
             )
             acc = active_nav_timing["acc"]
-            if acc is not None and depth_frame.misses > prev_misses:
+            if acc is not None:
                 elapsed = (time.perf_counter() - t0) * 1000.0
-                async_delta = depth_frame.async_wait_ms - prev_async_wait
-                sync_elapsed = max(0.0, elapsed - async_delta)
-                if in_perceive:
-                    acc.depth_fetch_ms += sync_elapsed
-                else:
-                    acc.depth_refresh_ms += sync_elapsed
+                if depth_frame.misses > prev_misses:
+                    async_delta = depth_frame.async_wait_ms - prev_async_wait
+                    sync_elapsed = max(0.0, elapsed - async_delta)
+                    if in_perceive:
+                        acc.depth_fetch_ms += sync_elapsed
+                    else:
+                        acc.depth_refresh_ms += sync_elapsed
             _sync_depth_timing_stats()
             return result
 
@@ -439,6 +449,18 @@ def main() -> int:
 
         def _on_move_cm_fn(move_cm: float) -> None:
             depth_frame.note_move_cm(move_cm)
+
+        def _depth_prefetch_fn() -> None:
+            nonlocal ucv
+            if l2_mode != "sight":
+                return
+            t0 = time.perf_counter()
+            pose = get_pos2d(ucv, robot_name)
+            depth_frame.prefetch_async(pose, _fetch_depth_raw_for_cache, _record_depth_sample)
+            acc = active_nav_timing["acc"]
+            if acc is not None:
+                acc.prefetch_hit_ms += (time.perf_counter() - t0) * 1000.0
+            _sync_depth_timing_stats()
 
         def _reset_depth_state(label: str, *, carry_forward: bool = False) -> None:
             depth_frame.invalidate(label)
@@ -479,9 +501,15 @@ def main() -> int:
                 print(f"[Site20] L2_depth camera ready fusion={fusion_id}")
             return int(sight_depth_cam["fusion_id"])
 
-        def _apply_l2_depth(l2_seen_cells: set) -> int:
+        def _apply_l2_depth(
+            l2_seen_cells: set,
+            *,
+            robot_xy: Optional[tuple[float, float]] = None,
+            robot_yaw: Optional[float] = None,
+        ) -> int:
             nonlocal ucv
-            robot_xy = get_pos2d(ucv, robot_name)
+            if robot_xy is None:
+                robot_xy = get_pos2d(ucv, robot_name)
             if nav_profile.perception_standoff_cm > 0.0:
                 from perception_standoff import check_perception_standoff  # noqa: WPS433
 
@@ -506,8 +534,8 @@ def main() -> int:
                 print("[Site20] L2_depth fetch skipped: no depth")
                 return 0
             l2_t0 = time.perf_counter()
-            robot_xy = get_pos2d(ucv, robot_name)
-            robot_yaw = get_yaw(ucv, robot_name)
+            if robot_yaw is None:
+                robot_yaw = get_yaw(ucv, robot_name)
             result = update_l2_depth(
                 depth_m,
                 layers,
@@ -563,6 +591,12 @@ def main() -> int:
 
             def _perceive_sight(*, layers, l2_seen_cells):
                 perceive_cycle["n"] += 1
+                pose_t0 = time.perf_counter()
+                robot_xy = get_pos2d(ucv, robot_name)
+                robot_yaw = get_yaw(ucv, robot_name)
+                acc = active_nav_timing["acc"]
+                if acc is not None:
+                    acc.perceive_pose_ms += (time.perf_counter() - pose_t0) * 1000.0
                 run_sight = (
                     SIGHT_REGISTRY_EVERY_N <= 1
                     or perceive_cycle["n"] % SIGHT_REGISTRY_EVERY_N == 1
@@ -578,7 +612,6 @@ def main() -> int:
                         material_actor_name=registry.material_actor_name,
                         config=sight_cfg,
                     )
-                    acc = active_nav_timing["acc"]
                     if acc is not None:
                         acc.sight_registry_ms += (time.perf_counter() - reg_t0) * 1000.0
                 else:
@@ -590,11 +623,13 @@ def main() -> int:
                         entries_added=0,
                         entries_evicted=0,
                     )
-                n_depth_cells = _apply_l2_depth(l2_seen_cells)
+                n_depth_cells = _apply_l2_depth(
+                    l2_seen_cells, robot_xy=robot_xy, robot_yaw=robot_yaw
+                )
                 for det in reg_result.detections:
                     local_xy = estimate_local_xy_from_detection(
-                        get_pos2d(ucv, robot_name),
-                        get_yaw(ucv, robot_name),
+                        robot_xy,
+                        robot_yaw,
                         det,
                         sensor_forward_cm=sight_cfg.sensor_forward_cm,
                     )
@@ -866,6 +901,7 @@ def main() -> int:
             ),
             depth_invalidate_fn=_depth_invalidate_fn if l2_mode == "sight" else None,
             on_move_cm_fn=_on_move_cm_fn if l2_mode == "sight" else None,
+            depth_prefetch_fn=_depth_prefetch_fn if l2_mode == "sight" else None,
         )
         leg1_time_s = time.time() - leg1_t0
         _sync_depth_timing_stats()
@@ -933,6 +969,7 @@ def main() -> int:
             ),
             depth_invalidate_fn=_depth_invalidate_fn if l2_mode == "sight" else None,
             on_move_cm_fn=_on_move_cm_fn if l2_mode == "sight" else None,
+            depth_prefetch_fn=_depth_prefetch_fn if l2_mode == "sight" else None,
         )
         leg2_time_s = time.time() - leg2_t0
         _sync_depth_timing_stats()

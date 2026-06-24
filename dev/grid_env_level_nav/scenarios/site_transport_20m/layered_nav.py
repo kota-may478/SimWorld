@@ -384,7 +384,9 @@ def _ensure_move_standoff(
     )
     nearest_dist = standoff.nearest_dist_cm
     depth_violation = (
-        forward_depth_cm is not None and forward_depth_cm < PERCEPTION_STANDOFF_CM
+        forward_depth_cm is not None
+        and forward_depth_cm < PERCEPTION_STANDOFF_CM - 5.0
+        and not standoff.needs_backoff(PERCEPTION_STANDOFF_CM)
     )
     if not standoff.needs_backoff(PERCEPTION_STANDOFF_CM) and not depth_violation:
         return True, pos_xy, forward_depth_cm, nearest_dist
@@ -1126,6 +1128,18 @@ def _timed_get_pos2d(
     return pos_xy, ucv_out
 
 
+def _timed_get_yaw(
+    ucv: UnrealCV,
+    robot_name: str,
+    nav_timing: Optional[NavTimingAccumulator],
+) -> float:
+    t0 = time.perf_counter()
+    yaw_deg = get_yaw(ucv, robot_name)
+    if nav_timing is not None:
+        nav_timing.pose_query_ms += (time.perf_counter() - t0) * 1000.0
+    return yaw_deg
+
+
 def _safe_get_pos2d(ucv, robot_name: str):
     try:
         return get_pos2d(ucv, robot_name), ucv
@@ -1337,7 +1351,12 @@ def navigate_layered_with_fusion(
         pos_xy, ucv = _safe_get_pos2d(ucv, robot_name)
         recover_robot_upright(ucv, robot_name, pos_xy, nav_actor=nav_actor)
         _nav_settle(ucv, settle_s=1.0, ticks=2, nav_timing=nav_timing)
-    _prime_first_motion(ucv, robot_name)
+    if nav_timing is not None:
+        prime_t0 = time.perf_counter()
+        _prime_first_motion(ucv, robot_name)
+        nav_timing.move_ms += (time.perf_counter() - prime_t0) * 1000.0
+    else:
+        _prime_first_motion(ucv, robot_name)
     _nav_settle(ucv, settle_s=1.0, ticks=2, nav_timing=nav_timing)
     if use_carry_sync:
         _sync_carry()
@@ -1492,9 +1511,35 @@ def navigate_layered_with_fusion(
         if gap > 0.0:
             nav_timing.loop_overhead_ms += gap
 
+    def _account_outer_loop_slice(loop_t0: float, accounted_at_start: float) -> None:
+        if nav_timing is None:
+            return
+        slice_ms = (time.perf_counter() - loop_t0) * 1000.0
+        bucketed_ms = nav_timing.accounted_ms() - accounted_at_start
+        gap = slice_ms - bucketed_ms
+        if gap > 0.0:
+            nav_timing.loop_overhead_ms += gap
+
+    pos_xy, ucv = _safe_get_pos2d(ucv, robot_name)
+    robot_yaw_deg = get_yaw(ucv, robot_name)
+
     while total_steps < max_total_steps:
+        loop_t0 = time.perf_counter()
+        accounted_at_start = nav_timing.accounted_ms() if nav_timing is not None else 0.0
+        depth_fresh_this_iter = False
+
+        def _refresh_depth_once() -> Optional[float]:
+            nonlocal depth_fresh_this_iter
+            if depth_refresh_fn is None:
+                return forward_depth_cm_fn() if forward_depth_cm_fn is not None else None
+            if depth_fresh_this_iter:
+                return forward_depth_cm_fn() if forward_depth_cm_fn is not None else None
+            depth_fresh_this_iter = True
+            return depth_refresh_fn()
+
         require_live_ucv(ucv, context=f"site nav step {total_steps}")
         pos_xy, ucv = _timed_get_pos2d(ucv, robot_name, nav_timing)
+        robot_yaw_deg = _timed_get_yaw(ucv, robot_name, nav_timing)
         if trace is not None:
             trace.record_position(world_xy_to_local(*pos_xy))
         if on_pose_sample is not None:
@@ -1559,9 +1604,9 @@ def navigate_layered_with_fusion(
                 carry_motion_cb=carry_motion_cb,
                 nav_timing=nav_timing,
                 forward_depth_cm=(
-                    depth_refresh_fn() if depth_refresh_fn is not None else None
+                    _refresh_depth_once()
                 ),
-                depth_refresh_fn=depth_refresh_fn,
+                depth_refresh_fn=_refresh_depth_once,
                 l2_seen_cells=l2_seen_cells,
                 depth_invalidate_fn=depth_invalidate_fn,
             )
@@ -1580,7 +1625,6 @@ def navigate_layered_with_fusion(
         for _ in range(MOVES_PER_CYCLE):
             if total_steps >= max_total_steps:
                 break
-            pos_xy, ucv = _safe_get_pos2d(ucv, robot_name)
             if dist2d(pos_xy, goal_xy) <= tolerance_cm:
                 print(f"  [SiteNav] Arrived dist={dist2d(pos_xy, goal_xy):.1f}cm")
                 if trace is not None:
@@ -1601,7 +1645,7 @@ def navigate_layered_with_fusion(
 
             command = _smooth_segment_command(
                 pos_xy,
-                get_yaw(ucv, robot_name),
+                robot_yaw_deg,
                 waypoint_xy,
             )
             if command is None:
@@ -1622,7 +1666,7 @@ def navigate_layered_with_fusion(
                 forward_depth_cm: Optional[float] = None
                 if PERCEPTION_STANDOFF_CM > 0.0:
                     if depth_refresh_fn is not None:
-                        forward_depth_cm = depth_refresh_fn()
+                        forward_depth_cm = _refresh_depth_once()
                     elif forward_depth_cm_fn is not None:
                         forward_depth_cm = forward_depth_cm_fn()
                 ok_move, pos_xy, forward_depth_cm, nearest_dist = _ensure_move_standoff(
@@ -1634,13 +1678,15 @@ def navigate_layered_with_fusion(
                     forward_depth_cm=forward_depth_cm,
                     carry_motion_cb=carry_motion_cb,
                     nav_timing=nav_timing,
-                    depth_refresh_fn=depth_refresh_fn,
+                    depth_refresh_fn=_refresh_depth_once if depth_refresh_fn is not None else None,
                     l2_seen_cells=l2_seen_cells,
                     depth_invalidate_fn=depth_invalidate_fn,
                 )
                 if not ok_move:
                     spin_t0 = time.perf_counter()
                     last_motion_t = time.time()
+                    pos_xy, ucv = _timed_get_pos2d(ucv, robot_name, nav_timing)
+                    robot_yaw_deg = _timed_get_yaw(ucv, robot_name, nav_timing)
                     if nav_timing is not None:
                         nav_timing.move_gate_spin_ms += (time.perf_counter() - spin_t0) * 1000.0
                     continue
@@ -1796,6 +1842,8 @@ def navigate_layered_with_fusion(
                 )
             if command.move_cm > 1e-3 and depth_prefetch_fn is not None:
                 depth_prefetch_fn()
+            pos_xy, ucv = _timed_get_pos2d(ucv, robot_name, nav_timing)
+            robot_yaw_deg = _timed_get_yaw(ucv, robot_name, nav_timing)
             moves_executed += 1
             total_steps += 1
             steps_on_wp += 1
@@ -1875,6 +1923,8 @@ def navigate_layered_with_fusion(
             if steps_on_wp >= PATH_MAX_STEPS_PER_WP and wp_index < len(waypoints):
                 wp_index += 1
                 steps_on_wp = 0
+
+        _account_outer_loop_slice(loop_t0, accounted_at_start)
 
         if total_steps % 25 == 0:
             pos_xy, ucv = _safe_get_pos2d(ucv, robot_name)
