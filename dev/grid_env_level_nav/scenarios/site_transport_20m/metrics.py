@@ -48,6 +48,13 @@ class NavTimingAccumulator:
     pose_query_ms: float = 0.0
     move_gate_spin_ms: float = 0.0
     loop_overhead_ms: float = 0.0
+    # Loop-overhead sub-buckets (informational; subset of loop_overhead_ms)
+    waypoint_select_ms: float = 0.0
+    stuck_check_ms: float = 0.0
+    replan_decision_ms: float = 0.0
+    costmap_scan_ms: float = 0.0
+    nav_branch_ms: float = 0.0
+    loop_residual_ms: float = 0.0
     depth_cache_hits: int = 0
     depth_cache_misses: int = 0
     async_wait_ms: float = 0.0
@@ -74,11 +81,27 @@ class NavTimingAccumulator:
         self.pose_query_ms += other.pose_query_ms
         self.move_gate_spin_ms += other.move_gate_spin_ms
         self.loop_overhead_ms += other.loop_overhead_ms
+        self.waypoint_select_ms += other.waypoint_select_ms
+        self.stuck_check_ms += other.stuck_check_ms
+        self.replan_decision_ms += other.replan_decision_ms
+        self.costmap_scan_ms += other.costmap_scan_ms
+        self.nav_branch_ms += other.nav_branch_ms
+        self.loop_residual_ms += other.loop_residual_ms
         self.depth_cache_hits += other.depth_cache_hits
         self.depth_cache_misses += other.depth_cache_misses
         self.async_wait_ms += other.async_wait_ms
         self.prefetch_hit_ms += other.prefetch_hit_ms
         self.prefetch_hits += other.prefetch_hits
+
+    def loop_overhead_breakdown_ms(self) -> float:
+        return (
+            self.waypoint_select_ms
+            + self.stuck_check_ms
+            + self.replan_decision_ms
+            + self.costmap_scan_ms
+            + self.nav_branch_ms
+            + self.loop_residual_ms
+        )
 
     def accounted_ms(self) -> float:
         return (
@@ -131,6 +154,13 @@ class NavTimingAccumulator:
             "pose_query_ms": round(self.pose_query_ms, 2),
             "move_gate_spin_ms": round(self.move_gate_spin_ms, 2),
             "loop_overhead_ms": round(self.loop_overhead_ms, 2),
+            "waypoint_select_ms": round(self.waypoint_select_ms, 2),
+            "stuck_check_ms": round(self.stuck_check_ms, 2),
+            "replan_decision_ms": round(self.replan_decision_ms, 2),
+            "costmap_scan_ms": round(self.costmap_scan_ms, 2),
+            "nav_branch_ms": round(self.nav_branch_ms, 2),
+            "loop_residual_ms": round(self.loop_residual_ms, 2),
+            "loop_overhead_breakdown_ms": round(self.loop_overhead_breakdown_ms(), 2),
             "depth_cache_hits": self.depth_cache_hits,
             "depth_cache_misses": self.depth_cache_misses,
             "async_wait_ms": round(self.async_wait_ms, 2),
@@ -394,6 +424,12 @@ def timing_breakdown_rows(metrics: Mapping[str, Any]) -> List[Tuple[str, str]]:
         ("Pose query", _ms_to_s(totals.get("pose_query_ms"))),
         ("Move gate spin", _ms_to_s(totals.get("move_gate_spin_ms"))),
         ("Loop overhead", _ms_to_s(totals.get("loop_overhead_ms"))),
+        ("  ↳ waypoint select", _ms_to_s(totals.get("waypoint_select_ms"))),
+        ("  ↳ stuck check", _ms_to_s(totals.get("stuck_check_ms"))),
+        ("  ↳ replan decision", _ms_to_s(totals.get("replan_decision_ms"))),
+        ("  ↳ costmap scan", _ms_to_s(totals.get("costmap_scan_ms"))),
+        ("  ↳ nav branch", _ms_to_s(totals.get("nav_branch_ms"))),
+        ("  ↳ loop residual", _ms_to_s(totals.get("loop_residual_ms"))),
     )
     for label, value in bucket_specs:
         if value is None:

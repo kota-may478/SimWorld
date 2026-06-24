@@ -11,7 +11,7 @@ import argparse
 import sys
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 import numpy as np
 
@@ -367,7 +367,14 @@ def main() -> int:
         depth_camera_settle_s = nav_profile.depth_camera_settle_s
         perceive_cycle = {"n": 0}
         active_nav_timing: dict = {"acc": None}
+        nav_pose_cache: Dict[str, Any] = {"xy": None, "yaw": None}
         depth_meta: dict = {"unit": "unknown", "min_scene_m": None}
+
+        def _cached_nav_pose() -> tuple[float, float]:
+            cached = nav_pose_cache.get("xy")
+            if cached is not None:
+                return cached
+            return get_pos2d(ucv, robot_name)
 
         def _record_depth_sample(depth_raw: np.ndarray, depth_m: np.ndarray) -> Optional[float]:
             unit = depth_npy_unit_hint(depth_raw)
@@ -416,7 +423,7 @@ def main() -> int:
         def _refresh_forward_depth_cm(*, in_perceive: bool = False) -> Optional[float]:
             nonlocal ucv
             t0 = time.perf_counter()
-            pose = get_pos2d(ucv, robot_name)
+            pose = _cached_nav_pose()
             force = not depth_frame.is_fresh(pose, max_age_s=depth_frame.stale_max_s)
             prev_misses = depth_frame.misses
             prev_async_wait = depth_frame.async_wait_ms
@@ -455,7 +462,7 @@ def main() -> int:
             if l2_mode != "sight":
                 return
             t0 = time.perf_counter()
-            pose = get_pos2d(ucv, robot_name)
+            pose = _cached_nav_pose()
             depth_frame.prefetch_async(pose, _fetch_depth_raw_for_cache, _record_depth_sample)
             acc = active_nav_timing["acc"]
             if acc is not None:
@@ -902,6 +909,7 @@ def main() -> int:
             depth_invalidate_fn=_depth_invalidate_fn if l2_mode == "sight" else None,
             on_move_cm_fn=_on_move_cm_fn if l2_mode == "sight" else None,
             depth_prefetch_fn=_depth_prefetch_fn if l2_mode == "sight" else None,
+            pose_cache=nav_pose_cache,
         )
         leg1_time_s = time.time() - leg1_t0
         _sync_depth_timing_stats()
@@ -970,6 +978,7 @@ def main() -> int:
             depth_invalidate_fn=_depth_invalidate_fn if l2_mode == "sight" else None,
             on_move_cm_fn=_on_move_cm_fn if l2_mode == "sight" else None,
             depth_prefetch_fn=_depth_prefetch_fn if l2_mode == "sight" else None,
+            pose_cache=nav_pose_cache,
         )
         leg2_time_s = time.time() - leg2_t0
         _sync_depth_timing_stats()

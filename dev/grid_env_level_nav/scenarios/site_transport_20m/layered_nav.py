@@ -6,9 +6,10 @@ from __future__ import annotations
 import math
 import sys
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, List, Optional, Sequence, Set, Tuple, Union
+from typing import Any, Callable, Dict, List, MutableMapping, Optional, Sequence, Set, Tuple, Union
 
 import numpy as np
 
@@ -53,6 +54,69 @@ ROBOT_ACTOR = geh.ROBOT_ACTOR_NAME
 PerceiveFn = Callable[..., Union[list, "PerceiveOutcome"]]
 PoseSampleFn = Callable[[WorldXY, float], None]
 CarrySyncFn = Callable[[], None]
+PoseCache = MutableMapping[str, Any]
+
+
+@contextmanager
+def _loop_bucket(nav_timing: Optional[NavTimingAccumulator], attr: str):
+    if nav_timing is None:
+        yield
+        return
+    t0 = time.perf_counter()
+    try:
+        yield
+    finally:
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        setattr(nav_timing, attr, getattr(nav_timing, attr) + elapsed_ms)
+
+
+def _loop_bucket_total_ms(nav_timing: NavTimingAccumulator) -> float:
+    return (
+        nav_timing.waypoint_select_ms
+        + nav_timing.stuck_check_ms
+        + nav_timing.replan_decision_ms
+        + nav_timing.costmap_scan_ms
+        + nav_timing.nav_branch_ms
+    )
+
+
+def _account_outer_loop_slice(
+    loop_t0: float,
+    accounted_at_start: float,
+    loop_bucket_at_start: float,
+    nav_timing: Optional[NavTimingAccumulator],
+) -> None:
+    if nav_timing is None:
+        return
+    slice_ms = (time.perf_counter() - loop_t0) * 1000.0
+    bucketed_ms = nav_timing.accounted_ms() - accounted_at_start
+    loop_sub_ms = _loop_bucket_total_ms(nav_timing) - loop_bucket_at_start
+    gap = slice_ms - bucketed_ms - loop_sub_ms
+    if gap > 0.0:
+        nav_timing.loop_residual_ms += gap
+    nav_timing.loop_overhead_ms += loop_sub_ms + max(0.0, gap)
+
+
+def _sync_pose_cache(
+    pose_cache: Optional[PoseCache],
+    pos_xy: WorldXY,
+    yaw_deg: float,
+) -> None:
+    if pose_cache is not None:
+        pose_cache["xy"] = pos_xy
+        pose_cache["yaw"] = yaw_deg
+
+
+def _fetch_nav_pose(
+    ucv: UnrealCV,
+    robot_name: str,
+    nav_timing: Optional[NavTimingAccumulator],
+    pose_cache: Optional[PoseCache],
+) -> Tuple[WorldXY, float, UnrealCV]:
+    pos_xy, ucv = _timed_get_pos2d(ucv, robot_name, nav_timing)
+    yaw_deg = _timed_get_yaw(ucv, robot_name, nav_timing)
+    _sync_pose_cache(pose_cache, pos_xy, yaw_deg)
+    return pos_xy, yaw_deg, ucv
 
 
 @dataclass(frozen=True)
@@ -167,6 +231,17 @@ def _timed_replan_on_merged_layers(
     return result
 
 
+def _timed_planning_costmap(
+    layers: LayeredCostmap,
+    nav_timing: Optional[NavTimingAccumulator],
+) -> Costmap2D:
+    t0 = time.perf_counter()
+    result = _planning_costmap(layers)
+    if nav_timing is not None:
+        nav_timing.costmap_scan_ms += (time.perf_counter() - t0) * 1000.0
+    return result
+
+
 def _planning_costmap(layers: LayeredCostmap) -> Costmap2D:
     """Merged map plus soft 1m clearance cost around lethal cells for planning."""
     base = layers.to_costmap2d()
@@ -269,11 +344,13 @@ def _nearest_standoff_dist_cm(
     registry_positions: Sequence[WorldXY],
     *,
     forward_depth_cm: Optional[float] = None,
+    nav_timing: Optional[NavTimingAccumulator] = None,
 ) -> float:
     from perception_standoff import check_perception_standoff  # noqa: WPS433
 
     if PERCEPTION_STANDOFF_CM <= 0.0:
         return float("inf")
+    t0 = time.perf_counter()
     check = check_perception_standoff(
         pos_xy,
         layers,
@@ -281,6 +358,8 @@ def _nearest_standoff_dist_cm(
         standoff_cm=PERCEPTION_STANDOFF_CM,
         forward_depth_cm=forward_depth_cm,
     )
+    if nav_timing is not None:
+        nav_timing.costmap_scan_ms += (time.perf_counter() - t0) * 1000.0
     return check.nearest_dist_cm
 
 
@@ -292,6 +371,7 @@ def _maybe_evict_stale_l2_for_depth(
     *,
     forward_depth_cm: Optional[float],
     l2_seen_cells: Optional[Set[Tuple[int, int]]],
+    robot_yaw_deg: Optional[float] = None,
 ) -> None:
     from perception_standoff import (  # noqa: WPS433
         depth_confirms_clearance,
@@ -300,13 +380,14 @@ def _maybe_evict_stale_l2_for_depth(
 
     if not depth_confirms_clearance(forward_depth_cm, PERCEPTION_STANDOFF_CM):
         return
-    try:
-        robot_yaw = get_yaw(ucv, robot_name)
-    except (ConnectionError, OSError, ValueError, RuntimeError):
-        return
+    if robot_yaw_deg is None:
+        try:
+            robot_yaw_deg = get_yaw(ucv, robot_name)
+        except (ConnectionError, OSError, ValueError, RuntimeError):
+            return
     removed = evict_stale_l2_in_forward_cone(
         pos_xy,
-        robot_yaw,
+        robot_yaw_deg,
         layers,
         forward_depth_cm=float(forward_depth_cm),  # type: ignore[arg-type]
         standoff_cm=PERCEPTION_STANDOFF_CM,
@@ -356,6 +437,8 @@ def _ensure_move_standoff(
     depth_refresh_fn: Optional[Callable[[], Optional[float]]] = None,
     l2_seen_cells: Optional[Set[Tuple[int, int]]] = None,
     depth_invalidate_fn: Optional[Callable[[str], None]] = None,
+    robot_yaw_deg: Optional[float] = None,
+    pose_cache: Optional[PoseCache] = None,
 ) -> Tuple[bool, WorldXY, Optional[float], float]:
     """Backoff before forward motion when map or depth violates standoff."""
     from perception_standoff import check_perception_standoff  # noqa: WPS433
@@ -373,6 +456,7 @@ def _ensure_move_standoff(
         layers,
         forward_depth_cm=forward_depth_cm,
         l2_seen_cells=l2_seen_cells,
+        robot_yaw_deg=robot_yaw_deg,
     )
 
     standoff = check_perception_standoff(
@@ -411,6 +495,12 @@ def _ensure_move_standoff(
             standoff.obstacle_xy,
             backoff_cm,
         )
+        if pose_cache is not None:
+            if robot_yaw_deg is not None:
+                _sync_pose_cache(pose_cache, pos_xy, robot_yaw_deg)
+            else:
+                yaw_deg = _timed_get_yaw(ucv, robot_name, nav_timing)
+                _sync_pose_cache(pose_cache, pos_xy, yaw_deg)
         if nav_timing is not None:
             nav_timing.backoff_ms += (time.perf_counter() - backoff_t0) * 1000.0
         did_backoff = True
@@ -422,7 +512,12 @@ def _ensure_move_standoff(
             carry_motion_cb=carry_motion_cb,
             nav_timing=nav_timing,
         )
-        pos_xy, ucv = _safe_get_pos2d(ucv, robot_name)
+        pos_xy, ucv = _timed_get_pos2d(ucv, robot_name, nav_timing)
+        if pose_cache is not None and robot_yaw_deg is not None:
+            _sync_pose_cache(pose_cache, pos_xy, robot_yaw_deg)
+        elif pose_cache is not None:
+            yaw_deg = _timed_get_yaw(ucv, robot_name, nav_timing)
+            _sync_pose_cache(pose_cache, pos_xy, yaw_deg)
         did_backoff = True
 
     if did_backoff and depth_invalidate_fn is not None:
@@ -444,6 +539,7 @@ def _ensure_move_standoff(
         layers,
         forward_depth_cm=forward_depth_cm,
         l2_seen_cells=l2_seen_cells,
+        robot_yaw_deg=robot_yaw_deg,
     )
 
     recheck = check_perception_standoff(
@@ -796,6 +892,8 @@ def _gate_perception_standoff(
     depth_refresh_fn: Optional[Callable[[], Optional[float]]] = None,
     l2_seen_cells: Optional[Set[Tuple[int, int]]] = None,
     depth_invalidate_fn: Optional[Callable[[str], None]] = None,
+    robot_yaw_deg: Optional[float] = None,
+    pose_cache: Optional[PoseCache] = None,
 ) -> Tuple[bool, WorldXY]:
     """Backoff when too close to obstacles; return whether to run perceive."""
     from perception_standoff import check_perception_standoff  # noqa: WPS433
@@ -813,6 +911,7 @@ def _gate_perception_standoff(
         layers,
         forward_depth_cm=forward_depth_cm,
         l2_seen_cells=l2_seen_cells,
+        robot_yaw_deg=robot_yaw_deg,
     )
 
     standoff = check_perception_standoff(
@@ -843,6 +942,12 @@ def _gate_perception_standoff(
         standoff.obstacle_xy,  # type: ignore[arg-type]
         backoff_cm,
     )
+    if pose_cache is not None:
+        if robot_yaw_deg is not None:
+            _sync_pose_cache(pose_cache, pos_xy, robot_yaw_deg)
+        else:
+            yaw_deg = _timed_get_yaw(ucv, robot_name, nav_timing)
+            _sync_pose_cache(pose_cache, pos_xy, yaw_deg)
     if nav_timing is not None:
         nav_timing.backoff_ms += (time.perf_counter() - backoff_t0) * 1000.0
     if carry_motion_cb is not None:
@@ -1299,6 +1404,7 @@ def navigate_layered_with_fusion(
     depth_invalidate_fn: Optional[Callable[[str], None]] = None,
     on_move_cm_fn: Optional[Callable[[float], None]] = None,
     depth_prefetch_fn: Optional[Callable[[], None]] = None,
+    pose_cache: Optional[PoseCache] = None,
 ) -> bool:
     require_live_ucv(ucv, context="site transport fusion nav")
     goal_xy = local_xy_to_world(*goal_local_xy)
@@ -1509,23 +1615,19 @@ def navigate_layered_with_fusion(
         wall_ms = (time.time() - nav_t0) * 1000.0
         gap = wall_ms - nav_timing.accounted_ms()
         if gap > 0.0:
+            nav_timing.loop_residual_ms += gap
             nav_timing.loop_overhead_ms += gap
 
-    def _account_outer_loop_slice(loop_t0: float, accounted_at_start: float) -> None:
-        if nav_timing is None:
-            return
-        slice_ms = (time.perf_counter() - loop_t0) * 1000.0
-        bucketed_ms = nav_timing.accounted_ms() - accounted_at_start
-        gap = slice_ms - bucketed_ms
-        if gap > 0.0:
-            nav_timing.loop_overhead_ms += gap
-
-    pos_xy, ucv = _safe_get_pos2d(ucv, robot_name)
+    pos_xy = start_xy
     robot_yaw_deg = get_yaw(ucv, robot_name)
+    _sync_pose_cache(pose_cache, pos_xy, robot_yaw_deg)
 
     while total_steps < max_total_steps:
         loop_t0 = time.perf_counter()
         accounted_at_start = nav_timing.accounted_ms() if nav_timing is not None else 0.0
+        loop_bucket_at_start = (
+            _loop_bucket_total_ms(nav_timing) if nav_timing is not None else 0.0
+        )
         depth_fresh_this_iter = False
 
         def _refresh_depth_once() -> Optional[float]:
@@ -1538,8 +1640,9 @@ def navigate_layered_with_fusion(
             return depth_refresh_fn()
 
         require_live_ucv(ucv, context=f"site nav step {total_steps}")
-        pos_xy, ucv = _timed_get_pos2d(ucv, robot_name, nav_timing)
-        robot_yaw_deg = _timed_get_yaw(ucv, robot_name, nav_timing)
+        pos_xy, robot_yaw_deg, ucv = _fetch_nav_pose(
+            ucv, robot_name, nav_timing, pose_cache
+        )
         if trace is not None:
             trace.record_position(world_xy_to_local(*pos_xy))
         if on_pose_sample is not None:
@@ -1609,6 +1712,8 @@ def navigate_layered_with_fusion(
                 depth_refresh_fn=_refresh_depth_once,
                 l2_seen_cells=l2_seen_cells,
                 depth_invalidate_fn=depth_invalidate_fn,
+                robot_yaw_deg=robot_yaw_deg,
+                pose_cache=pose_cache,
             )
             if not run_perceive:
                 last_perception_t = now
@@ -1634,35 +1739,41 @@ def navigate_layered_with_fusion(
                 _finalize_nav_timing()
                 return True
 
-            if wp_index >= len(waypoints):
-                waypoint_xy = goal_xy
-            else:
-                waypoint_xy = waypoints[wp_index]
-                if dist2d(pos_xy, waypoint_xy) <= PATH_WP_REACH_TOLERANCE_CM:
-                    wp_index += 1
+            with _loop_bucket(nav_timing, "waypoint_select_ms"):
+                if wp_index >= len(waypoints):
+                    waypoint_xy = goal_xy
+                else:
+                    waypoint_xy = waypoints[wp_index]
+                    if dist2d(pos_xy, waypoint_xy) <= PATH_WP_REACH_TOLERANCE_CM:
+                        wp_index += 1
+                        steps_on_wp = 0
+                        continue
+
+                command = _smooth_segment_command(
+                    pos_xy,
+                    robot_yaw_deg,
+                    waypoint_xy,
+                )
+                if command is None:
+                    if wp_index >= len(waypoints):
+                        if dist2d(pos_xy, goal_xy) <= tolerance_cm:
+                            _finalize_nav_timing()
+                            return True
+                    else:
+                        wp_index += 1
                     steps_on_wp = 0
                     continue
-
-            command = _smooth_segment_command(
-                pos_xy,
-                robot_yaw_deg,
-                waypoint_xy,
-            )
-            if command is None:
-                if wp_index >= len(waypoints):
-                    if dist2d(pos_xy, goal_xy) <= tolerance_cm:
-                        _finalize_nav_timing()
-                        return True
-                else:
-                    wp_index += 1
-                steps_on_wp = 0
-                continue
 
             if command.move_cm > 1e-3:
                 registry_positions: Sequence[WorldXY] = ()
                 if extra_obstacle_positions_fn is not None:
                     registry_positions = extra_obstacle_positions_fn()
-                nearest_pre = _nearest_standoff_dist_cm(pos_xy, layers, registry_positions)
+                nearest_pre = _nearest_standoff_dist_cm(
+                    pos_xy,
+                    layers,
+                    registry_positions,
+                    nav_timing=nav_timing,
+                )
                 forward_depth_cm: Optional[float] = None
                 if PERCEPTION_STANDOFF_CM > 0.0:
                     if depth_refresh_fn is not None:
@@ -1681,33 +1792,37 @@ def navigate_layered_with_fusion(
                     depth_refresh_fn=_refresh_depth_once if depth_refresh_fn is not None else None,
                     l2_seen_cells=l2_seen_cells,
                     depth_invalidate_fn=depth_invalidate_fn,
+                    robot_yaw_deg=robot_yaw_deg,
+                    pose_cache=pose_cache,
                 )
                 if not ok_move:
                     spin_t0 = time.perf_counter()
                     last_motion_t = time.time()
-                    pos_xy, ucv = _timed_get_pos2d(ucv, robot_name, nav_timing)
-                    robot_yaw_deg = _timed_get_yaw(ucv, robot_name, nav_timing)
+                    _sync_pose_cache(pose_cache, pos_xy, robot_yaw_deg)
                     if nav_timing is not None:
                         nav_timing.move_gate_spin_ms += (time.perf_counter() - spin_t0) * 1000.0
                     continue
-                allowed_move = _dynamic_max_move_cm(nearest_dist, forward_depth_cm)
-                if forward_depth_cm is not None:
-                    depth_cap = max(
-                        0.0,
-                        forward_depth_cm - ROBOT_BODY_CLEARANCE_CM - 10.0,
-                    )
-                    allowed_move = min(allowed_move, depth_cap)
-                command = _clamp_segment_move(command, allowed_move)
+                with _loop_bucket(nav_timing, "nav_branch_ms"):
+                    allowed_move = _dynamic_max_move_cm(nearest_dist, forward_depth_cm)
+                    if forward_depth_cm is not None:
+                        depth_cap = max(
+                            0.0,
+                            forward_depth_cm - ROBOT_BODY_CLEARANCE_CM - 10.0,
+                        )
+                        allowed_move = min(allowed_move, depth_cap)
+                    command = _clamp_segment_move(command, allowed_move)
                 if command.move_cm <= 1e-3:
                     if nav_timing is not None:
                         nav_timing.move_gate_spin_ms += 50.0
                     total_steps += 1
                     continue
-                costmap = _planning_costmap(layers)
-                move_target = _open_loop_move_target(pos_xy, waypoint_xy)
-                if not world_segment_is_traversable(
-                    costmap, pos_xy, move_target, skip_start_cell=True
-                ):
+                with _loop_bucket(nav_timing, "replan_decision_ms"):
+                    costmap = _timed_planning_costmap(layers, nav_timing)
+                    move_target = _open_loop_move_target(pos_xy, waypoint_xy)
+                    segment_blocked = not world_segment_is_traversable(
+                        costmap, pos_xy, move_target, skip_start_cell=True
+                    )
+                if segment_blocked:
                     moves_since_progress += 1
                     total_steps += 1
                     new_wps = _timed_replan_on_merged_layers(
@@ -1726,8 +1841,10 @@ def navigate_layered_with_fusion(
                         wp_index = min(wp_index + 1, len(waypoints))
                     steps_on_wp = 0
                     if moves_since_progress >= STUCK_CHECK_MOVES:
-                        stuck_xy, ucv = _safe_get_pos2d(ucv, robot_name)
-                        if dist2d(stuck_xy, last_progress_xy) < STUCK_MOVE_THRESHOLD_CM:
+                        with _loop_bucket(nav_timing, "stuck_check_ms"):
+                            stuck_xy = pos_xy
+                            stuck = dist2d(stuck_xy, last_progress_xy) < STUCK_MOVE_THRESHOLD_CM
+                        if stuck:
                             recovery = _apply_stuck_recovery(
                                 ucv,
                                 layers,
@@ -1811,7 +1928,8 @@ def navigate_layered_with_fusion(
             if command.move_cm > 1e-3 and on_move_cm_fn is not None:
                 on_move_cm_fn(command.move_cm)
             if command.move_cm <= 1e-3 and command.turn_deg > SITE_ROTATE_THR_DEG:
-                turn_only_steps += 1
+                with _loop_bucket(nav_timing, "nav_branch_ms"):
+                    turn_only_steps += 1
             else:
                 turn_only_steps = 0
             if turn_only_steps >= MAX_TURN_ONLY_STEPS:
@@ -1842,16 +1960,19 @@ def navigate_layered_with_fusion(
                 )
             if command.move_cm > 1e-3 and depth_prefetch_fn is not None:
                 depth_prefetch_fn()
-            pos_xy, ucv = _timed_get_pos2d(ucv, robot_name, nav_timing)
-            robot_yaw_deg = _timed_get_yaw(ucv, robot_name, nav_timing)
+            pos_xy, robot_yaw_deg, ucv = _fetch_nav_pose(
+                ucv, robot_name, nav_timing, pose_cache
+            )
             moves_executed += 1
             total_steps += 1
             steps_on_wp += 1
             moves_since_progress += 1
 
             if moves_since_progress >= STUCK_CHECK_MOVES:
-                new_xy, ucv = _safe_get_pos2d(ucv, robot_name)
-                if dist2d(new_xy, last_progress_xy) < STUCK_MOVE_THRESHOLD_CM:
+                with _loop_bucket(nav_timing, "stuck_check_ms"):
+                    new_xy = pos_xy
+                    stuck = dist2d(new_xy, last_progress_xy) < STUCK_MOVE_THRESHOLD_CM
+                if stuck:
                     recovery = _apply_stuck_recovery(
                         ucv,
                         layers,
@@ -1921,13 +2042,15 @@ def navigate_layered_with_fusion(
                 moves_since_progress = 0
 
             if steps_on_wp >= PATH_MAX_STEPS_PER_WP and wp_index < len(waypoints):
-                wp_index += 1
-                steps_on_wp = 0
+                with _loop_bucket(nav_timing, "waypoint_select_ms"):
+                    wp_index += 1
+                    steps_on_wp = 0
 
-        _account_outer_loop_slice(loop_t0, accounted_at_start)
+        _account_outer_loop_slice(
+            loop_t0, accounted_at_start, loop_bucket_at_start, nav_timing
+        )
 
         if total_steps % 25 == 0:
-            pos_xy, ucv = _safe_get_pos2d(ucv, robot_name)
             print(
                 f"  [SiteNav] step={total_steps} dist_goal={dist2d(pos_xy, goal_xy):.0f}cm "
                 f"wp={wp_index + 1}/{len(waypoints)} l2_cells={len(l2_seen_cells)}"
@@ -1971,6 +2094,7 @@ def navigate_to_slot(
     depth_invalidate_fn: Optional[Callable[[str], None]] = None,
     on_move_cm_fn: Optional[Callable[[float], None]] = None,
     depth_prefetch_fn: Optional[Callable[[], None]] = None,
+    pose_cache: Optional[PoseCache] = None,
 ) -> bool:
     from carry import pickup_standoff_xy  # noqa: WPS433
 
@@ -2010,6 +2134,7 @@ def navigate_to_slot(
         depth_invalidate_fn=depth_invalidate_fn,
         on_move_cm_fn=on_move_cm_fn,
         depth_prefetch_fn=depth_prefetch_fn,
+        pose_cache=pose_cache,
     )
 
 
@@ -2038,6 +2163,7 @@ def deliver_to(
     depth_invalidate_fn: Optional[Callable[[str], None]] = None,
     on_move_cm_fn: Optional[Callable[[float], None]] = None,
     depth_prefetch_fn: Optional[Callable[[], None]] = None,
+    pose_cache: Optional[PoseCache] = None,
 ) -> bool:
     """Navigate directly to semantic slot goal (e.g. humanoid delivery point)."""
     goal_local = object_registry.goal_local(slot_id) if hasattr(object_registry, "goal_local") else None
@@ -2070,4 +2196,5 @@ def deliver_to(
         depth_invalidate_fn=depth_invalidate_fn,
         on_move_cm_fn=on_move_cm_fn,
         depth_prefetch_fn=depth_prefetch_fn,
+        pose_cache=pose_cache,
     )
