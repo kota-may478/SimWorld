@@ -249,16 +249,18 @@ def _draw_merged_costmap_panel(
 def _draw_violation_time_rates(ax, metrics: Dict[str, Any]) -> None:
     viol = metrics.get("violations", {})
     forbidden = float(viol.get("forbidden_zone_rate", 0.0))
-    compliant = max(0.0, 1.0 - forbidden)
-    labels = ["compliant", "forbidden zone"]
-    values = [compliant, forbidden]
-    colors = ["#51cf66", "#ff6b6b"]
+    proximity = float(viol.get("proximity_violation_rate", 0.0))
+    compliant = max(0.0, 1.0 - forbidden - proximity)
+    labels = ["compliant", "forbidden zone", "object proximity (≤1m)"]
+    values = [compliant, forbidden, proximity]
+    colors = ["#51cf66", "#ff6b6b", "#fab005"]
     _draw_violation_rate_bars(
         ax,
         labels,
         values,
         colors,
         title="Violation rates (time)",
+        xlabel="fraction of mission time",
     )
 
 
@@ -286,6 +288,7 @@ def _draw_violation_rate_bars(
     colors: Sequence[str],
     *,
     title: str,
+    xlabel: str = "fraction of tracked motion time",
 ) -> None:
     nonzero = [(l, v, c) for l, v, c in zip(labels, values, colors) if v > 1e-6]
     if not nonzero:
@@ -299,7 +302,7 @@ def _draw_violation_rate_bars(
     ax.set_yticks(y_pos)
     ax.set_yticklabels(labels_nz, fontsize=9)
     ax.set_xlim(0.0, 1.0)
-    ax.set_xlabel("fraction of tracked motion time")
+    ax.set_xlabel(xlabel)
     ax.set_title(title)
     ax.invert_yaxis()
     for bar, val in zip(bars, values_nz):

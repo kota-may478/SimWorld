@@ -267,6 +267,8 @@ def _nearest_standoff_dist_cm(
     pos_xy: WorldXY,
     layers: LayeredCostmap,
     registry_positions: Sequence[WorldXY],
+    *,
+    forward_depth_cm: Optional[float] = None,
 ) -> float:
     from perception_standoff import check_perception_standoff  # noqa: WPS433
 
@@ -277,8 +279,44 @@ def _nearest_standoff_dist_cm(
         layers,
         registry_positions=registry_positions,
         standoff_cm=PERCEPTION_STANDOFF_CM,
+        forward_depth_cm=forward_depth_cm,
     )
     return check.nearest_dist_cm
+
+
+def _maybe_evict_stale_l2_for_depth(
+    ucv: UnrealCV,
+    robot_name: str,
+    pos_xy: WorldXY,
+    layers: LayeredCostmap,
+    *,
+    forward_depth_cm: Optional[float],
+    l2_seen_cells: Optional[Set[Tuple[int, int]]],
+) -> None:
+    from perception_standoff import (  # noqa: WPS433
+        depth_confirms_clearance,
+        evict_stale_l2_in_forward_cone,
+    )
+
+    if not depth_confirms_clearance(forward_depth_cm, PERCEPTION_STANDOFF_CM):
+        return
+    try:
+        robot_yaw = get_yaw(ucv, robot_name)
+    except (ConnectionError, OSError, ValueError, RuntimeError):
+        return
+    removed = evict_stale_l2_in_forward_cone(
+        pos_xy,
+        robot_yaw,
+        layers,
+        forward_depth_cm=float(forward_depth_cm),  # type: ignore[arg-type]
+        standoff_cm=PERCEPTION_STANDOFF_CM,
+        l2_seen_cells=l2_seen_cells,
+    )
+    if removed:
+        print(
+            f"  [SiteNav] depth-trust: evicted {removed} stale L2 cell(s) "
+            f"(forward {forward_depth_cm:.0f}cm >= {PERCEPTION_STANDOFF_CM:.0f}cm)"
+        )
 
 
 def _depth_backoff_move(
@@ -312,20 +350,34 @@ def _ensure_move_standoff(
     carry_motion_cb: Optional[CarrySyncFn],
     nav_timing: Optional[NavTimingAccumulator],
     depth_refresh_fn: Optional[Callable[[], Optional[float]]] = None,
+    l2_seen_cells: Optional[Set[Tuple[int, int]]] = None,
 ) -> Tuple[bool, WorldXY, Optional[float], float]:
     """Backoff before forward motion when map or depth violates standoff."""
     from perception_standoff import check_perception_standoff  # noqa: WPS433
 
-    nearest_dist = _nearest_standoff_dist_cm(pos_xy, layers, registry_positions)
     if PERCEPTION_STANDOFF_CM <= 0.0:
-        return True, pos_xy, forward_depth_cm, nearest_dist
+        return True, pos_xy, forward_depth_cm, float("inf")
+
+    if depth_refresh_fn is not None:
+        forward_depth_cm = depth_refresh_fn()
+
+    _maybe_evict_stale_l2_for_depth(
+        ucv,
+        robot_name,
+        pos_xy,
+        layers,
+        forward_depth_cm=forward_depth_cm,
+        l2_seen_cells=l2_seen_cells,
+    )
 
     standoff = check_perception_standoff(
         pos_xy,
         layers,
         registry_positions=registry_positions,
         standoff_cm=PERCEPTION_STANDOFF_CM,
+        forward_depth_cm=forward_depth_cm,
     )
+    nearest_dist = standoff.nearest_dist_cm
     depth_violation = (
         forward_depth_cm is not None and forward_depth_cm < PERCEPTION_STANDOFF_CM
     )
@@ -371,13 +423,23 @@ def _ensure_move_standoff(
     if depth_refresh_fn is not None:
         forward_depth_cm = depth_refresh_fn()
 
-    nearest_dist = _nearest_standoff_dist_cm(pos_xy, layers, registry_positions)
+    _maybe_evict_stale_l2_for_depth(
+        ucv,
+        robot_name,
+        pos_xy,
+        layers,
+        forward_depth_cm=forward_depth_cm,
+        l2_seen_cells=l2_seen_cells,
+    )
+
     recheck = check_perception_standoff(
         pos_xy,
         layers,
         registry_positions=registry_positions,
         standoff_cm=PERCEPTION_STANDOFF_CM,
+        forward_depth_cm=forward_depth_cm,
     )
+    nearest_dist = recheck.nearest_dist_cm
     depth_violation = (
         forward_depth_cm is not None and forward_depth_cm < PERCEPTION_STANDOFF_CM - 5.0
     )
@@ -716,6 +778,9 @@ def _gate_perception_standoff(
     registry_positions: Sequence[WorldXY],
     carry_motion_cb: Optional[CarrySyncFn],
     nav_timing: Optional[NavTimingAccumulator],
+    forward_depth_cm: Optional[float] = None,
+    depth_refresh_fn: Optional[Callable[[], Optional[float]]] = None,
+    l2_seen_cells: Optional[Set[Tuple[int, int]]] = None,
 ) -> Tuple[bool, WorldXY]:
     """Backoff when too close to obstacles; return whether to run perceive."""
     from perception_standoff import check_perception_standoff  # noqa: WPS433
@@ -723,11 +788,24 @@ def _gate_perception_standoff(
     if PERCEPTION_STANDOFF_CM <= 0.0:
         return True, pos_xy
 
+    if depth_refresh_fn is not None:
+        forward_depth_cm = depth_refresh_fn()
+
+    _maybe_evict_stale_l2_for_depth(
+        ucv,
+        robot_name,
+        pos_xy,
+        layers,
+        forward_depth_cm=forward_depth_cm,
+        l2_seen_cells=l2_seen_cells,
+    )
+
     standoff = check_perception_standoff(
         pos_xy,
         layers,
         registry_positions=registry_positions,
         standoff_cm=PERCEPTION_STANDOFF_CM,
+        forward_depth_cm=forward_depth_cm,
     )
     if not standoff.needs_backoff(PERCEPTION_STANDOFF_CM):
         return True, pos_xy
@@ -755,11 +833,15 @@ def _gate_perception_standoff(
         nav_timing.standoff_ms += (time.perf_counter() - standoff_t0) * 1000.0
         nav_timing.standoff_events += 1
 
+    if depth_refresh_fn is not None:
+        forward_depth_cm = depth_refresh_fn()
+
     recheck = check_perception_standoff(
         pos_xy,
         layers,
         registry_positions=registry_positions,
         standoff_cm=PERCEPTION_STANDOFF_CM,
+        forward_depth_cm=forward_depth_cm,
     )
     if recheck.needs_backoff(PERCEPTION_STANDOFF_CM):
         print(
@@ -1427,6 +1509,11 @@ def navigate_layered_with_fusion(
                 registry_positions=registry_positions,
                 carry_motion_cb=carry_motion_cb,
                 nav_timing=nav_timing,
+                forward_depth_cm=(
+                    depth_refresh_fn() if depth_refresh_fn is not None else None
+                ),
+                depth_refresh_fn=depth_refresh_fn,
+                l2_seen_cells=l2_seen_cells,
             )
             if not run_perceive:
                 last_perception_t = now
@@ -1496,6 +1583,7 @@ def navigate_layered_with_fusion(
                     carry_motion_cb=carry_motion_cb,
                     nav_timing=nav_timing,
                     depth_refresh_fn=depth_refresh_fn,
+                    l2_seen_cells=l2_seen_cells,
                 )
                 if not ok_move:
                     last_motion_t = time.time()
@@ -1624,6 +1712,7 @@ def navigate_layered_with_fusion(
                     carry_motion_cb=carry_motion_cb,
                     nav_timing=nav_timing,
                     depth_refresh_fn=depth_refresh_fn,
+                    l2_seen_cells=l2_seen_cells,
                 )
                 if not can_move:
                     total_steps += 1

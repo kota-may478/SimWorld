@@ -17,6 +17,7 @@ from zones import ForbiddenZone, point_in_forbidden_local
 WorldXY = Tuple[float, float]
 SPEED_LIMIT_KMH = 5.0
 SPEED_LIMIT_CM_S = SPEED_LIMIT_KMH * 100_000.0 / 3600.0  # ≈138.89 cm/s
+PROXIMITY_VIOLATION_CM = 100.0
 
 
 @dataclass
@@ -114,6 +115,8 @@ class MotionSample:
     speed_cm_s: float
     in_forbidden: bool
     overspeed: bool
+    proximity_violation: bool = False
+    proximity_dist_cm: Optional[float] = None
 
 
 @dataclass
@@ -124,7 +127,13 @@ class MissionRecorder:
     _last_t: Optional[float] = None
     _last_xy: Optional[WorldXY] = None
 
-    def record_pose(self, pos_xy: WorldXY, *, now: Optional[float] = None) -> None:
+    def record_pose(
+        self,
+        pos_xy: WorldXY,
+        *,
+        now: Optional[float] = None,
+        proximity_dist_cm: Optional[float] = None,
+    ) -> None:
         t = now if now is not None else self.mission_t0
         lx, ly = world_xy_to_local(pos_xy[0], pos_xy[1])
         speed = 0.0
@@ -133,6 +142,11 @@ class MissionRecorder:
             speed = math.hypot(pos_xy[0] - self._last_xy[0], pos_xy[1] - self._last_xy[1]) / dt
         in_forbidden = point_in_forbidden_local(lx, ly, self.forbidden_zones)
         overspeed = speed > SPEED_LIMIT_CM_S
+        proximity_violation = (
+            proximity_dist_cm is not None
+            and math.isfinite(proximity_dist_cm)
+            and proximity_dist_cm <= PROXIMITY_VIOLATION_CM
+        )
         self.samples.append(
             MotionSample(
                 t_s=t - self.mission_t0,
@@ -140,6 +154,8 @@ class MissionRecorder:
                 speed_cm_s=speed,
                 in_forbidden=in_forbidden,
                 overspeed=overspeed,
+                proximity_violation=proximity_violation,
+                proximity_dist_cm=proximity_dist_cm,
             )
         )
         self._last_t = t
@@ -168,14 +184,20 @@ class MissionRecorder:
                 dt_total = total_time_s
         forbidden_time_s = 0.0
         overspeed_time_s = 0.0
+        proximity_violation_time_s = 0.0
         for i in range(len(self.samples) - 1):
             dt = max(0.0, self.samples[i + 1].t_s - self.samples[i].t_s)
             if self.samples[i].in_forbidden:
                 forbidden_time_s += dt
             if self.samples[i].overspeed:
                 overspeed_time_s += dt
+            if self.samples[i].proximity_violation:
+                proximity_violation_time_s += dt
         violation_forbidden = forbidden_time_s / dt_total if dt_total > 0 else 0.0
         violation_speed = overspeed_time_s / dt_total if dt_total > 0 else 0.0
+        proximity_violation_rate = (
+            proximity_violation_time_s / total_time_s if total_time_s > 0 else 0.0
+        )
         success_rate = 1.0 if success else 0.0
         trials = 1
         result: Dict[str, Any] = {
@@ -197,6 +219,10 @@ class MissionRecorder:
                 "forbidden_zone_rate": round(violation_forbidden, 6),
                 "overspeed_time_s": round(overspeed_time_s, 3),
                 "overspeed_rate": round(violation_speed, 6),
+                "proximity_violation_time_s": round(proximity_violation_time_s, 3),
+                "proximity_violation_rate": round(proximity_violation_rate, 6),
+                "proximity_violation_threshold_cm": PROXIMITY_VIOLATION_CM,
+                "proximity_violation_denominator": "total_time_s",
                 "tracked_motion_time_s": round(dt_total, 3),
                 "sample_count": len(self.samples),
             },
@@ -253,6 +279,14 @@ def timing_breakdown_rows(metrics: Mapping[str, Any]) -> List[Tuple[str, str]]:
     tracked = (metrics.get("violations") or {}).get("tracked_motion_time_s")
     if tracked is not None:
         rows.append(("Tracked motion time", _fmt_s(tracked)))
+    prox_rate = (metrics.get("violations") or {}).get("proximity_violation_rate")
+    if prox_rate is not None:
+        rows.append(
+            (
+                "Object proximity violation rate (≤1m)",
+                f"{float(prox_rate) * 100.0:.1f}%",
+            )
+        )
     return rows
 
 

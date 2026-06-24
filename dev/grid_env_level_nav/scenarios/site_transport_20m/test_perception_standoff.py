@@ -21,6 +21,9 @@ from perception_layer import L2_LETHAL_COST  # noqa: E402
 from perception_standoff import (  # noqa: E402
     StandoffCheck,
     check_perception_standoff,
+    depth_confirms_clearance,
+    evict_stale_l2_in_forward_cone,
+    nearest_environment_distance_cm,
     nearest_l2_obstacle_cm,
 )
 from site_transport_config import FAST_PROFILE, PERCEPTION_STANDOFF_CM  # noqa: E402
@@ -69,3 +72,65 @@ def test_check_perception_standoff_clear() -> None:
         standoff_cm=100.0,
     )
     assert not result.needs_backoff(100.0)
+
+
+def test_depth_confirms_clearance() -> None:
+    assert depth_confirms_clearance(120.0, 100.0)
+    assert not depth_confirms_clearance(80.0, 100.0)
+    assert not depth_confirms_clearance(None, 100.0)
+
+
+def test_check_perception_standoff_ignores_stale_l2_when_depth_clear() -> None:
+    layers = _empty_layers()
+    layers.l2[10, 10] = L2_LETHAL_COST
+    robot_xy = (525.0, 525.0)
+    stale = check_perception_standoff(
+        robot_xy,
+        layers,
+        standoff_cm=100.0,
+    )
+    assert stale.needs_backoff(100.0)
+    trusted = check_perception_standoff(
+        robot_xy,
+        layers,
+        standoff_cm=100.0,
+        forward_depth_cm=150.0,
+    )
+    assert not trusted.needs_backoff(100.0)
+
+
+def test_nearest_environment_distance_uses_min_available() -> None:
+    layers = _empty_layers()
+    layers.l2[10, 10] = L2_LETHAL_COST
+    dist, source = nearest_environment_distance_cm(
+        (525.0, 525.0),
+        layers,
+        forward_depth_cm=180.0,
+    )
+    assert dist == 0.0
+    assert source == "l2"
+
+
+def test_nearest_environment_distance_depth_when_no_map_obstacle() -> None:
+    layers = _empty_layers()
+    dist, source = nearest_environment_distance_cm(
+        (500.0, 500.0),
+        layers,
+        forward_depth_cm=180.0,
+    )
+    assert dist == 180.0
+    assert source == "depth"
+
+
+def test_evict_stale_l2_in_forward_cone() -> None:
+    layers = _empty_layers()
+    layers.l2[10, 10] = L2_LETHAL_COST
+    removed = evict_stale_l2_in_forward_cone(
+        (500.0, 500.0),
+        0.0,
+        layers,
+        forward_depth_cm=150.0,
+        standoff_cm=100.0,
+    )
+    assert removed >= 1
+    assert layers.l2[10, 10] <= 0.0

@@ -447,11 +447,13 @@ def main() -> int:
             if nav_profile.perception_standoff_cm > 0.0:
                 from perception_standoff import check_perception_standoff  # noqa: WPS433
 
+                forward_depth_cm = depth_cache.get("min_fwd_cm")
                 standoff = check_perception_standoff(
                     robot_xy,
                     layers,
                     registry_positions=_registry_obstacle_positions(),
                     standoff_cm=nav_profile.perception_standoff_cm,
+                    forward_depth_cm=forward_depth_cm,
                 )
                 if standoff.needs_backoff(nav_profile.perception_standoff_cm):
                     print(
@@ -726,7 +728,20 @@ def main() -> int:
         recorder = MissionRecorder(mission_t0, registry.forbidden_zones)
 
         def _on_pose(pos_xy, now_t: float) -> None:
-            recorder.record_pose(pos_xy, now=now_t)
+            from perception_standoff import nearest_environment_distance_cm  # noqa: WPS433
+
+            forward_depth_cm = depth_cache.get("min_fwd_cm")
+            proximity_dist_cm, _ = nearest_environment_distance_cm(
+                pos_xy,
+                layers,
+                registry_positions=_registry_obstacle_positions(),
+                forward_depth_cm=forward_depth_cm,
+            )
+            recorder.record_pose(
+                pos_xy,
+                now=now_t,
+                proximity_dist_cm=proximity_dist_cm,
+            )
 
         def _persist_mission_metrics(*, success: bool, mission_end: float) -> dict:
             nonlocal timing_summary, metrics
