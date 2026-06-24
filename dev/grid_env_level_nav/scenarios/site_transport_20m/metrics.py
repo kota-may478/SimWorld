@@ -31,6 +31,23 @@ class NavTimingAccumulator:
     standoff_ms: float = 0.0
     standoff_events: int = 0
     label: str = ""
+    # Perceive sub-buckets (informational; subset of perceive_ms)
+    depth_fetch_ms: float = 0.0
+    l2_update_ms: float = 0.0
+    sight_registry_ms: float = 0.0
+    # Move sub-buckets (subset of move_ms)
+    translate_ms: float = 0.0
+    rotate_ms: float = 0.0
+    # Standoff sub-buckets (subset of standoff_ms)
+    backoff_ms: float = 0.0
+    depth_reverse_ms: float = 0.0
+    # Previously unmeasured / loop overhead
+    depth_refresh_ms: float = 0.0
+    pose_query_ms: float = 0.0
+    move_gate_spin_ms: float = 0.0
+    loop_overhead_ms: float = 0.0
+    depth_cache_hits: int = 0
+    depth_cache_misses: int = 0
 
     def add(self, other: "NavTimingAccumulator") -> None:
         self.perceive_ms += other.perceive_ms
@@ -39,9 +56,39 @@ class NavTimingAccumulator:
         self.settle_ms += other.settle_ms
         self.standoff_ms += other.standoff_ms
         self.standoff_events += other.standoff_events
+        self.depth_fetch_ms += other.depth_fetch_ms
+        self.l2_update_ms += other.l2_update_ms
+        self.sight_registry_ms += other.sight_registry_ms
+        self.translate_ms += other.translate_ms
+        self.rotate_ms += other.rotate_ms
+        self.backoff_ms += other.backoff_ms
+        self.depth_reverse_ms += other.depth_reverse_ms
+        self.depth_refresh_ms += other.depth_refresh_ms
+        self.pose_query_ms += other.pose_query_ms
+        self.move_gate_spin_ms += other.move_gate_spin_ms
+        self.loop_overhead_ms += other.loop_overhead_ms
+        self.depth_cache_hits += other.depth_cache_hits
+        self.depth_cache_misses += other.depth_cache_misses
+
+    def accounted_ms(self) -> float:
+        return (
+            self.perceive_ms
+            + self.move_ms
+            + self.replan_ms
+            + self.settle_ms
+            + self.standoff_ms
+            + self.depth_refresh_ms
+            + self.pose_query_ms
+            + self.move_gate_spin_ms
+            + self.loop_overhead_ms
+        )
 
     def total_ms(self) -> float:
-        return self.perceive_ms + self.move_ms + self.replan_ms + self.settle_ms + self.standoff_ms
+        return self.accounted_ms()
+
+    def sync_cache_stats(self, hits: int, misses: int) -> None:
+        self.depth_cache_hits = hits
+        self.depth_cache_misses = misses
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -52,6 +99,20 @@ class NavTimingAccumulator:
             "settle_ms": round(self.settle_ms, 2),
             "standoff_ms": round(self.standoff_ms, 2),
             "standoff_events": self.standoff_events,
+            "depth_fetch_ms": round(self.depth_fetch_ms, 2),
+            "l2_update_ms": round(self.l2_update_ms, 2),
+            "sight_registry_ms": round(self.sight_registry_ms, 2),
+            "translate_ms": round(self.translate_ms, 2),
+            "rotate_ms": round(self.rotate_ms, 2),
+            "backoff_ms": round(self.backoff_ms, 2),
+            "depth_reverse_ms": round(self.depth_reverse_ms, 2),
+            "depth_refresh_ms": round(self.depth_refresh_ms, 2),
+            "pose_query_ms": round(self.pose_query_ms, 2),
+            "move_gate_spin_ms": round(self.move_gate_spin_ms, 2),
+            "loop_overhead_ms": round(self.loop_overhead_ms, 2),
+            "depth_cache_hits": self.depth_cache_hits,
+            "depth_cache_misses": self.depth_cache_misses,
+            "accounted_ms": round(self.accounted_ms(), 2),
             "total_ms": round(self.total_ms(), 2),
         }
 
@@ -68,15 +129,38 @@ def build_timing_summary(
     for leg in legs:
         totals.add(leg)
         row = leg.to_dict()
+        wall_s: Optional[float] = None
         if leg.label == "leg1" and leg1_time_s is not None:
+            wall_s = leg1_time_s
             row["wall_time_s"] = round(leg1_time_s, 3)
         if leg.label == "leg2" and leg2_time_s is not None:
+            wall_s = leg2_time_s
             row["wall_time_s"] = round(leg2_time_s, 3)
+        if wall_s is not None:
+            wall_ms = wall_s * 1000.0
+            residual_ms = wall_ms - leg.accounted_ms()
+            row["residual_ms"] = round(residual_ms, 2)
+            row["residual_pct"] = round(
+                (residual_ms / wall_ms * 100.0) if wall_ms > 0 else 0.0, 2
+            )
         per_leg.append(row)
+    totals_dict = totals.to_dict()
+    nav_wall_ms: Optional[float] = None
+    if leg1_time_s is not None and leg2_time_s is not None:
+        nav_wall_ms = (leg1_time_s + leg2_time_s) * 1000.0
+        totals_dict["residual_ms"] = round(nav_wall_ms - totals.accounted_ms(), 2)
+        totals_dict["residual_pct"] = round(
+            (totals_dict["residual_ms"] / nav_wall_ms * 100.0) if nav_wall_ms > 0 else 0.0,
+            2,
+        )
     summary: Dict[str, Any] = {
         "profile": profile,
-        "totals": totals.to_dict(),
+        "totals": totals_dict,
         "per_leg": per_leg,
+        "accounting_note": (
+            "accounted_ms = perceive+move+replan+settle+standoff+depth_refresh+"
+            "pose_query+move_gate_spin+loop_overhead; residual_ms = wall_time - accounted_ms"
+        ),
     }
     if leg1_time_s is not None:
         summary["leg1_time_s"] = round(leg1_time_s, 3)
@@ -262,14 +346,38 @@ def timing_breakdown_rows(metrics: Mapping[str, Any]) -> List[Tuple[str, str]]:
         rows.append(("Nav wall time (leg1+leg2)", _fmt_s(nav_wall)))
     bucket_specs = (
         ("Movement", _ms_to_s(totals.get("move_ms"))),
+        ("  ↳ translate", _ms_to_s(totals.get("translate_ms"))),
+        ("  ↳ rotate", _ms_to_s(totals.get("rotate_ms"))),
         ("Mapping / perception (SLAM/L2)", _ms_to_s(totals.get("perceive_ms"))),
+        ("  ↳ depth fetch (perceive)", _ms_to_s(totals.get("depth_fetch_ms"))),
+        ("  ↳ L2 update", _ms_to_s(totals.get("l2_update_ms"))),
+        ("  ↳ sight registry", _ms_to_s(totals.get("sight_registry_ms"))),
         ("Replan", _ms_to_s(totals.get("replan_ms"))),
         ("Settle", _ms_to_s(totals.get("settle_ms"))),
         ("Standoff", _ms_to_s(totals.get("standoff_ms"))),
+        ("  ↳ map backoff", _ms_to_s(totals.get("backoff_ms"))),
+        ("  ↳ depth reverse", _ms_to_s(totals.get("depth_reverse_ms"))),
+        ("Depth refresh (nav)", _ms_to_s(totals.get("depth_refresh_ms"))),
+        ("Pose query", _ms_to_s(totals.get("pose_query_ms"))),
+        ("Move gate spin", _ms_to_s(totals.get("move_gate_spin_ms"))),
+        ("Loop overhead", _ms_to_s(totals.get("loop_overhead_ms"))),
     )
     for label, seconds in bucket_specs:
         if seconds is not None and seconds > 0.0:
             rows.append((label, _fmt_s(seconds)))
+    accounted = totals.get("accounted_ms")
+    if accounted is not None:
+        rows.append(("Accounted nav time", _fmt_s(_ms_to_s(accounted))))
+    residual_ms = totals.get("residual_ms")
+    if residual_ms is not None:
+        pct = totals.get("residual_pct")
+        residual_s = float(residual_ms) / 1000.0
+        suffix = f" ({pct:.1f}%)" if pct is not None else ""
+        rows.append(("Residual (unaccounted)", f"{residual_s:.2f} s{suffix}"))
+    hits = totals.get("depth_cache_hits")
+    misses = totals.get("depth_cache_misses")
+    if hits is not None and misses is not None and (hits or misses):
+        rows.append(("Depth cache hits/misses", f"{hits}/{misses}"))
     leg1 = timing.get("leg1_time_s", metrics.get("leg1_time_s"))
     leg2 = timing.get("leg2_time_s", metrics.get("leg2_time_s"))
     if leg1 is not None:

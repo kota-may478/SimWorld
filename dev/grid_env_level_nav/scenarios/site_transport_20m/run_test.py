@@ -51,6 +51,7 @@ from object_registry import (  # noqa: E402
     update_object_registry_from_sight,
 )
 from l2_depth import DepthCellTracker, soft_l2_depth_reset, update_l2_depth  # noqa: E402
+from depth_frame_cache import DepthFrameCache  # noqa: E402
 from metrics import (  # noqa: E402
     MissionRecorder,
     NavTimingAccumulator,
@@ -356,20 +357,21 @@ def main() -> int:
             latch_static=True,
         )
         sight_depth_cam: dict = {"ready": False, "fusion_id": None}
-        depth_cache: dict = {"min_fwd_cm": None, "unit": "unknown", "min_scene_m": None}
+        depth_frame = DepthFrameCache()
+        active_nav_timing: dict = {"acc": None}
+        depth_meta: dict = {"unit": "unknown", "min_scene_m": None}
 
         def _record_depth_sample(depth_raw: np.ndarray, depth_m: np.ndarray) -> Optional[float]:
             unit = depth_npy_unit_hint(depth_raw)
-            depth_cache["unit"] = unit
+            depth_meta["unit"] = unit
             finite_depth = depth_m[np.isfinite(depth_m) & (depth_m > 0.05) & (depth_m < 80.0)]
             min_fwd_m = min_forward_depth_m(
                 depth_m,
                 fov_deg=SENSOR_FOV_DEG,
             )
             min_fwd_cm = min_fwd_m * 100.0 if min_fwd_m is not None else None
-            depth_cache["min_fwd_cm"] = min_fwd_cm
             if finite_depth.size:
-                depth_cache["min_scene_m"] = float(np.min(finite_depth))
+                depth_meta["min_scene_m"] = float(np.min(finite_depth))
                 fwd_txt = f"forward={min_fwd_cm:.0f}cm " if min_fwd_cm is not None else ""
                 print(
                     f"[Site20] depth sample unit={unit} min={float(np.min(finite_depth)):.2f}m "
@@ -380,31 +382,49 @@ def main() -> int:
                 )
             return min_fwd_cm
 
-        def _fetch_depth_m_for_nav() -> Optional[np.ndarray]:
-            fusion_id = _ensure_sight_depth_camera()
-            if not uses_engine_follow_camera(ucv, fusion_id):
-                update_sensor_camera_pose(ucv, robot_name, fusion_id)
-                tick_settle(ucv, settle_s=0.08, ticks=1)
-            depth_raw = fetch_depth_npy(ucv, fusion_id)
-            if depth_raw is None:
-                return None
-            return depth_npy_to_meters(depth_raw)
-
-        def _refresh_forward_depth_cm() -> Optional[float]:
+        def _fetch_depth_raw_for_cache() -> Optional[np.ndarray]:
             nonlocal ucv
             fusion_id = _ensure_sight_depth_camera()
             if not uses_engine_follow_camera(ucv, fusion_id):
                 update_sensor_camera_pose(ucv, robot_name, fusion_id)
-            depth_raw = fetch_depth_npy(ucv, fusion_id)
-            if depth_raw is None:
-                return depth_cache.get("min_fwd_cm")
-            depth_m = depth_npy_to_meters(depth_raw)
-            return _record_depth_sample(depth_raw, depth_m)
+                tick_settle(ucv, settle_s=0.08, ticks=1)
+            return fetch_depth_npy(ucv, fusion_id)
+
+        def _refresh_forward_depth_cm(*, in_perceive: bool = False) -> Optional[float]:
+            nonlocal ucv
+            t0 = time.perf_counter()
+            pose = get_pos2d(ucv, robot_name)
+            force = not depth_frame.is_fresh(pose, max_age_s=depth_frame.stale_max_s)
+            prev_misses = depth_frame.misses
+            result = depth_frame.refresh_forward_depth_cm(
+                pose,
+                _fetch_depth_raw_for_cache,
+                _record_depth_sample,
+                force=force,
+                max_age_s=depth_frame.ttl_s,
+            )
+            acc = active_nav_timing["acc"]
+            if acc is not None and depth_frame.misses > prev_misses:
+                elapsed = (time.perf_counter() - t0) * 1000.0
+                if in_perceive:
+                    acc.depth_fetch_ms += elapsed
+                else:
+                    acc.depth_refresh_ms += elapsed
+            if acc is not None:
+                acc.sync_cache_stats(depth_frame.hits, depth_frame.misses)
+            return result
 
         def _cached_forward_depth_cm() -> Optional[float]:
-            return depth_cache.get("min_fwd_cm")
+            return depth_frame.min_fwd_cm
+
+        def _depth_invalidate_fn(reason: str) -> None:
+            depth_frame.invalidate(reason)
+
+        def _on_move_cm_fn(move_cm: float) -> None:
+            depth_frame.note_move_cm(move_cm)
 
         def _reset_depth_state(label: str, *, carry_forward: bool = False) -> None:
+            depth_frame.invalidate(label)
             if carry_forward:
                 depth_tracker.snapshot_occupied(layers)
                 object_registry.clear_dynamic()
@@ -447,7 +467,7 @@ def main() -> int:
             if nav_profile.perception_standoff_cm > 0.0:
                 from perception_standoff import check_perception_standoff  # noqa: WPS433
 
-                forward_depth_cm = depth_cache.get("min_fwd_cm")
+                forward_depth_cm = depth_frame.min_fwd_cm
                 standoff = check_perception_standoff(
                     robot_xy,
                     layers,
@@ -461,16 +481,13 @@ def main() -> int:
                         f"< {nav_profile.perception_standoff_cm:.0f}cm ({standoff.source})"
                     )
                     return 0
-            fusion_id = _ensure_sight_depth_camera()
-            if not uses_engine_follow_camera(ucv, fusion_id):
-                update_sensor_camera_pose(ucv, robot_name, fusion_id)
-                tick_settle(ucv, settle_s=0.08, ticks=1)
-            depth_raw = fetch_depth_npy(ucv, fusion_id)
-            if depth_raw is None:
+            if depth_frame.get_depth_m() is None:
+                _refresh_forward_depth_cm(in_perceive=True)
+            depth_m = depth_frame.get_depth_m()
+            if depth_m is None:
                 print("[Site20] L2_depth fetch skipped: no depth")
                 return 0
-            depth_m = depth_npy_to_meters(depth_raw)
-            _record_depth_sample(depth_raw, depth_m)
+            l2_t0 = time.perf_counter()
             robot_xy = get_pos2d(ucv, robot_name)
             robot_yaw = get_yaw(ucv, robot_name)
             result = update_l2_depth(
@@ -484,6 +501,9 @@ def main() -> int:
                 close_range_clearance_cm=DEPTH_CLEARANCE_TRIGGER_CM,
                 close_range_keepout_cm=DEPTH_KEEP_OUT_RADIUS_CM,
             )
+            acc = active_nav_timing["acc"]
+            if acc is not None:
+                acc.l2_update_ms += (time.perf_counter() - l2_t0) * 1000.0
             for cell in depth_tracker.active_cells:
                 l2_seen_cells.add(cell)
             if result.l2_changed:
@@ -524,6 +544,7 @@ def main() -> int:
             )
 
             def _perceive_sight(*, layers, l2_seen_cells):
+                reg_t0 = time.perf_counter()
                 reg_result = update_object_registry_from_sight(
                     ucv,
                     object_registry,
@@ -533,6 +554,9 @@ def main() -> int:
                     material_actor_name=registry.material_actor_name,
                     config=sight_cfg,
                 )
+                acc = active_nav_timing["acc"]
+                if acc is not None:
+                    acc.sight_registry_ms += (time.perf_counter() - reg_t0) * 1000.0
                 n_depth_cells = _apply_l2_depth(l2_seen_cells)
                 for det in reg_result.detections:
                     local_xy = estimate_local_xy_from_detection(
@@ -730,7 +754,7 @@ def main() -> int:
         def _on_pose(pos_xy, now_t: float) -> None:
             from perception_standoff import nearest_environment_distance_cm  # noqa: WPS433
 
-            forward_depth_cm = depth_cache.get("min_fwd_cm")
+            forward_depth_cm = depth_frame.min_fwd_cm
             proximity_dist_cm, _ = nearest_environment_distance_cm(
                 pos_xy,
                 layers,
@@ -779,6 +803,7 @@ def main() -> int:
         layers.reset_l2()
         if l2_mode == "sight":
             _reset_depth_state("leg1")
+        active_nav_timing["acc"] = leg1_timing
         leg1_t0 = time.time()
         leg1_ok = navigate_to_slot(
             ucv,
@@ -801,9 +826,16 @@ def main() -> int:
                 exclude_slot=registry.material_actor_name
             ),
             forward_depth_cm_fn=_cached_forward_depth_cm,
-            depth_refresh_fn=_refresh_forward_depth_cm if l2_mode == "sight" else None,
+            depth_refresh_fn=(
+                (lambda: _refresh_forward_depth_cm(in_perceive=False))
+                if l2_mode == "sight"
+                else None
+            ),
+            depth_invalidate_fn=_depth_invalidate_fn if l2_mode == "sight" else None,
+            on_move_cm_fn=_on_move_cm_fn if l2_mode == "sight" else None,
         )
         leg1_time_s = time.time() - leg1_t0
+        leg1_timing.sync_cache_stats(depth_frame.hits, depth_frame.misses)
         print(f"[Site20] leg1_time_s={leg1_time_s:.1f}")
         if not leg1_ok:
             print("[Site20] FAIL: leg1 material approach")
@@ -837,6 +869,7 @@ def main() -> int:
             _reset_depth_state("leg2", carry_forward=True)
         else:
             layers.reset_l2()
+        active_nav_timing["acc"] = leg2_timing
         leg2_t0 = time.time()
         leg2_ok = deliver_to(
             ucv,
@@ -860,9 +893,16 @@ def main() -> int:
                 exclude_slot=registry.humanoid_actor_name
             ),
             forward_depth_cm_fn=_cached_forward_depth_cm,
-            depth_refresh_fn=_refresh_forward_depth_cm if l2_mode == "sight" else None,
+            depth_refresh_fn=(
+                (lambda: _refresh_forward_depth_cm(in_perceive=False))
+                if l2_mode == "sight"
+                else None
+            ),
+            depth_invalidate_fn=_depth_invalidate_fn if l2_mode == "sight" else None,
+            on_move_cm_fn=_on_move_cm_fn if l2_mode == "sight" else None,
         )
         leg2_time_s = time.time() - leg2_t0
+        leg2_timing.sync_cache_stats(depth_frame.hits, depth_frame.misses)
         print(f"[Site20] leg2_time_s={leg2_time_s:.1f}")
         if not leg2_ok:
             print("[Site20] FAIL: leg2 humanoid approach")

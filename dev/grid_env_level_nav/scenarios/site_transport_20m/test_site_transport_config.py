@@ -54,6 +54,8 @@ def test_build_timing_summary() -> None:
     assert summary["profile"] == "fast"
     assert summary["leg1_time_s"] == 120.5
     assert summary["totals"]["move_ms"] == 1800.0
+    assert "accounted_ms" in summary["totals"]
+    assert "accounting_note" in summary
     assert summary["per_leg"][0]["wall_time_s"] == 120.5
 
 
