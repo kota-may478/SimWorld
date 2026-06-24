@@ -1482,8 +1482,7 @@ def navigate_layered_with_fusion(
                 nearest_pre = _nearest_standoff_dist_cm(pos_xy, layers, registry_positions)
                 forward_depth_cm: Optional[float] = None
                 if PERCEPTION_STANDOFF_CM > 0.0:
-                    need_depth = nearest_pre < NEAR_OBSTACLE_SLOW_CM
-                    if depth_refresh_fn is not None and need_depth:
+                    if depth_refresh_fn is not None:
                         forward_depth_cm = depth_refresh_fn()
                     elif forward_depth_cm_fn is not None:
                         forward_depth_cm = forward_depth_cm_fn()
