@@ -99,6 +99,7 @@ Design note: Obsidian #320 `simWorld_LevelNavMeshNavigation_ForHRCMaterialTransp
 | `viz.py` | Trajectory/metrics plots → `scenarios/site_transport_20m/out/` |
 | `spawn_pie.py` | PIE scene spawn |
 | `run_test.py` | **E2E entry**: spawn → nav → carry → deliver |
+| `MISSION_ARCHITECTURE.md` | **Detailed Japanese architecture documentation** (CLI flags, L0/L1/L2 stack, perception pipeline, planning, metrics) |
 | `test_l2_sight.py` | Unit tests for ObjectRegistry |
 | `test_l2_depth.py` | Offline NPY replay tests for L2_depth |
 | `test_l2_geom.py` | Unit tests for geom L2 |
