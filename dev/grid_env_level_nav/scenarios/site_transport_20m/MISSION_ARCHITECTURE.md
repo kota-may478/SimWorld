@@ -1,5 +1,5 @@
 ---
-title: "site_transport_20m ミッション実行アーキテクチャ詳細解説"
+title: "site_transport_20m ミッション実行アーキテクチャ"
 last_updated: 2026-06-25
 related_files:
   - run_test.py
@@ -7,329 +7,496 @@ related_files:
   - site_transport_config.py
   - l2_depth.py
   - object_registry.py
+  - depth_frame_cache.py
+  - perception_standoff.py
+  - carry.py
+  - metrics.py
+  - viz.py
 language: ja
 ---
 
-# SimWorld `site_transport_20m` ミッション実行アーキテクチャ 詳細解説
+# SimWorld `site_transport_20m` ミッション実行アーキテクチャ
+
+> **TL;DR** — SpotDog（四足ロボット）が建設現場で資材を拾い、20m先の作業員（Humanoid）まで運んで足元に届ける E2E シナリオです。
+> 中核は次の3つ:
+> 1. **3層コストマップ**（L0 静的地図 / L1 禁止ゾーン / L2 動的障害物）を `max` 合成して A* で経路を引く
+> 2. **「ゴール座標は Sight、障害物は Depth」という関心の分離** — Sight はゴール追跡、Depth は障害物地図に専念
+> 3. **オープンループ移動** — 「N cm 進め / M 度回れ」を送って待つ方式で、姿勢はポーリングで補正
 
 ---
 
-## 1. エントリポイントとオーケストレーション
+## 読み方ガイド
 
-### `run_test.py` — ミッション制御の司令塔
-
-`run_test.py` がこのシナリオ全体のエントリポイントです。`main()` 関数がミッション全体を順次制御します。
-
-#### CLIフラグ
-
-| フラグ | 意味 |
+| 知りたいこと | 読むべき節 |
 |---|---|
-| `--l0` | L0 NavMesh マスクPNGのパス（デフォルト: `L0_MASK_STRICT`） |
-| `--skip-spawn` | シーンのスポーンをスキップ（再実行時に使用） |
-| `--spawn-only` / `--plan-only` | デバッグ用部分実行 |
-| `--max-nav-steps` | ナビゲーション最大ステップ数（デフォルト: 600） |
-| `--l2-mode {sight,geom,camera,off}` | L2知覚のモード（デフォルト: `sight`） |
-| `--no-l2` | L2無効（`--l2-mode off` のエイリアス） |
-| `--no-l1` | L1禁止ゾーンを無効化 |
-| `--profile {default,careful,fast}` | NavProfile の選択 |
-| `--run-label` / `--trial-index` | アーティファクトのラベリング（例: `L0L2_fast_150cm_1`） |
-
-#### ミッションフェーズと Leg 構造
-
-```
-[起動] → SpotDog スポーン → NavQueryService確立 → Leg1: Start → Material → [キャリー取得] → Leg2: Material → Humanoid → [配送]
-```
-
-1. **スポーン**: `spawn_site_transport_scene()` でシーンを初期化。SpotDogを開始位置に配置
-2. **Leg1 (`navigate_to_slot`)**: SpotDogが資材（shipping crate）へ接近。`registry.material_actor_name` をslot_idとして使用
-3. **キャリー取得 (`begin_carry_from_material`)**: 資材をロボットの背中に取り付け（UEボーンアタッチまたはPython同期）
-4. **Leg2 (`deliver_to`)**: Humanoidに向かって配送。`carry_sync_name` で資材位置を同期
-5. **配送 (`deliver_carry_at_humanoid`)**: 資材をHumanoidの足元にアニメーション移動して完了
-
-#### アーティファクトのラベリング
-
-`--run-label L0L2_fast_150cm --trial-index 3` と指定すると、出力ファイルが `costMap_L0L2_fast_150cm_3.png`、`metricsSummary_L0L2_fast_150cm_3.json` などの固定名で保存されます。ラベルなしの場合は UTC タイムスタンプ（`20240101T120000Z`）が使われます。
+| 何をするミッションか | [1. ミッション概要](#1-ミッション概要) |
+| 全体の設計思想をざっくり | [2. アーキテクチャ全体像](#2-アーキテクチャ全体像3つの核心アイデア) |
+| 起動から完了までの流れ | [3. ミッションのライフサイクル](#3-ミッションのライフサイクル時系列) |
+| ロボットが世界をどう持つか | [4. 世界の表現：3層コストマップ](#4-世界の表現3層コストマップ) |
+| センサーの処理 | [5. 知覚パイプライン](#5-知覚パイプライン) |
+| 経路計画と移動制御 | [6. プランニングと移動](#6-プランニングと移動) |
+| 資材の持ち運び | [7. キャリー／デリバー](#7-キャリーデリバーミッション固有ロジック) |
+| パラメータ調整 | [8. チューニング：NavProfile](#8-チューニングnavprofiledefault-vs-fast) |
+| 出力ファイル | [9. 出力：メトリクスとアーティファクト](#9-出力メトリクスとアーティファクト) |
+| 「なぜこう作ったか」 | [10. 設計判断まとめ](#10-設計判断まとめなぜそうしたか) |
+| CLI / 詳細図 / 用語 | [付録](#付録-a-cli-リファレンス) |
 
 ---
 
-## 2. ナビゲーションスタック（レイヤー構造）
+## 1. ミッション概要
 
-### L0: 静的 NavMesh（ベースレイヤー）
+### 1コマンドで起きること
 
-`crop_l0_to_local_region()` (`l0_crop.py`) により、フルマップの NavMesh PNGから現在のシナリオ領域（`REGION_SIZE_CM` × `REGION_SIZE_CM`）だけを切り出して `LayeredCostmap` の L0 レイヤーとして設定します。
+```bash
+python run_test.py --profile fast --l2-mode sight
+```
 
-- 壁・構造物・NavMesh外の永続的な障害物を表現
-- 不変：ミッション中に書き換えられない
-- A* プランニングの「床」として機能
+このコマンド一発で、以下が順に自動実行されます。
 
-### L1: 禁止ゾーン（セマンティックレイヤー）
+```
+シーン生成 → SpotDog 配置 → 資材まで移動 → 資材を背負う → 作業員まで運搬 → 足元に配送
+```
 
-`apply_forbidden_zones_l1(layers, registry.forbidden_zones)` (`zones.py`) により、プロップ配置情報から「人が立ち入るべきでない矩形領域」をL1レイヤーにラスタライズします。
+### 2レグ構造
 
-- `--no-l1` フラグで無効化可能
-- NavProfile の `enable_l1_by_default` で制御（`fast` / `default` ともに `True`）
-- ラスタライズ後は L0 と同様に不変
+ミッションは2つの「レグ（脚 / 区間）」に分かれます。
 
-### L2: 動的障害物（センサーレイヤー）
+```
+         Leg1: navigate_to_slot()              Leg2: deliver_to()
+  ┌────────────────────────────┐      ┌──────────────────────────────┐
+[Start] ───────────────────► [資材] ──[背負う]──► ………… ───────────► [作業員] ──[配送]──► 完了
+                          shipping_crate          carry              human_worker
+```
 
-L2レイヤーはナビゲーション中にリアルタイムで更新される唯一のレイヤーです。
+| レグ | 関数 | 出発 → 目標 | 区切りイベント |
+|---|---|---|---|
+| Leg1 | `navigate_to_slot()` | Start → 資材（shipping_crate） | 到達後に `begin_carry_from_material()` で背負う |
+| Leg2 | `deliver_to()` | 資材 → 作業員（human_worker） | 到達後に `deliver_carry_at_humanoid()` で配送 |
 
-**現在の実装: `l2_depth.py` (`update_l2_depth`)**
+### 成功条件
 
-- カメラの深度画像から障害物セルを直接 L2 に書き込む
-- `depth_hits_from_image()` → `apply_depth_ray_update()` でレイキャスト更新
-- 2回以上検出されたセルは `l2_static_latch` でラッチ（永続化）
-- ログオッズ更新（`use_log_odds=True`）で誤検知を抑制
-- 近接障害物（100cm以内）は `close_range_keepout_cells_from_depth()` でキープアウトゾーン設定
+配送が完了し、かつロボットと作業員の距離が **`ARRIVE_TOLERANCE_CM × 2 = 260cm`** 以内であれば `PASS`（`run_test.py:1021`）。
 
-**旧実装: `l2_sight.py`（サイトペインティング方式）**
+---
 
-- AI Sight の検出結果を距離・ベアリングから座標変換してL2に書き込む方式
-- 現在は `object_registry.py` が担う「セマンティック情報管理」に分離された
+## 2. アーキテクチャ全体像（3つの核心アイデア）
 
-**なぜL2をDepth専用にしたか**: AI Sightは「見えているかどうか」のブール情報であり、遮蔽物の精密な形状をL2に書き込むには深度画像の方が適切。また、AI Sightはゴール位置の追跡（ObjectRegistry）に専念させることで関心の分離が実現された。
+このシステムを理解する近道は、ファイルを順に追うことではなく、**3つの設計思想**を先に掴むことです。
 
-### `ObjectRegistry` — セマンティックゴール管理
+### 核心①：3層コストマップ
 
-`object_registry.py` の `ObjectRegistry` クラスは**L2コストマップには一切書き込まない**。
+ロボットの「世界地図」は3枚のレイヤーを重ねて作られます。プランニング時は常に3層を `max` で合成します。
 
-- AI Sightの可視ターゲット一覧（`GetVisibleSightTargetsJson` VBPコマンド）を解析
-- 各オブジェクトの `slot_id` → ワールド座標 (`last_world_xy`) のマッピングを管理
-- `goal_xy(slot_id)` でナビゲーションゴール座標を提供
-- 動的オブジェクト（`human_worker`）は視野外に出たときに自動エビクト
-- 静的プロップはPlacementRegistryから初期化されるため、見えていなくても座標を保持
+```
+L0  静的 NavMesh   … 壁・構造物（不変）
+L1  禁止ゾーン      … 人が立ち入るべきでない矩形（不変）
+L2  動的障害物      … 深度センサーで毎フレーム更新（唯一の可変層）
+        │
+        ▼  merged = max(L0, L1, L2) + 障害物周辺のソフトコスト
+      A* プランナー
+```
 
-**なぜRegistryを分離したか**: ゴール座標の更新（Sightで追跡）と障害物マップの更新（Depthで塗布）を独立して行うことで、Sightが使えない環境でもDepthだけでナビゲーションが機能し、逆にSightフォールバックで幾何学的推定に切り替えられる。
+### 核心②：「ゴールは Sight、障害物は Depth」
 
-### `layered_nav.py` — メインループ
+知覚は2系統に**役割分担**されており、互いに地図を汚しません。
 
-`navigate_layered_with_fusion()` が 1 ミッションレグの全ナビゲーションを担当します。メインループ構造：
+| 系統 | センサー | 書き込み先 | 役割 |
+|---|---|---|---|
+| セマンティック | AI Sight | `ObjectRegistry`（座標辞書） | **ゴール座標の追跡**（資材・作業員がどこにいるか） |
+| 占有 | FusionCamera 深度 | `L2` コストマップ | **障害物の形状**（どこを避けるか） |
+
+> **重要**：`ObjectRegistry` は L2 コストマップに**一切書き込みません**。
+> これにより Sight が使えない環境でも Depth だけでナビゲーションが成立し、逆も成り立ちます。
+
+### 核心③：オープンループ移動
+
+SpotDog は NavMesh 追従ではなく、UnrealCV 経由の直接モーション制御（`Move_Speed` / `Rotate_Angle` VBP）で動きます。
+「N cm 進め、M 度回れ」を送って所定時間待つだけ（=オープンループ）で、姿勢のズレは UE からのポーリングで毎ループ補正します。
+
+### 登場コンポーネント早見表
+
+| ファイル | 役割（ひとことで） |
+|---|---|
+| `run_test.py` | エントリポイント。ミッション全体のオーケストレーション |
+| `layered_nav.py` | 1レグ分のナビゲーションメインループ（計画・移動・回復） |
+| `site_transport_config.py` | NavProfile（default / fast）のパラメータ定義 |
+| `l2_depth.py` | 深度画像 → L2 障害物セルの書き込み |
+| `object_registry.py` | Sight 検出 → ゴール座標辞書の管理 |
+| `depth_frame_cache.py` | 重い深度フェッチの結果をキャッシュ |
+| `perception_standoff.py` | 障害物に近すぎるときの後退・退避判定 |
+| `carry.py` | 資材の背負い／配送のメカニクス |
+| `metrics.py` | タイミング・違反などのメトリクス計測 |
+| `viz.py` | コストマップ画像・軌跡・JSON の出力 |
+
+### 全体ブロック図
+
+```
+                         ┌─────────────────────────────┐
+                         │        run_test.py          │  オーケストレーション
+                         │  spawn → leg1 → carry →      │
+                         │         leg2 → deliver       │
+                         └───────────────┬─────────────┘
+                                         │ navigate_to_slot / deliver_to
+                                         ▼
+   ┌──────────────────────── layered_nav.py（メインループ）─────────────────────────┐
+   │                                                                                 │
+   │   知覚サイクル ──► プランニング ──► 移動 ──► スタック検出/回復                  │
+   │       │                  │             │                                        │
+   └───────┼──────────────────┼─────────────┼────────────────────────────────────────┘
+           │                  │             │
+   ┌───────▼────────┐  ┌──────▼───────┐  ┌──▼──────────────┐
+   │ 知覚パイプライン│  │ 3層コストマップ│  │ オープンループ  │
+   │ Sight→Registry │  │ L0/L1/L2 + A* │  │ Move/Rotate VBP │
+   │ Depth→L2       │  │               │  │                 │
+   └───────┬────────┘  └───────────────┘  └─────────────────┘
+           │  fetch
+   ┌───────▼────────┐
+   │ UnrealCV / UE  │  FusionCamera深度・AI Sight・SpotDog制御
+   └────────────────┘
+```
+
+---
+
+## 3. ミッションのライフサイクル（時系列）
+
+`run_test.py` の `main()` がミッション全体を順次制御します。
+
+### フェーズ一覧
+
+| # | フェーズ | 主な処理 | 失敗時の戻り値 |
+|---|---|---|---|
+| 0 | 起動・引数解析 | プロファイル解決、L0 マスク確認 | 1 |
+| 1 | 事前計画 | L0+L1 のみで Start→資材→作業員の経路が引けるか確認 | 1 |
+| 2 | UE 接続・スポーン | `spawn_site_transport_scene()` でシーン生成 | spawn_rc |
+| 3 | ロボット準備 | NavQueryService 確立、SpotDog の起立・開始位置確認 | 2 |
+| 4 | **Leg1** | `navigate_to_slot()` で資材へ接近 | 3 |
+| 5 | キャリー取得 | `begin_carry_from_material()` で背負う | 4 |
+| 6 | **Leg2** | `deliver_to()` で作業員へ運搬 | 5 |
+| 7 | 配送 | `deliver_carry_at_humanoid()` で足元に配置 | 6 |
+| 8 | 出力 | メトリクス JSON・コストマップ画像・軌跡を保存 | — |
+
+### ロボット起動シーケンス（フェーズ3）
+
+`level_nav_robot.py` の関数群でロボットを整えます。
+
+- `ensure_robot_upright_at_start()` … 転倒していたら復帰
+- `verify_spotdog_at_start()` … 開始位置の確認
+- `prepare_spotdog_mission_start()` … AI コントローラー有効化
+
+### レグ間の L2 リセット挙動
+
+レグの切り替わりで L2 の扱いが変わるのがポイントです（[7. キャリー／デリバー](#7-キャリーデリバーミッション固有ロジック)で詳述）。
+
+| タイミング | 処理 | 意図 |
+|---|---|---|
+| Leg1 開始 | `_reset_depth_state("leg1")` | L2 を完全クリア |
+| Leg2 開始 | `_reset_depth_state("leg2", carry_forward=True)` | **2-hit ラッチ済みの静的障害物だけ引き継ぐ** |
+
+---
+
+## 4. 世界の表現：3層コストマップ
+
+`crop_l0_to_local_region()` がフルマップから現在のシナリオ領域（`REGION_SIZE_CM` 四方）を切り出し、`LayeredCostmap` を構築します。
+
+### 3つのレイヤー
+
+| 層 | 名前 | 生成元 | 可変性 | 内容 |
+|---|---|---|---|---|
+| **L0** | 静的 NavMesh | NavMesh マスク PNG（`crop_l0_to_local_region`） | 不変 | 壁・構造物・NavMesh 外。A* の「床」 |
+| **L1** | 禁止ゾーン | プロップ配置（`apply_forbidden_zones_l1`） | 不変 | 立ち入り禁止の矩形領域。`--no-l1` で無効化可 |
+| **L2** | 動的障害物 | 深度画像（`update_l2_depth`） | **可変** | 走行中にリアルタイム更新される唯一の層 |
+
+### レイヤーフュージョン（合成）
+
+プランニング時は `_planning_costmap(layers)` を使い、3層を合成したうえで障害物周辺にソフトコストを乗せます（`layered_nav.py:247`）。
+
+```python
+merged = max(L0, L1, L2)
+# さらに、障害物から planning_clearance_cm 以内のセルに
+# SITE_PLANNING_CLEARANCE_COST = 300 を付加（壁にも適用）
+```
+
+`planning_clearance_cm` は NavProfile 依存（default 100cm / fast **150cm**）。広いほど保守的に壁から離れた経路を選びます。
+
+### L2 の中身（深度由来）
+
+L2 は深度画像から書き込まれ、以下の工夫で品質を担保します（`l2_depth.py`）。
+
+- **ログオッズ更新**（`use_log_odds=True`）… 誤検知を確率的に抑制
+- **2-hit 静的ラッチ**（`latch_static=True`）… 2回以上検出されたセルを `l2_static_latch` で永続化
+- **近接キープアウト**（`close_range_keepout_cells_from_depth`）… 100cm 以内の障害物に退避ゾーンを設定
+- **レイクリア**（`apply_depth_ray_update`）… 深度線が通り抜けたセルは「空き」として消去
+
+> **なぜ L2 を Depth 専用にしたのか**
+> AI Sight は「見えているか」のブール情報でノイズが多く、遮蔽物の形状推定には深度画像のほうが適切。
+> Sight はゴール追跡（`ObjectRegistry`）に専念させ、関心を分離した（[核心②](#核心ゴールは-sight障害物は-depth)）。
+
+---
+
+## 5. 知覚パイプライン
+
+知覚は[核心②](#核心ゴールは-sight障害物は-depth)のとおり2系統に分かれます。
+
+```
+                       ┌──────────────────────────────┐
+                       │   UnrealCV / UE              │
+                       └──────┬───────────────┬───────┘
+            AI Sight（意味）   │               │   FusionCamera（深度）
+                              ▼               ▼
+              update_object_registry      update_l2_depth
+              _from_sight                       │
+                              │                 ▼
+                              ▼          depth_hits_from_image
+                       ObjectRegistry    → apply_depth_ray_update
+                       （ゴール座標辞書）  → close_range_keepout
+                              │                 │
+                              ▼                 ▼
+                       goal_xy(slot_id)     LayeredCostmap.l2
+                       （プランの目標）      （避ける障害物）
+```
+
+### 系統A：Sight → ObjectRegistry（ゴール座標）
+
+`object_registry.py` の `ObjectRegistry` は **L2 に書かず**、`slot_id → ワールド座標` の辞書だけを管理します。
+
+- UE の `GetVisibleSightTargetsJson` VBP で可視ターゲットを取得し `upsert()`
+- `goal_xy(slot_id)` でナビゲーションの目標座標を提供
+- 動的オブジェクト（`human_worker`）は視野外で自動エビクト。静的プロップは PlacementRegistry から初期化されるので見えていなくても座標を保持
+- `sight_registry_every_n` で間引き可能（fast: 2サイクルに1回）
+- Sight が使えない場合は幾何 FOV 判定にフォールバック
+
+### 系統B：Depth → L2（障害物）
+
+[4節](#l2-の中身深度由来)で述べた L2 書き込みの入口。`update_l2_depth()` が深度画像を受け取り、ヒット書き込み・レイクリア・キープアウトを実行します。
+
+### DepthFrameCache — 重いフェッチを節約（`depth_frame_cache.py`）
+
+深度フェッチ1回はカメラ移動＋UE tick 待機で重い（おおよそ100–300ms）。1ナビループ内で複数回使うため、以下3条件でキャッシュを再利用します。
+
+| 条件 | パラメータ | default | fast |
+|---|---|---|---|
+| 有効期間 | `ttl_s` | 0.3s | 0.55s |
+| 姿勢デルタ | `pose_delta_max_cm`（これ以上動いていなければ再利用） | 5cm | 12cm |
+| 移動無効化 | `move_invalidate_cm`（これ以上動いたら破棄） | 30cm | 120cm |
+
+加えて、移動完了直後に次フレームを温める**プリフェッチ**（`depth_prefetch_fn`）を備えます。
+
+### perception_standoff — L2 書き込みのゲート（`perception_standoff.py`）
+
+深度撮影の前に「障害物に近すぎないか」を確認します。**近すぎると深度画像が壊れる**ためです。
+
+- `standoff_cm`（fast: 100cm）以内に障害物があれば後退してから撮影
+- 後退後はキャッシュを自動失効
+- 逆に深度が十分なクリアランスを示せば、前方コーン内の古い L2 セルを掃除（`evict_stale_l2_in_forward_cone`）
+
+### 深度単位の正規化（`depth_object_perception.py`）
+
+UE の深度バッファはピクセル値が cm で入ることがある（UnrealCV 実装依存）。`depth_npy_to_meters()` / `depth_npy_unit_hint()` が自動検出して常にメートルへ正規化します。
+fast の `min_obstacle_height_cm=55cm` は、SpotDog 自身の脚をノイズとして拾わないための高さ閾値です（default は 45cm）。
+
+---
+
+## 6. プランニングと移動
+
+`layered_nav.py` の `navigate_layered_with_fusion()` が1レグの全ナビゲーションを担います。
+
+### メインループ
 
 ```
 while total_steps < max_total_steps:
     1. ロボット姿勢取得 (pos_xy, yaw_deg)
-    2. ゴール到達判定 (dist <= tolerance_cm → return True)
-    3. 知覚間隔チェック → _run_perceive_cycle() [perception_interval_s ごと]
+    2. ゴール到達判定 (dist ≤ tolerance_cm → 成功で return)
+    3. 知覚間隔チェック → perception_interval_s ごとに知覚サイクル
     4. MOVES_PER_CYCLE 回の移動:
-       a. ウェイポイント選択・到達チェック
-       b. スタンドオフチェック → 必要なら後退
-       c. セグメントコマンド生成 (_smooth_segment_command)
-       d. 移動前セグメントブロック判定 → ブロック時はリプランorスタック回復
-       e. open-loop移動実行 (_execute_segment_command)
-       f. スタック検出 → _apply_stuck_recovery
+        a. ウェイポイント選択・到達チェック
+        b. スタンドオフチェック → 必要なら後退
+        c. セグメントコマンド生成 (_smooth_segment_command)
+        d. 移動前ブロック判定 → ブロックならリプラン or スタック回復
+        e. オープンループ移動実行 (_execute_segment_command)
+        f. スタック検出 → _apply_stuck_recovery
 ```
 
----
+### A* リプランの連鎖（`_replan_on_merged_layers`）
 
-## 3. 知覚パイプライン
-
-### AI Sight → ObjectRegistry（セマンティック経路）
+経路が引けないとき、地図を段階的に「緩めて」再試行します（`layered_nav.py:759`）。
 
 ```
-UE AI Perception Controller
-    ↓ GetVisibleSightTargetsJson VBP
-fetch_ue_sight_targets() [object_registry.py]
-    ↓ parse & resolve
-update_object_registry_from_sight()
-    ↓
-ObjectRegistry.upsert(slot_id, world_xy) [ゴール座標のみ更新]
+① merged + clearance   （通常）
+②      ↓ 失敗
+② merged（clearance なし）
+③      ↓ 失敗
+③ L0 + L1（L2 を無視）
+④      ↓ 失敗
+④ L0 のみ（最後の手段）
 ```
 
-- 毎回の知覚サイクルで呼ばれるが、`sight_registry_every_n` パラメータで間引き可能（fastプロファイル: 2回に1回）
-- フォールバック: UE Sightが使えない場合は幾何学的なFOV判定（`_fallback_visible_targets`）
-
-### FusionCam Depth → L2 occupancy（障害物経路）
-
-```
-UnrealCV FusionCamera
-    ↓ fetch_depth_npy() [depth_object_perception.py]
-DepthFrameCache.get_or_wait()
-    ↓ depth_npy_to_meters() [単位変換]
-update_l2_depth() [l2_depth.py]
-    ↓
-depth_hits_from_image() → apply_depth_ray_update()
-close_range_keepout_cells_from_depth()
-    ↓
-LayeredCostmap.l2 更新
-```
-
-#### `DepthFrameCache` — フレームキャッシュ (`depth_frame_cache.py`)
-
-1回の深度フェッチは重い（カメラ移動 + UE tick待機）ため、以下の条件でキャッシュを再利用します：
-
-- **TTL**: `ttl_s` 以内（デフォルト 0.3s、fast: 0.55s）
-- **姿勢デルタ**: ロボットが `pose_delta_max_cm` 以上移動していない（デフォルト 5cm、fast: 12cm）
-- **移動無効化**: `move_invalidate_cm` 以上の移動でキャッシュ破棄（デフォルト 30cm、fast: 120cm）
-- **プリフェッチ**: 移動完了直後に次フレームをウォームアップ（`depth_prefetch_fn`）
-
-#### `perception_standoff` — L2書き込みゲート
-
-深度撮影の前に `check_perception_standoff()` でロボットが障害物から十分離れているか確認します：
-
-- `standoff_cm`（fastプロファイル: 100cm）以内に障害物がある場合は後退
-- 後退後の深度フレームキャッシュは自動失効
-- **「立体的に近すぎる = 深度画像が壊れる」**という実装上の制約が設計の理由
-
-#### depth_npy_to_meters — 深度単位の扱い (`depth_object_perception.py`)
-
-UEの深度バッファはピクセル値がcmで入ることがある（UnrealCV実装依存）。`depth_npy_to_meters()` と `depth_npy_unit_hint()` が自動で単位を検出し、常にメートル換算に正規化します。fastプロファイルでの `min_obstacle_height_cm=55cm` はSpotDogの脚がノイズとして誤検知されないための閾値です。
-
----
-
-## 4. プランニングと移動
-
-### コストマップフュージョン
-
-プランニング時は常に `_planning_costmap(layers)` を使用します：
-
-```python
-merged = max(L0, L1, L2)  # 3層を max で合成
-+ 「障害物から planning_clearance_cm 以内のセルに SITE_PLANNING_CLEARANCE_COST=300 を付加」
-```
-
-`planning_clearance_cm` はNavProfileで設定：
-- デフォルト: 100cm
-- fast: **150cm**（より広いクリアランスで保守的なルートを計算）
-
-### A* リプランの連鎖
-
-`_safe_replan_astar()` は以下の順でリプランを試みます：
-
-1. `merged + clearance` コストマップ
-2. `merged`（clearanceなし）
-3. `L0 + L1`（L2を無視）
-4. `L0`のみ（最後の手段）
-
-L2リプランのトリガー：
-- L2更新でセル差分が `L2_REPLAN_CELL_DELTA_THRESHOLD` 以上（fast: 10セル）
-- セグメントが移動前チェックでブロックされた
-- 進捗退行（`PROGRESS_REGRESS_THRESHOLD_CM = 350cm`）検出
+**リプランのトリガー**
+- L2 更新のセル差分が `l2_replan_cell_delta_threshold` 以上（default 1 / fast 10）
+- 移動前チェックでセグメントがブロックされた
+- 進捗退行（`PROGRESS_REGRESS_THRESHOLD_CM = 350cm`）を検出
 - スタック回復時
 
-### Open-Loop移動とスタンドオフ/バックオフ
+### オープンループ移動と動的クランプ
 
-SpotDogの移動はすべて open-loop（「N cm進め、M度回転せよ」を送って待つ）です：
+向きの差に応じてコマンドの種類を切り替えます（`_smooth_segment_command`）。
 
-```python
-# _smooth_segment_command: 向き差 > 35° → turn-only, 12°-35° → turn+move, <12° → move-only
-command = _smooth_segment_command(pos_xy, yaw_deg, waypoint_xy)
+| 向きの差 | コマンド |
+|---|---|
+| > 35° | turn のみ |
+| 12°–35° | turn + move |
+| < 12° | move のみ |
 
-# 障害物が近い場合は移動量を動的に縮小
-allowed_move = _dynamic_max_move_cm(nearest_dist_cm, forward_depth_cm)
-# → 220cm以上: 120cm(fast: 250cm), 100-220cm: 140cm, 50-100cm: 70cm, <50cm: 35cm
-```
+さらに、障害物が近いほど1回の移動量を縮めます（`_dynamic_max_move_cm`）。基準距離は `最寄り障害物` と `前方深度` の小さいほう。
 
-#### スタック検出と回復
+| 最寄り距離 | 許容移動量 |
+|---|---|
+| ≥ 220cm（`NEAR_OBSTACLE_SLOW_CM`） | フル（default 120cm / fast 250cm） |
+| ≥ standoff + 40cm | 140cm |
+| ≥ standoff | 70cm |
+| standoff 未満 | 35cm |
 
-`STUCK_CHECK_MOVES = 4` 回の移動で `STUCK_MOVE_THRESHOLD_CM = 14cm` 以下の変位しか得られない場合にスタックと判定：
+### スタック検出と回復（`_apply_stuck_recovery`）
+
+`STUCK_CHECK_MOVES = 4` 回の移動で変位が `STUCK_MOVE_THRESHOLD_CM = 14cm` 以下ならスタックと判定し、次の順で回復します。
 
 1. 現在位置の周囲に L2 lethal セルをマーク（障害物とみなす）
 2. `UNSTUCK_BACKUP_CM = 100cm` バックアップ
-3. エスケープ候補を探してコスト最小の方向へ短距離移動
-4. 失敗を重ねると `MAX_UNSTUCK_ATTEMPTS = 16` でラストリゾート（L2全フラッシュ）に移行
+3. エスケープ候補を探索し、コスト最小の方向へ短距離移動
+4. 失敗が重なると `MAX_UNSTUCK_ATTEMPTS = 16` でラストリゾート（L2 を積極的にフラッシュ）
 
 ---
 
-## 5. ミッション固有ロジック
+## 7. キャリー／デリバー（ミッション固有ロジック）
 
-### SpotDog ロボット
+`carry.py` が資材の「持ち運び」を担当します。
 
-`level_nav_robot.py` の `find_spotdog_actor()` でUE内のSpotDogアクターを特定します。起動時に：
-- `ensure_robot_upright_at_start()`: 転倒していたら復帰
-- `verify_spotdog_at_start()`: 開始位置確認
-- `prepare_spotdog_mission_start()`: AIコントローラー有効化
+### `begin_carry_from_material()` — 背負う
 
-### Start → Materials → Humanoid のゴール選択
+1. 資材アクター（shipping_crate）をマップ外に退避（`_hide_actor_offmap`）
+2. CarryActor をロボット背部にスポーン・アニメーション移動
+3. `attach_carry_to_robot_bone()` で UE スケルタルソケットにアタッチ
+4. アタッチ不可なら Python 側で `sync_carry_pose()` を毎ステップ呼び出して同期
 
-```python
-# Leg1ゴール: ObjectRegistry.goal_xy(material_actor_name) → フォールバックでPlacementRegistry座標
-material_xy = _material_goal_xy(registry)
-# → registry.transport_slot().world_xyz_cm があれば優先（動的に更新された座標）
-# → なければ lc.local_xy_to_world(*registry.material_pickup_local_cm)
+### `deliver_carry_at_humanoid()` — 配送
 
-# Leg2ゴール: ObjectRegistry.goal_local(humanoid_actor_name)
-# → Humanoidは is_dynamic=True なので、見えた時点で座標が更新される
-```
-
-### キャリー/デリバー状態
-
-`carry.py` が資材の「持ち運び」を担当します：
-
-**`begin_carry_from_material()`**:
-1. 資材アクター（shipping crate）をマップ外に退避（`_hide_actor_offmap`）
-2. CarryActorをロボット背部座標にスポーン・アニメーション移動
-3. `attach_carry_to_robot_bone()` でUEスケルタルソケットにアタッチ
-4. アタッチ不可の場合は Python レベルで `sync_carry_pose()` を毎ステップ呼び出し
-
-**`deliver_carry_at_humanoid()`**:
 1. `detach_carry_from_robot_bone()` でデタッチ
-2. Humanoidの足元座標に向けてアニメーション移動
-3. 最後に `_hide_actor_offmap()` で資材を非表示化
-4. ロボットとHumanoidの距離が `ARRIVE_TOLERANCE_CM * 2 = 260cm` 以内であれば成功
+2. 作業員の足元座標へアニメーション移動
+3. `_hide_actor_offmap()` で資材を非表示化
+4. ロボットと作業員の距離が `ARRIVE_TOLERANCE_CM × 2 = 260cm` 以内なら成功
 
-**Leg2でのL2リセット（carry_forward）**:
+### Leg2 の Carry-Forward マスク
+
+Leg2 開始時、L2 を全リセットせず**2-hit ラッチされた静的障害物だけ**を引き継ぎます（`l2_depth.py:49` `snapshot_occupied`）。
 
 ```python
 _reset_depth_state("leg2", carry_forward=True)
-# → depth_tracker.snapshot_occupied(): 2-hitラッチされた静的障害物のみ保存
-# → object_registry.clear_dynamic(): Humanoidの古い座標を削除
+# → depth_tracker.snapshot_occupied(): 静的ラッチ済みセルのみ保存
+# → object_registry.clear_dynamic(): 作業員の古い座標を削除
 ```
 
-Leg1で蓄積した一時的な深度セルは捨てるが、確実に確認された静的障害物は leg2 にも引き継ぐ設計です。
+> **なぜか**：Leg1 の一時的な深度ノイズは捨てたい（ファントム消去）が、確実に確認した静的障害物は Leg2 でも避けたい。
+> 「十分な証拠（2-hit）があるセルだけ残す」ことで両者のバランスをとる。
 
 ---
 
-## 6. メトリクスと出力
+## 8. チューニング：NavProfile（default vs fast）
 
-### `metrics.py`
+`--profile` で挙動を切り替えます。`careful` は `default` の別名です（`site_transport_config.py`）。
 
-#### `NavTimingAccumulator` — タイミングバケット
+| パラメータ | default | fast | 意味 |
+|---|---|---|---|
+| `perception_interval_s` | 1.0s | **5.5s** | 知覚サイクルの最小間隔 |
+| `site_robot_speed` | 180 cm/s | **285 cm/s** | 移動速度 |
+| `site_max_open_loop_move_cm` | 120 cm | **250 cm** | 1回の最大移動距離 |
+| `planning_clearance_cm` | 100 cm | **150 cm** | コストマップのクリアランス半径 |
+| `perception_standoff_cm` | 50 cm | **100 cm** | 知覚前の安全距離 |
+| `l2_replan_cell_delta_threshold` | 1 セル | **10 セル** | リプランをトリガーする L2 変化量 |
+| `depth_move_invalidate_cm` | 30 cm | **120 cm** | この移動量でキャッシュ破棄 |
+| `depth_cache_ttl_s` | 0.3s | **0.55s** | 深度キャッシュの有効期間 |
+| `moves_per_cycle` | 2 | **3** | 1知覚間隔あたりの移動回数 |
+| `nav_warmup_settle_s` | 4.0s | **1.0s** | ナビ開始前の安定待機 |
+| `sight_registry_every_n` | 1 | **2** | Sight 更新の間引き |
 
-ナビゲーションループの各フェーズにかかった時間をミリ秒単位で蓄積します：
+> **fast の思想**：知覚頻度を下げ（1/5.5秒）、速度を上げ（285cm/s）、クリアランスを広げる（150cm）。
+> 「周りをこまめに見ながらゆっくり」ではなく、**「大きく避けながら速く走り抜ける」**戦略。
+> これが俗称「fast 150cm」の由来。
+
+---
+
+## 9. 出力：メトリクスとアーティファクト
+
+### タイミングバケット（`metrics.py` `NavTimingAccumulator`）
+
+ナビループの各フェーズの所要時間をミリ秒で蓄積します。
 
 | バケット | 内容 |
 |---|---|
 | `perceive_ms` | 知覚サイクル全体（depth_fetch + l2_update + sight_registry） |
-| `move_ms` | 実際の移動・回転コマンド送信時間 |
-| `replan_ms` | A* リプランニング時間 |
+| `move_ms` | 移動・回転コマンドの送信時間 |
+| `replan_ms` | A* リプラン時間 |
 | `settle_ms` | `tick_settle()` の待機時間 |
-| `standoff_ms` | スタンドオフ・バックオフ処理時間 |
-| `depth_refresh_ms` | 知覚サイクル外での深度更新時間 |
-| `pose_query_ms` | ロボット姿勢クエリ時間 |
+| `standoff_ms` | スタンドオフ・バックオフ処理 |
+| `depth_refresh_ms` | 知覚サイクル外の深度更新 |
+| `pose_query_ms` | 姿勢クエリ時間 |
 | `loop_overhead_ms` | ループの残余オーバーヘッド |
 
-#### `MissionRecorder` — ミッション全体のメトリクス
+### ミッションメトリクス（`MissionRecorder`）
 
-各ナビゲーションステップで `record_pose()` を呼び出し、以下を計測：
+各ステップで `record_pose()` を呼び、以下を計測。
+
 - 速度違反（5 km/h 超え）
 - 禁止ゾーン侵入時間
 - オブジェクト近接違反（1m 以内）
 
-#### `save_metrics_json` / `save_timing_json` の命名
-
-```
-metricsSummary_{run_label}_{trial_index}.json  ← --run-label / --trial-index 指定時
-site_transport_metrics_{stamp}.json             ← ラベルなし時
-timing_{run_label}_{trial_index}.json
-```
-
-### `viz.py` — アーティファクト出力
-
-`save_site_transport_artifacts()` が以下を生成：
+### 出力ファイル（`viz.py` `save_site_transport_artifacts`）
 
 | ファイル | 内容 |
 |---|---|
-| `costMap_{suffix}.png` | L0/L1/L2 コストマップ重ね合わせ + 軌跡 + 計画パス + L2推定位置 |
-| `metricsSummary_{suffix}.png` | ステータスバナー + タイミングブレークダウンテーブル + 違反グラフ |
-| `metricsSummary_{suffix}.json` | 全メトリクス（JSON） |
-| `timing_{suffix}.json` | タイミングサマリー（JSON） |
-| `site_transport_costmap_{suffix}.npz` | L0/L1/L2/merged の NumPy アレイ |
-| `site_transport_trajectory_{suffix}.json` | 軌跡・計画パス・L2推定点 |
-| `latest_*.json` | 最新実行へのシンボリックコピー |
+| `costMap_{suffix}.png` | L0/L1/L2 重ね合わせ + 軌跡 + 計画パス + L2 推定位置 |
+| `metricsSummary_{suffix}.png` | ステータスバナー + タイミング表 + 違反グラフ |
+| `metricsSummary_{suffix}.json` | 全メトリクス |
+| `timing_{suffix}.json` | タイミングサマリー |
+| `site_transport_costmap_{suffix}.npz` | L0/L1/L2/merged の NumPy 配列 |
+| `site_transport_trajectory_{suffix}.json` | 軌跡・計画パス・L2 推定点 |
+| `latest_*.json` | 最新実行へのコピー |
+
+**命名規則**：`--run-label L0L2_fast_150cm --trial-index 3` を付けると `metricsSummary_L0L2_fast_150cm_3.json` のように固定名で保存。ラベルなしの場合は UTC タイムスタンプ（`20240101T120000Z`）が使われます（両者は同時指定が必須）。
 
 ---
 
-## 7. データフロー図（1ナビゲーションサイクル）
+## 10. 設計判断まとめ（なぜそうしたか）
+
+| # | 判断 | 理由 |
+|---|---|---|
+| 1 | **L2 を Depth 専用にした** | AI Sight は遮蔽に敏感でノイズが多い。障害物形状の精密推定には深度画像が適切。Sight はゴール追跡に特化させ役割を分離 |
+| 2 | **ObjectRegistry を L2 から分離した** | 動的ゴール（作業員）の座標はコストマップに焼き付けるべきでない。レジストリは目標座標の辞書、コストマップは障害物専用 |
+| 3 | **オープンループ移動を採用** | SpotDog は NavMesh 追従ではなく直接モーション制御（`Move_Speed` / `Rotate_Angle` VBP）。姿勢フィードバックはポーリングで補う |
+| 4 | **DepthFrameCache を設けた** | 深度フェッチは1回100–300ms。1ループで複数回使うため、TTL＋姿勢ゲートのキャッシュで無駄なフェッチを排除 |
+| 5 | **Carry-Forward マスク** | Leg2 で L2 を全リセットすると Leg1 で確認した静的障害物が失われる。2-hit ラッチ済みセルだけ引き継ぎ、ファントム消去と信頼できる障害物保持を両立 |
+
+---
+
+## 付録 A: CLI リファレンス
+
+| フラグ | 意味 | デフォルト |
+|---|---|---|
+| `--l0` | L0 NavMesh マスク PNG のパス | `L0_MASK_STRICT` |
+| `--profile {default,careful,fast}` | NavProfile の選択 | `default` |
+| `--l2-mode {sight,geom,camera,off}` | L2 知覚モード | `sight` |
+| `--no-l2` | L2 無効（`--l2-mode off` のエイリアス） | — |
+| `--no-l1` | L1 禁止ゾーンを無効化 | — |
+| `--max-nav-steps` | ナビゲーション最大ステップ数 | 600 |
+| `--skip-spawn` | シーンのスポーンをスキップ（再実行時） | — |
+| `--spawn-only` / `--plan-only` | デバッグ用の部分実行 | — |
+| `--force-rebuild-registry` | レジストリを強制再構築 | — |
+| `--artifact-dir` | 出力先ディレクトリ | `DEFAULT_ARTIFACT_DIR` |
+| `--run-label` / `--trial-index` | アーティファクトのラベリング（同時指定が必須） | — |
+
+> `--l2-mode` の `sight` が現行の主経路。`geom`（幾何推定）/ `camera`（深度＋マスク）/ `off`（L0+L1 のみ）はフォールバックや比較実験用。
+
+---
+
+## 付録 B: 1ナビゲーションサイクル詳細シーケンス図
 
 ```mermaid
 sequenceDiagram
@@ -354,7 +521,7 @@ sequenceDiagram
                 Nav->>DFC: invalidate("standoff_backoff")
             end
             Nav->>DFC: get_or_wait(pose, fetch_fn)
-            alt キャッシュMISS
+            alt キャッシュ MISS
                 DFC->>UE: fetch_depth_npy(fusion_cam)
                 UE-->>DFC: depth_raw (cm単位)
                 DFC->>DFC: depth_npy_to_meters() → depth_m
@@ -368,7 +535,7 @@ sequenceDiagram
             OR->>UE: GetVisibleSightTargetsJson VBP
             UE-->>OR: visible targets JSON
             OR->>OR: upsert(slot_id, world_xy)
-            alt L2セル変化 ≥ threshold
+            alt L2 セル変化 ≥ threshold
                 Nav->>AP: _replan_on_merged_layers(L0+L1+L2+clearance)
                 AP-->>Nav: new waypoints
             end
@@ -397,51 +564,19 @@ sequenceDiagram
 
 ---
 
-## 8. CLIフラグ vs NavProfile 設定可能項目まとめ
+## 付録 C: 用語集
 
-### CLIで直接設定するもの
-- L0マスクパス、L2モード、L1有効/無効
-- `--profile` によるNavProfile選択
-- 最大ステップ数、アーティファクトディレクトリ
-
-### NavProfile（`site_transport_config.py`）で設定するもの
-
-| パラメータ | default | fast | 意味 |
-|---|---|---|---|
-| `perception_interval_s` | 1.0s | **5.5s** | 知覚サイクルの最小間隔 |
-| `site_robot_speed` | 180 cm/s | **285 cm/s** | 移動速度 |
-| `site_max_open_loop_move_cm` | 120 cm | **250 cm** | 1回の最大移動距離 |
-| `planning_clearance_cm` | 100 cm | **150 cm** | コストマップクリアランス半径 |
-| `perception_standoff_cm` | 50 cm | **100 cm** | 知覚前の安全距離 |
-| `l2_replan_cell_delta_threshold` | 1 セル | **10 セル** | リプランをトリガーするL2変化量 |
-| `depth_move_invalidate_cm` | 30 cm | **120 cm** | この移動量でキャッシュを破棄 |
-| `depth_cache_ttl_s` | 0.3s | **0.55s** | 深度キャッシュの有効期間 |
-| `moves_per_cycle` | 2 | **3** | 1知覚間隔あたりの移動回数 |
-| `nav_warmup_settle_s` | 4.0s | **1.0s** | ナビ開始前の安定待機時間 |
-
-fastプロファイルは「知覚頻度を下げ、高速移動・大きなクリアランスで走り抜ける」設計で、150cmクリアランスがfast 150cmと呼ばれる理由です。
-
----
-
-## 9. 設計上の重要な選択点まとめ
-
-1. **L2をDepth専用にした理由**: AI Sightは遮蔽に敏感でノイズが多く、深度画像の方が障害物形状の精密な推定に適しているため。Sightはゴール追跡（ObjectRegistry）に特化させることで役割分担を明確化。
-
-2. **ObjectRegistryをL2から分離した理由**: ゴール座標（Humanoidなど動的オブジェクト）は「コストマップに焼き付けるべきでない」。レジストリはあくまでプランニング目標座標の辞書であり、コストマップは障害物のみを扱う。
-
-3. **Open-Loop移動の採用理由**: UnrealCVのSpotDogはNavMesh追従ではなく直接モーション制御（`Move_Speed`, `Rotate_Angle` VBP）で動くため、Open-Loopが必然的選択。姿勢フィードバックはUEからのポーリングで補う。
-
-4. **DepthFrameCacheの設計理由**: 深度フェッチ（カメラ移動→tick待機→画像取得）は1回100-300msかかる。1ナビループで複数回使う（スタンドオフチェック、L2更新、前進前チェック）ため、TTL+姿勢ゲートのキャッシュで無駄なフェッチを排除。
-
-5. **Carry-Forwardマスクの理由**: Leg2でL2を完全リセットすると、Leg1で確認した静的障害物の情報が失われる。2-hitラッチされた（十分な証拠がある）セルだけを引き継ぐことで、ファントム消去と信頼できる障害物保持のバランスをとる。
-
----
-
-## 要約
-
-site_transport_20m ミッション実行アーキテクチャの中核は以下の3点です：
-
-- **3層コストマップ構造**（L0静的NavMesh / L1禁止ゾーン / L2深度SLAM）がナビゲーションの基盤で、A*は常に3層を `max` 合成したうえに `planning_clearance_cm` のソフトコストを乗せて計算します
-- **ObjectRegistryはコストマップに書かない**という設計が重要で、Sightはゴール座標追跡専用、Depthは障害物マップ専用に役割分担しています
-- **fastプロファイル（150cm）**は、知覚頻度を1/5.5秒に下げ・速度285cm/sに上げ・クリアランスを150cmに広げることで「周りを見ながらゆっくり」ではなく「大きく避けながら速く走る」戦略を取ります
-- **DepthFrameCache**がTTL・姿勢ゲート・移動無効化の3条件でキャッシュを管理し、重い深度フェッチを1ループに最小限に抑えています
+| 用語 | 意味 |
+|---|---|
+| **レグ (Leg)** | ミッションを構成する移動区間。Leg1=資材まで、Leg2=作業員まで |
+| **L0 / L1 / L2** | コストマップの3層（静的地図 / 禁止ゾーン / 動的障害物） |
+| **slot_id** | オブジェクトの識別子。`ObjectRegistry` でゴール座標と紐づく |
+| **スタンドオフ (standoff)** | 知覚・移動の前に確保する障害物からの安全距離 |
+| **オープンループ移動** | フィードバックなしで「N cm 進め / M 度回れ」を送る移動方式 |
+| **2-hit ラッチ** | 2回以上検出されたセルを静的障害物として永続化する仕組み |
+| **Carry-Forward** | レグ切替時に静的ラッチ済み L2 セルだけを引き継ぐこと |
+| **ファントム** | 実在しないのに L2 に残ってしまった誤検知障害物 |
+| **NavProfile** | 速度・知覚頻度などをまとめた挙動プリセット（default / fast） |
+| **FusionCamera** | 深度画像を取得する UnrealCV のカメラ |
+| **AI Sight** | UE の AI Perception。可視ターゲットを返す（ゴール追跡用） |
+```
