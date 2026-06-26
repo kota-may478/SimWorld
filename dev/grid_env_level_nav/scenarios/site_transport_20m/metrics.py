@@ -46,6 +46,9 @@ class NavTimingAccumulator:
     # Previously unmeasured / loop overhead
     depth_refresh_ms: float = 0.0
     pose_query_ms: float = 0.0
+    pose_cache_hits: int = 0
+    pose_batch_vbp_fetches: int = 0
+    pose_batch_split_fetches: int = 0
     move_gate_spin_ms: float = 0.0
     loop_overhead_ms: float = 0.0
     # Loop-overhead sub-buckets (informational; subset of loop_overhead_ms)
@@ -79,6 +82,9 @@ class NavTimingAccumulator:
         self.depth_reverse_ms += other.depth_reverse_ms
         self.depth_refresh_ms += other.depth_refresh_ms
         self.pose_query_ms += other.pose_query_ms
+        self.pose_cache_hits += other.pose_cache_hits
+        self.pose_batch_vbp_fetches += other.pose_batch_vbp_fetches
+        self.pose_batch_split_fetches += other.pose_batch_split_fetches
         self.move_gate_spin_ms += other.move_gate_spin_ms
         self.loop_overhead_ms += other.loop_overhead_ms
         self.waypoint_select_ms += other.waypoint_select_ms
@@ -152,6 +158,9 @@ class NavTimingAccumulator:
             "depth_reverse_ms": round(self.depth_reverse_ms, 2),
             "depth_refresh_ms": round(self.depth_refresh_ms, 2),
             "pose_query_ms": round(self.pose_query_ms, 2),
+            "pose_cache_hits": self.pose_cache_hits,
+            "pose_batch_vbp_fetches": self.pose_batch_vbp_fetches,
+            "pose_batch_split_fetches": self.pose_batch_split_fetches,
             "move_gate_spin_ms": round(self.move_gate_spin_ms, 2),
             "loop_overhead_ms": round(self.loop_overhead_ms, 2),
             "waypoint_select_ms": round(self.waypoint_select_ms, 2),

@@ -534,6 +534,36 @@ PYTHONUNBUFFERED=1 conda run --no-capture-output -n simworld python \
 
 ---
 
+## Phase 8.5: 姿勢一括取得 `GetPose2dJson`（vbp・任意だが推奨）
+
+ナビループの `pose_query_ms` 短縮のため、Python は次を **1 回の vbp** で試します（未実装時は `location` + `orientation` にフォールバック）:
+
+```text
+vbp GridEnv_SpotRobot GetPose2dJson
+```
+
+**期待する JSON（`ReturnValue` ラッパー可）:**
+
+```json
+{"x": 12345.6, "y": 7890.1, "yaw": 42.5}
+```
+
+**BP 実装例（`BP_SpotRobot` / `Move_Speed` と同じ Pawn）:**
+
+1. Graph で **Custom Function** `GetPose2dJson` を追加（Callable, Category=Nav）
+2. `GetActorLocation` → `Break Vector` で X,Y
+3. `GetActorRotation` → `Break Rotator` の **Yaw**
+4. `Make Literal String` または `Format Text` で上記 JSON 文字列を組み立て **Return**
+
+Python 側: `nav_pose_query.py` が自動検出。加えて **移動トークン**（移動後のみ再取得）が有効です。
+
+| 確認 | 方法 |
+|------|------|
+| vbp 応答 | PIE 中 `print(ucv.client.request('vbp GridEnv_SpotRobot GetPose2dJson'))` |
+| タイミング | `timing_*.json` の `pose_batch_vbp_fetches` / `pose_cache_hits` |
+
+---
+
 ## Phase 9: 運搬物 CarrySocket Attach（leg2・vbp）
 
 Sight（Phase 1～8）が動いたあと、**運搬物を SpotDog の骨に追従させる**ための UE 作業です。  
