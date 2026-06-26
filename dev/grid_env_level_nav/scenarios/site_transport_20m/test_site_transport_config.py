@@ -29,6 +29,14 @@ def test_resolve_fast_profile() -> None:
     assert profile.max_turn_deg_per_step == 27.0
 
 
+def test_default_profile_enables_rpp() -> None:
+    profile = resolve_profile("default")
+    assert profile.use_rpp_controller is True
+    assert profile.depth_cache_ttl_s == 0.5
+    fast = resolve_profile("fast")
+    assert fast.use_rpp_controller is False
+
+
 def test_apply_fast_profile_updates_layered_nav() -> None:
     apply_profile_to_layered_nav(FAST_PROFILE)
     assert ln.MOVES_PER_CYCLE == 3
@@ -41,9 +49,11 @@ def test_apply_fast_profile_updates_layered_nav() -> None:
     assert ln.PERCEPTION_STANDOFF_CM == 100.0
     assert ln.STANDOFF_EVICT_CONE_HALF_DEG == 50.0
     assert ln.STANDOFF_EVICT_DEPTH_MARGIN_CM == 20.0
+    assert ln.USE_RPP_CONTROLLER is False
     apply_profile_to_layered_nav(resolve_profile("default"))
     assert ln.MOVES_PER_CYCLE == 2
     assert ln.PERCEPTION_STANDOFF_CM == 50.0
+    assert ln.USE_RPP_CONTROLLER is True
 
 
 def test_build_timing_summary() -> None:

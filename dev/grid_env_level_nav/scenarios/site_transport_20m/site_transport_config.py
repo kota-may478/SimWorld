@@ -34,9 +34,27 @@ class NavProfile:
     depth_camera_settle_s: float = 0.08
     standoff_evict_cone_half_deg: float = 45.0
     standoff_evict_depth_margin_cm: float = 15.0
+    use_rpp_controller: bool = False
+    rpp_lookahead_cm: float = 80.0
+    rpp_regulated_min_radius_cm: float = 120.0
+    segment_chunk_max_move_cm: float = 50.0
+    open_loop_distance_scale: float = 1.0
+    local_costmap_size_cm: float = 600.0
+    local_costmap_resolution_cm: float = 50.0
+    controller_hz: float = 5.0
 
 
-DEFAULT_PROFILE = NavProfile(name="default")
+DEFAULT_PROFILE = NavProfile(
+    name="default",
+    use_rpp_controller=True,
+    perception_interval_s=2.0,
+    l2_replan_cell_delta_threshold=5,
+    sight_registry_every_n=2,
+    depth_cache_ttl_s=0.5,
+    depth_pose_delta_max_cm=10.0,
+    depth_move_invalidate_cm=80.0,
+    depth_camera_settle_s=0.06,
+)
 
 FAST_PROFILE = NavProfile(
     name="fast",
@@ -62,6 +80,11 @@ FAST_PROFILE = NavProfile(
     depth_pose_delta_max_cm=12.0,
     depth_move_invalidate_cm=120.0,
     depth_camera_settle_s=0.05,
+    use_rpp_controller=False,
+    rpp_lookahead_cm=100.0,
+    rpp_regulated_min_radius_cm=150.0,
+    segment_chunk_max_move_cm=70.0,
+    open_loop_distance_scale=1.05,
 )
 
 PROFILES: Dict[str, NavProfile] = {
@@ -99,3 +122,9 @@ def apply_profile_to_layered_nav(profile: NavProfile) -> None:
     ln.STANDOFF_EVICT_CONE_HALF_DEG = profile.standoff_evict_cone_half_deg
     ln.STANDOFF_EVICT_DEPTH_MARGIN_CM = profile.standoff_evict_depth_margin_cm
     ln.MAX_TURN_DEG_PER_STEP = profile.max_turn_deg_per_step
+    ln.USE_RPP_CONTROLLER = profile.use_rpp_controller
+    ln.RPP_LOOKAHEAD_CM = profile.rpp_lookahead_cm
+    ln.RPP_REGULATED_MIN_RADIUS_CM = profile.rpp_regulated_min_radius_cm
+    ln.SEGMENT_CHUNK_MAX_MOVE_CM = profile.segment_chunk_max_move_cm
+    ln.OPEN_LOOP_DISTANCE_SCALE = profile.open_loop_distance_scale
+    ln.SIGHT_REGISTRY_EVERY_N = profile.sight_registry_every_n
