@@ -309,6 +309,7 @@ class MissionRecorder:
         leg2_time_s: Optional[float] = None,
         timing_summary: Optional[Dict[str, Any]] = None,
         profile: Optional[str] = None,
+        nav_kpi: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         total_time_s = max(0.0, mission_end_t - self.mission_t0)
         if len(self.samples) < 2:
@@ -374,6 +375,8 @@ class MissionRecorder:
             result["leg2_time_s"] = round(leg2_time_s, 3)
         if timing_summary is not None:
             result["timing_summary"] = timing_summary
+        if nav_kpi is not None:
+            result["nav_kpi"] = nav_kpi
         return result
 
 
