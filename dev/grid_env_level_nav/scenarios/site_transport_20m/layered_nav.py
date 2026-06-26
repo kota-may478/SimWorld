@@ -46,6 +46,11 @@ from pie_safety import PieSessionLost, require_live_ucv, tick_settle  # noqa: E4
 from pie_spawn_safety import ensure_live_or_reconnect  # noqa: E402
 from viz import NavTrace  # noqa: E402
 from metrics import NavTimingAccumulator  # noqa: E402
+from nav_pose_query import (  # noqa: E402
+    fetch_nav_pose,
+    invalidate_robot_pose,
+    sync_robot_pose_cache,
+)
 from nav_stack.nav_types import PerceptionOutcome as PerceiveOutcome  # noqa: E402
 from simworld.communicator.unrealcv import UnrealCV  # noqa: E402
 
@@ -103,9 +108,7 @@ def _sync_pose_cache(
     pos_xy: WorldXY,
     yaw_deg: float,
 ) -> None:
-    if pose_cache is not None:
-        pose_cache["xy"] = pos_xy
-        pose_cache["yaw"] = yaw_deg
+    sync_robot_pose_cache(pose_cache, pos_xy, yaw_deg)
 
 
 def _read_pose_cache(
@@ -125,11 +128,30 @@ def _fetch_nav_pose(
     robot_name: str,
     nav_timing: Optional[NavTimingAccumulator],
     pose_cache: Optional[PoseCache],
+    *,
+    force: bool = False,
 ) -> Tuple[WorldXY, float, UnrealCV]:
-    pos_xy, ucv = _timed_get_pos2d(ucv, robot_name, nav_timing)
-    yaw_deg = _timed_get_yaw(ucv, robot_name, nav_timing)
-    _sync_pose_cache(pose_cache, pos_xy, yaw_deg)
-    return pos_xy, yaw_deg, ucv
+    try:
+        return fetch_nav_pose(
+            ucv,
+            robot_name,
+            nav_timing,
+            pose_cache,
+            force=force,
+        )
+    except (ConnectionError, AttributeError, OSError, ValueError, TypeError) as exc:
+        print(f"  [SiteNav] fetch_nav_pose failed ({exc}) — reconnect")
+        try:
+            ucv = ensure_live_or_reconnect(ucv, reason="fetch_nav_pose")
+            return fetch_nav_pose(
+                ucv,
+                robot_name,
+                nav_timing,
+                pose_cache,
+                force=True,
+            )
+        except (ConnectionError, OSError, RuntimeError, PieSessionLost) as exc2:
+            raise PieSessionLost(f"UnrealCV reconnect failed during nav: {exc2}") from exc2
 
 
 def _invoke_perceive(
@@ -479,6 +501,10 @@ def _depth_backoff_move(
         nav_timing.depth_reverse_ms += (time.perf_counter() - t0) * 1000.0
 
 
+def _invalidate_pose_after_standoff_motion(pose_cache: Optional[PoseCache]) -> None:
+    invalidate_robot_pose(pose_cache, reason="standoff_motion")
+
+
 def _ensure_move_standoff(
     ucv: UnrealCV,
     robot_name: str,
@@ -551,12 +577,10 @@ def _ensure_move_standoff(
             standoff.obstacle_xy,
             backoff_cm,
         )
-        if pose_cache is not None:
-            if robot_yaw_deg is not None:
-                _sync_pose_cache(pose_cache, pos_xy, robot_yaw_deg)
-            else:
-                yaw_deg = _timed_get_yaw(ucv, robot_name, nav_timing)
-                _sync_pose_cache(pose_cache, pos_xy, yaw_deg)
+        _invalidate_pose_after_standoff_motion(pose_cache)
+        pos_xy, robot_yaw_deg, ucv = _fetch_nav_pose(
+            ucv, robot_name, nav_timing, pose_cache, force=True
+        )
         if nav_timing is not None:
             nav_timing.backoff_ms += (time.perf_counter() - backoff_t0) * 1000.0
         did_backoff = True
@@ -568,18 +592,19 @@ def _ensure_move_standoff(
             carry_motion_cb=carry_motion_cb,
             nav_timing=nav_timing,
         )
-        pos_xy, ucv = _timed_get_pos2d(ucv, robot_name, nav_timing)
-        if pose_cache is not None and robot_yaw_deg is not None:
-            _sync_pose_cache(pose_cache, pos_xy, robot_yaw_deg)
-        elif pose_cache is not None:
-            yaw_deg = _timed_get_yaw(ucv, robot_name, nav_timing)
-            _sync_pose_cache(pose_cache, pos_xy, yaw_deg)
+        _invalidate_pose_after_standoff_motion(pose_cache)
+        pos_xy, robot_yaw_deg, ucv = _fetch_nav_pose(
+            ucv, robot_name, nav_timing, pose_cache, force=True
+        )
         did_backoff = True
 
     if did_backoff and depth_invalidate_fn is not None:
         depth_invalidate_fn("standoff_backoff")
 
-    if depth_refresh_fn is not None:
+    if did_backoff:
+        if depth_refresh_fn is not None:
+            forward_depth_cm = depth_refresh_fn()
+    elif forward_depth_cm is None and depth_refresh_fn is not None:
         forward_depth_cm = depth_refresh_fn()
 
     if carry_motion_cb is not None:
@@ -922,8 +947,7 @@ def _standoff_backoff_move(
         _dog_rotate_chunked(ucv, robot_name, abs(turn_delta), clockwise)
     duration_s = max(0.25, move_cm / STANDOFF_BACKOFF_SPEED)
     _site_dog_move(ucv, robot_name, STANDOFF_BACKOFF_SPEED, duration_s, direction=0)
-    new_xy, _ = _safe_get_pos2d(ucv, robot_name)
-    return new_xy
+    return robot_xy
 
 
 def _gate_perception_standoff(
@@ -990,12 +1014,10 @@ def _gate_perception_standoff(
         standoff.obstacle_xy,  # type: ignore[arg-type]
         backoff_cm,
     )
-    if pose_cache is not None:
-        if robot_yaw_deg is not None:
-            _sync_pose_cache(pose_cache, pos_xy, robot_yaw_deg)
-        else:
-            yaw_deg = _timed_get_yaw(ucv, robot_name, nav_timing)
-            _sync_pose_cache(pose_cache, pos_xy, yaw_deg)
+    _invalidate_pose_after_standoff_motion(pose_cache)
+    pos_xy, robot_yaw_deg, ucv = _fetch_nav_pose(
+        ucv, robot_name, nav_timing, pose_cache, force=True
+    )
     if nav_timing is not None:
         nav_timing.backoff_ms += (time.perf_counter() - backoff_t0) * 1000.0
     if carry_motion_cb is not None:
@@ -1243,8 +1265,10 @@ def _execute_segment_command(
     diag: bool = False,
     on_after_motion: Optional[CarrySyncFn] = None,
     nav_timing: Optional[NavTimingAccumulator] = None,
+    pose_cache: Optional[PoseCache] = None,
 ) -> None:
     """Site-tuned open-loop move (slower speed; uses actual robot_name)."""
+    did_motion = False
     if command.turn_deg > SITE_ROTATE_THR_DEG:
         rot_t0 = time.perf_counter()
         _dog_rotate_chunked(
@@ -1257,6 +1281,7 @@ def _execute_segment_command(
         )
         if nav_timing is not None:
             nav_timing.rotate_ms += (time.perf_counter() - rot_t0) * 1000.0
+        did_motion = True
     if command.move_cm > 1e-3:
         if diag:
             print(f"  [SiteNav] UE-RISK dog_move {command.move_cm:.1f}cm")
@@ -1267,6 +1292,9 @@ def _execute_segment_command(
             nav_timing.translate_ms += (time.perf_counter() - trans_t0) * 1000.0
         if on_after_motion is not None:
             on_after_motion()
+        did_motion = True
+    if did_motion:
+        invalidate_robot_pose(pose_cache, reason="segment_motion")
 
 
 def _execute_rpp_closed_loop(
@@ -1283,15 +1311,24 @@ def _execute_rpp_closed_loop(
     on_after_motion: Optional[CarrySyncFn] = None,
     nav_timing: Optional[NavTimingAccumulator] = None,
     on_move_cm_fn: Optional[Callable[[float], None]] = None,
+    pose_cache: Optional[PoseCache] = None,
 ) -> Tuple[WorldXY, float, UnrealCV, bool]:
     """RPP closed-loop chunks toward ``waypoint_xy``; returns (pos, yaw, ucv, stalled)."""
     server = _get_controller_server()
     state = {"ucv": ucv, "xy": pos_xy, "yaw": yaw_deg}
 
     def _get_pose() -> Tuple[WorldXY, float]:
-        state["xy"], state["ucv"] = _timed_get_pos2d(state["ucv"], robot_name, nav_timing)
-        state["yaw"] = _timed_get_yaw(state["ucv"], robot_name, nav_timing)
-        return state["xy"], state["yaw"]
+        xy, yaw, ucv_out = _fetch_nav_pose(
+            state["ucv"],
+            robot_name,
+            nav_timing,
+            pose_cache,
+            force=False,
+        )
+        state["ucv"] = ucv_out
+        state["xy"] = xy
+        state["yaw"] = yaw
+        return xy, yaw
 
     def _compute_command(current_xy: WorldXY, current_yaw: float) -> Optional[SegmentCommand]:
         return server.compute_segment_command(
@@ -1311,6 +1348,7 @@ def _execute_rpp_closed_loop(
             diag=diag,
             on_after_motion=on_after_motion,
             nav_timing=nav_timing,
+            pose_cache=pose_cache,
         )
         if command.move_cm > 1e-3 and on_move_cm_fn is not None:
             on_move_cm_fn(command.move_cm)
@@ -1557,7 +1595,8 @@ def navigate_layered_with_fusion(
     depth_refresh_fn: Optional[Callable[[], Optional[float]]] = None,
     depth_invalidate_fn: Optional[Callable[[str], None]] = None,
     on_move_cm_fn: Optional[Callable[[float], None]] = None,
-    depth_prefetch_fn: Optional[Callable[[], None]] = None,
+    depth_prefetch_fn: Optional[Callable[..., None]] = None,
+    on_nav_iter_start_fn: Optional[Callable[[], None]] = None,
     pose_cache: Optional[PoseCache] = None,
     nav_ctx: Optional[Any] = None,
     perceive_depth_refresh_fn: Optional[Callable[[], Optional[float]]] = None,
@@ -1780,8 +1819,9 @@ def navigate_layered_with_fusion(
             nav_timing.loop_overhead_ms += gap
 
     pos_xy = start_xy
-    robot_yaw_deg = get_yaw(ucv, robot_name)
-    _sync_pose_cache(pose_cache, pos_xy, robot_yaw_deg)
+    pos_xy, robot_yaw_deg, ucv = _fetch_nav_pose(
+        ucv, robot_name, nav_timing, pose_cache, force=True
+    )
 
     while total_steps < max_total_steps:
         loop_t0 = time.perf_counter()
@@ -1801,6 +1841,8 @@ def navigate_layered_with_fusion(
             return depth_refresh_fn()
 
         require_live_ucv(ucv, context=f"site nav step {total_steps}")
+        if on_nav_iter_start_fn is not None:
+            on_nav_iter_start_fn()
         pos_xy, robot_yaw_deg, ucv = _fetch_nav_pose(
             ucv, robot_name, nav_timing, pose_cache
         )
@@ -1872,6 +1914,7 @@ def navigate_layered_with_fusion(
             gate_forward_depth: Optional[float] = None
             if perceive_depth_fn is not None:
                 gate_forward_depth = perceive_depth_fn()
+                depth_fresh_this_iter = True
             run_perceive, pos_xy = _gate_perception_standoff(
                 ucv,
                 robot_name,
@@ -2108,6 +2151,7 @@ def navigate_layered_with_fusion(
                     on_after_motion=carry_motion_cb,
                     nav_timing=nav_timing,
                     on_move_cm_fn=on_move_cm_fn,
+                    pose_cache=pose_cache,
                 )
             else:
                 _execute_segment_command(
@@ -2117,6 +2161,7 @@ def navigate_layered_with_fusion(
                     diag=(moves_executed == 0),
                     on_after_motion=carry_motion_cb,
                     nav_timing=nav_timing,
+                    pose_cache=pose_cache,
                 )
                 if command.move_cm > 1e-3 and on_move_cm_fn is not None:
                     on_move_cm_fn(command.move_cm)
@@ -2157,7 +2202,15 @@ def navigate_layered_with_fusion(
                     nav_timing=nav_timing,
                 )
             if command.move_cm > 1e-3 and depth_prefetch_fn is not None:
-                depth_prefetch_fn()
+                perceive_due = (time.time() - last_perception_t) >= max(
+                    0.0,
+                    perception_interval_s - 0.35,
+                )
+                if perceive_due:
+                    try:
+                        depth_prefetch_fn(perceive_due=True)
+                    except TypeError:
+                        depth_prefetch_fn()
             pos_xy, robot_yaw_deg, ucv = _fetch_nav_pose(
                 ucv, robot_name, nav_timing, pose_cache
             )
@@ -2280,7 +2333,8 @@ def navigate_to_slot(
     depth_refresh_fn: Optional[Callable[[], Optional[float]]] = None,
     depth_invalidate_fn: Optional[Callable[[str], None]] = None,
     on_move_cm_fn: Optional[Callable[[float], None]] = None,
-    depth_prefetch_fn: Optional[Callable[[], None]] = None,
+    depth_prefetch_fn: Optional[Callable[..., None]] = None,
+    on_nav_iter_start_fn: Optional[Callable[[], None]] = None,
     pose_cache: Optional[PoseCache] = None,
     nav_ctx: Optional[Any] = None,
     perceive_depth_refresh_fn: Optional[Callable[[], Optional[float]]] = None,
@@ -2323,6 +2377,7 @@ def navigate_to_slot(
         depth_invalidate_fn=depth_invalidate_fn,
         on_move_cm_fn=on_move_cm_fn,
         depth_prefetch_fn=depth_prefetch_fn,
+        on_nav_iter_start_fn=on_nav_iter_start_fn,
         pose_cache=pose_cache,
         nav_ctx=nav_ctx,
         perceive_depth_refresh_fn=perceive_depth_refresh_fn,
@@ -2353,7 +2408,8 @@ def deliver_to(
     depth_refresh_fn: Optional[Callable[[], Optional[float]]] = None,
     depth_invalidate_fn: Optional[Callable[[str], None]] = None,
     on_move_cm_fn: Optional[Callable[[float], None]] = None,
-    depth_prefetch_fn: Optional[Callable[[], None]] = None,
+    depth_prefetch_fn: Optional[Callable[..., None]] = None,
+    on_nav_iter_start_fn: Optional[Callable[[], None]] = None,
     pose_cache: Optional[PoseCache] = None,
     nav_ctx: Optional[Any] = None,
     perceive_depth_refresh_fn: Optional[Callable[[], Optional[float]]] = None,
@@ -2389,6 +2445,7 @@ def deliver_to(
         depth_invalidate_fn=depth_invalidate_fn,
         on_move_cm_fn=on_move_cm_fn,
         depth_prefetch_fn=depth_prefetch_fn,
+        on_nav_iter_start_fn=on_nav_iter_start_fn,
         pose_cache=pose_cache,
         nav_ctx=nav_ctx,
         perceive_depth_refresh_fn=perceive_depth_refresh_fn,

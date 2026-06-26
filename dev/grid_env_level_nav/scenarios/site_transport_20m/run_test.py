@@ -55,6 +55,7 @@ from object_registry import (  # noqa: E402
 )
 from l2_depth import DepthCellTracker, DepthUpdateResult, soft_l2_depth_reset, update_l2_depth  # noqa: E402
 from depth_frame_cache import DepthFrameCache  # noqa: E402
+from depth_nav_iter import DepthNavIterBudget  # noqa: E402
 from metrics import (  # noqa: E402
     MissionRecorder,
     NavTimingAccumulator,
@@ -378,8 +379,13 @@ def main() -> int:
         depth_camera_settle_s = nav_profile.depth_camera_settle_s
         perceive_cycle = {"n": 0}
         depth_perceive_ctx = {"gate_fetched": False, "last_l2_changed": True}
+        depth_iter_budget = DepthNavIterBudget()
+        depth_log_next_fetch = {"enabled": False}
         active_nav_timing: dict = {"acc": None}
         nav_pose_cache: Dict[str, Any] = {"xy": None, "yaw": None}
+        from nav_pose_query import init_pose_cache  # noqa: WPS433
+
+        init_pose_cache(nav_pose_cache)
         depth_meta: dict = {"unit": "unknown", "min_scene_m": None}
 
         def _cached_nav_pose() -> tuple[float, float]:
@@ -397,7 +403,7 @@ def main() -> int:
                 fov_deg=SENSOR_FOV_DEG,
             )
             min_fwd_cm = min_fwd_m * 100.0 if min_fwd_m is not None else None
-            if finite_depth.size:
+            if depth_log_next_fetch["enabled"] and finite_depth.size:
                 depth_meta["min_scene_m"] = float(np.min(finite_depth))
                 fwd_txt = f"forward={min_fwd_cm:.0f}cm " if min_fwd_cm is not None else ""
                 print(
@@ -432,23 +438,49 @@ def main() -> int:
                 prefetch_hits=depth_frame.prefetch_hits,
             )
 
+        def _begin_depth_nav_iter() -> None:
+            depth_iter_budget.begin_iter()
+
         def _refresh_forward_depth_cm(
-            *, in_perceive: bool = False, mark_gate: bool = False
+            *, in_perceive: bool = False, mark_gate: bool = False, force: bool = False
         ) -> Optional[float]:
             nonlocal ucv
-            t0 = time.perf_counter()
             pose = _cached_nav_pose()
-            force = not depth_frame.is_fresh(pose, max_age_s=depth_frame.ttl_s)
+            ttl = depth_frame.ttl_s
+            fresh = depth_frame.try_get_fresh_forward_cm(pose, max_age_s=ttl)
+            if fresh is not None:
+                if mark_gate:
+                    depth_perceive_ctx["gate_fetched"] = True
+                return fresh
+            if depth_iter_budget.can_reuse_in_iter(depth_frame) and not force:
+                reused = depth_frame.reuse_cached_forward_cm()
+                if mark_gate and reused is not None:
+                    depth_perceive_ctx["gate_fetched"] = True
+                return reused
+            if not depth_iter_budget.should_fetch_ue(
+                depth_frame, pose, max_age_s=ttl, force=force
+            ):
+                reused = depth_frame.reuse_cached_forward_cm()
+                if mark_gate and reused is not None:
+                    depth_perceive_ctx["gate_fetched"] = True
+                return reused
+
+            t0 = time.perf_counter()
             prev_misses = depth_frame.misses
             prev_async_wait = depth_frame.async_wait_ms
-            result = depth_frame.get_or_wait(
-                pose,
-                _fetch_depth_raw_for_cache,
-                _record_depth_sample,
-                max_wait_s=0.15,
-                force=force,
-                max_age_s=depth_frame.ttl_s,
-            )
+            depth_log_next_fetch["enabled"] = True
+            try:
+                result = depth_frame.get_or_wait(
+                    pose,
+                    _fetch_depth_raw_for_cache,
+                    _record_depth_sample,
+                    max_wait_s=0.15,
+                    force=True,
+                    max_age_s=ttl,
+                )
+            finally:
+                depth_log_next_fetch["enabled"] = False
+            depth_iter_budget.note_ue_fetch()
             acc = active_nav_timing["acc"]
             if acc is not None:
                 elapsed = (time.perf_counter() - t0) * 1000.0
@@ -465,10 +497,6 @@ def main() -> int:
             return result
 
         def _perceive_gate_depth_refresh() -> Optional[float]:
-            pose = _cached_nav_pose()
-            if depth_frame.is_fresh(pose, max_age_s=depth_frame.ttl_s):
-                depth_perceive_ctx["gate_fetched"] = True
-                return depth_frame.min_fwd_cm
             return _refresh_forward_depth_cm(in_perceive=True, mark_gate=True)
 
         def _get_robot_pose_cached() -> tuple[tuple[float, float], float]:
@@ -503,27 +531,45 @@ def main() -> int:
 
         def _depth_invalidate_fn(reason: str) -> None:
             depth_frame.invalidate(reason)
+            depth_iter_budget.on_invalidate()
 
         def _on_move_cm_fn(move_cm: float) -> None:
             depth_frame.note_move_cm(move_cm)
 
-        def _depth_prefetch_fn() -> None:
+        def _depth_prefetch_fn(*, perceive_due: bool = False) -> None:
             nonlocal ucv
-            if l2_mode != "sight":
+            if l2_mode != "sight" or not perceive_due:
+                return
+            pose = _cached_nav_pose()
+            if depth_frame.try_get_fresh_forward_cm(pose, max_age_s=depth_frame.ttl_s) is not None:
+                return
+            if depth_iter_budget.can_reuse_in_iter(depth_frame):
                 return
             t0 = time.perf_counter()
-            pose = _cached_nav_pose()
-            depth_frame.prefetch_async(pose, _fetch_depth_raw_for_cache, _record_depth_sample)
+            prev_misses = depth_frame.misses
+            depth_log_next_fetch["enabled"] = True
+            try:
+                depth_frame.prefetch_async(
+                    pose, _fetch_depth_raw_for_cache, _record_depth_sample
+                )
+            finally:
+                depth_log_next_fetch["enabled"] = False
+            if depth_frame.misses > prev_misses:
+                depth_iter_budget.note_ue_fetch()
             acc = active_nav_timing["acc"]
             if acc is not None:
                 acc.prefetch_hit_ms += (time.perf_counter() - t0) * 1000.0
             _sync_depth_timing_stats()
 
         def _reset_depth_state(label: str, *, carry_forward: bool = False) -> None:
+            from nav_pose_query import init_pose_cache  # noqa: WPS433
+
             depth_frame.invalidate(label)
             perceive_cycle["n"] = 0
             depth_perceive_ctx["gate_fetched"] = False
             depth_perceive_ctx["last_l2_changed"] = True
+            depth_iter_budget.begin_iter()
+            init_pose_cache(nav_pose_cache)
             if carry_forward:
                 depth_tracker.snapshot_occupied(layers)
                 object_registry.clear_dynamic()
@@ -1007,6 +1053,7 @@ def main() -> int:
                 depth_invalidate_fn=_depth_invalidate_fn if l2_mode == "sight" else None,
                 on_move_cm_fn=_on_move_cm_fn if l2_mode == "sight" else None,
                 depth_prefetch_fn=_depth_prefetch_fn if l2_mode == "sight" else None,
+                on_nav_iter_start_fn=_begin_depth_nav_iter if l2_mode == "sight" else None,
                 pose_cache=nav_pose_cache,
                 nav_ctx=nav_ctx,
                 perceive_depth_refresh_fn=(
@@ -1078,6 +1125,7 @@ def main() -> int:
                 depth_invalidate_fn=_depth_invalidate_fn if l2_mode == "sight" else None,
                 on_move_cm_fn=_on_move_cm_fn if l2_mode == "sight" else None,
                 depth_prefetch_fn=_depth_prefetch_fn if l2_mode == "sight" else None,
+                on_nav_iter_start_fn=_begin_depth_nav_iter if l2_mode == "sight" else None,
                 pose_cache=nav_pose_cache,
                 nav_ctx=nav_ctx,
                 perceive_depth_refresh_fn=(
