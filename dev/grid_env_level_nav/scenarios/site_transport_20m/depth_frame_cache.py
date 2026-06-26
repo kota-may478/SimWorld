@@ -72,6 +72,25 @@ class DepthFrameCache:
     def get_depth_m(self) -> Optional[np.ndarray]:
         return self._depth_m
 
+    def try_get_fresh_forward_cm(
+        self,
+        pose_xy: WorldXY,
+        *,
+        max_age_s: Optional[float] = None,
+    ) -> Optional[float]:
+        """Return cached forward depth without UE fetch when fresh."""
+        if not self.is_fresh(pose_xy, max_age_s=max_age_s):
+            return None
+        self.hits += 1
+        return self.min_fwd_cm
+
+    def reuse_cached_forward_cm(self) -> Optional[float]:
+        """Reuse in-memory depth without UE (counts as cache hit)."""
+        if self._depth_m is None:
+            return None
+        self.hits += 1
+        return self.min_fwd_cm
+
     def prefetch_async(
         self,
         pose_xy: WorldXY,
@@ -82,16 +101,15 @@ class DepthFrameCache:
         if self.is_fresh(pose_xy):
             return
         self.prefetch_started += 1
-        if (
-            self.refresh_forward_depth_cm(
-                pose_xy,
-                fetch_raw_fn,
-                record_fn,
-                force=True,
-                max_age_s=self.ttl_s,
-            )
-            is not None
-        ):
+        warmed = self.get_or_wait(
+            pose_xy,
+            fetch_raw_fn,
+            record_fn,
+            max_wait_s=0.15,
+            force=False,
+            max_age_s=self.ttl_s,
+        )
+        if warmed is not None:
             self.prefetch_hits += 1
 
     def get_or_wait(

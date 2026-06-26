@@ -58,6 +58,24 @@ def test_invalidate_on_move() -> None:
     assert cache.misses == 2
 
 
+def test_try_get_fresh_forward_cm() -> None:
+    cache = DepthFrameCache(ttl_s=1.0)
+    pose = (1.0, 2.0)
+    calls = {"n": 0}
+
+    def fetch() -> np.ndarray:
+        calls["n"] += 1
+        return np.array([[2.0]], dtype=np.float32)
+
+    def record(_raw: np.ndarray, depth_m: np.ndarray) -> float:
+        return 200.0
+
+    cache.refresh_forward_depth_cm(pose, fetch, record, force=True)
+    assert cache.try_get_fresh_forward_cm(pose) == 200.0
+    assert calls["n"] == 1
+    assert cache.hits == 1
+
+
 def test_prefetch_async_hit() -> None:
     cache = DepthFrameCache(ttl_s=1.0)
     pose = (10.0, 20.0)
