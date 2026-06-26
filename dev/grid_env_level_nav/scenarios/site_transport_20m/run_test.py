@@ -44,6 +44,8 @@ from layered_nav import (  # noqa: E402
     deliver_to,
     navigate_to_slot,
 )
+from nav_stack.nav_context import build_nav_context  # noqa: E402
+from nav_stack.perception_server import PerceptionServer, SightPerceptionDeps  # noqa: E402
 from object_registry import (  # noqa: E402
     ObjectRegistry,
     RegistryUpdateResult,
@@ -51,7 +53,7 @@ from object_registry import (  # noqa: E402
     estimate_local_xy_from_detection,
     update_object_registry_from_sight,
 )
-from l2_depth import DepthCellTracker, soft_l2_depth_reset, update_l2_depth  # noqa: E402
+from l2_depth import DepthCellTracker, DepthUpdateResult, soft_l2_depth_reset, update_l2_depth  # noqa: E402
 from depth_frame_cache import DepthFrameCache  # noqa: E402
 from metrics import (  # noqa: E402
     MissionRecorder,
@@ -61,6 +63,7 @@ from metrics import (  # noqa: E402
     save_timing_json,
 )
 from site_transport_config import apply_profile_to_layered_nav, resolve_profile  # noqa: E402
+from nav_stack.mission_bt import MissionRunner  # noqa: E402
 from paths import L0_MASK_STRICT  # noqa: E402
 from pie_safety import PieSessionLost, require_live_ucv, tick_settle  # noqa: E402
 from perception_layer import (  # noqa: E402
@@ -331,6 +334,14 @@ def main() -> int:
         _perceive = _perceive_disabled
         _reset_l2_perceive_counter = None
         object_registry = ObjectRegistry()
+        nav_ctx = build_nav_context(
+            ucv=ucv,
+            layers=layers,
+            profile=nav_profile,
+            trace=trace,
+            object_registry=object_registry,
+            robot_name=robot_name,
+        )
         depth_tracker = DepthCellTracker()
 
         def _registry_obstacle_positions(*, exclude_slot: Optional[str] = None):
@@ -366,6 +377,7 @@ def main() -> int:
         SIGHT_REGISTRY_EVERY_N = nav_profile.sight_registry_every_n
         depth_camera_settle_s = nav_profile.depth_camera_settle_s
         perceive_cycle = {"n": 0}
+        depth_perceive_ctx = {"gate_fetched": False, "last_l2_changed": True}
         active_nav_timing: dict = {"acc": None}
         nav_pose_cache: Dict[str, Any] = {"xy": None, "yaw": None}
         depth_meta: dict = {"unit": "unknown", "min_scene_m": None}
@@ -420,11 +432,13 @@ def main() -> int:
                 prefetch_hits=depth_frame.prefetch_hits,
             )
 
-        def _refresh_forward_depth_cm(*, in_perceive: bool = False) -> Optional[float]:
+        def _refresh_forward_depth_cm(
+            *, in_perceive: bool = False, mark_gate: bool = False
+        ) -> Optional[float]:
             nonlocal ucv
             t0 = time.perf_counter()
             pose = _cached_nav_pose()
-            force = not depth_frame.is_fresh(pose, max_age_s=depth_frame.stale_max_s)
+            force = not depth_frame.is_fresh(pose, max_age_s=depth_frame.ttl_s)
             prev_misses = depth_frame.misses
             prev_async_wait = depth_frame.async_wait_ms
             result = depth_frame.get_or_wait(
@@ -433,7 +447,7 @@ def main() -> int:
                 _record_depth_sample,
                 max_wait_s=0.15,
                 force=force,
-                max_age_s=depth_frame.ttl_s if not force else depth_frame.stale_max_s,
+                max_age_s=depth_frame.ttl_s,
             )
             acc = active_nav_timing["acc"]
             if acc is not None:
@@ -445,8 +459,44 @@ def main() -> int:
                         acc.depth_fetch_ms += sync_elapsed
                     else:
                         acc.depth_refresh_ms += sync_elapsed
+            if mark_gate:
+                depth_perceive_ctx["gate_fetched"] = True
             _sync_depth_timing_stats()
             return result
+
+        def _perceive_gate_depth_refresh() -> Optional[float]:
+            pose = _cached_nav_pose()
+            if depth_frame.is_fresh(pose, max_age_s=depth_frame.ttl_s):
+                depth_perceive_ctx["gate_fetched"] = True
+                return depth_frame.min_fwd_cm
+            return _refresh_forward_depth_cm(in_perceive=True, mark_gate=True)
+
+        def _get_robot_pose_cached() -> tuple[tuple[float, float], float]:
+            xy = nav_pose_cache.get("xy")
+            yaw = nav_pose_cache.get("yaw")
+            if xy is not None and yaw is not None:
+                return (xy, float(yaw))
+            pose_t0 = time.perf_counter()
+            xy = get_pos2d(ucv, robot_name)
+            yaw = get_yaw(ucv, robot_name)
+            nav_pose_cache["xy"] = xy
+            nav_pose_cache["yaw"] = yaw
+            acc = active_nav_timing["acc"]
+            if acc is not None:
+                acc.perceive_pose_ms += (time.perf_counter() - pose_t0) * 1000.0
+            return (xy, yaw)
+
+        def _consume_gate_depth_fetch() -> bool:
+            fetched = bool(depth_perceive_ctx["gate_fetched"])
+            depth_perceive_ctx["gate_fetched"] = False
+            return fetched
+
+        def _should_skip_depth(_cycle: int, reg_result) -> bool:
+            if reg_result.entries_added or reg_result.entries_evicted:
+                return False
+            if not depth_frame.is_fresh(_cached_nav_pose(), max_age_s=depth_frame.ttl_s):
+                return False
+            return not depth_perceive_ctx["last_l2_changed"]
 
         def _cached_forward_depth_cm() -> Optional[float]:
             return depth_frame.min_fwd_cm
@@ -472,6 +522,8 @@ def main() -> int:
         def _reset_depth_state(label: str, *, carry_forward: bool = False) -> None:
             depth_frame.invalidate(label)
             perceive_cycle["n"] = 0
+            depth_perceive_ctx["gate_fetched"] = False
+            depth_perceive_ctx["last_l2_changed"] = True
             if carry_forward:
                 depth_tracker.snapshot_occupied(layers)
                 object_registry.clear_dynamic()
@@ -499,6 +551,8 @@ def main() -> int:
                     f"{' (aggressive)' if aggressive else ''}"
                 )
 
+        nav_ctx.soft_reset_fn = _soft_reset_l2 if l2_mode == "sight" else None
+
         def _ensure_sight_depth_camera() -> int:
             if not sight_depth_cam["ready"]:
                 fusion_id = resolve_sensor_camera_id(ucv)
@@ -513,7 +567,8 @@ def main() -> int:
             *,
             robot_xy: Optional[tuple[float, float]] = None,
             robot_yaw: Optional[float] = None,
-        ) -> int:
+            skip_depth_fetch: bool = False,
+        ) -> DepthUpdateResult:
             nonlocal ucv
             if robot_xy is None:
                 robot_xy = get_pos2d(ucv, robot_name)
@@ -554,13 +609,18 @@ def main() -> int:
                         f"[Site20] L2_depth gated: {standoff.nearest_dist_cm:.0f}cm "
                         f"< {standoff_cm:.0f}cm ({standoff.source})"
                     )
-                    return 0
+                    return DepthUpdateResult(0, 0, 0, 0)
             if depth_frame.get_depth_m() is None:
-                _refresh_forward_depth_cm(in_perceive=True)
+                if not skip_depth_fetch:
+                    _refresh_forward_depth_cm(in_perceive=True)
+            elif not skip_depth_fetch:
+                pose = _cached_nav_pose()
+                if not depth_frame.is_fresh(pose, max_age_s=depth_frame.ttl_s):
+                    _refresh_forward_depth_cm(in_perceive=True)
             depth_m = depth_frame.get_depth_m()
             if depth_m is None:
                 print("[Site20] L2_depth fetch skipped: no depth")
-                return 0
+                return DepthUpdateResult(0, 0, 0, 0)
             l2_t0 = time.perf_counter()
             if robot_yaw is None:
                 robot_yaw = get_yaw(ucv, robot_name)
@@ -585,7 +645,8 @@ def main() -> int:
                     f"[Site20] L2_depth: +{result.hit_cells} hits "
                     f"-{result.cleared_cells} cleared +{result.keepout_cells} keepout"
                 )
-            return result.total_cells_added
+            depth_perceive_ctx["last_l2_changed"] = bool(result.l2_changed)
+            return result
 
         if l2_mode == "sight":
             placement_reg = to_placement_registry(registry)
@@ -617,63 +678,69 @@ def main() -> int:
                 f"log-odds=on static-latch=2-hit"
             )
 
-            def _perceive_sight(*, layers, l2_seen_cells):
-                perceive_cycle["n"] += 1
-                pose_t0 = time.perf_counter()
-                robot_xy = get_pos2d(ucv, robot_name)
-                robot_yaw = get_yaw(ucv, robot_name)
+            def _update_sight_registry():
+                return update_object_registry_from_sight(
+                    ucv,
+                    object_registry,
+                    robot_name=robot_name,
+                    placement_reg=placement_reg_holder["reg"],
+                    humanoid_actor_name=registry.humanoid_actor_name,
+                    material_actor_name=registry.material_actor_name,
+                    config=sight_cfg,
+                )
+
+            def _record_sight_detection(det) -> None:
+                robot_xy = nav_pose_cache.get("xy")
+                robot_yaw = nav_pose_cache.get("yaw")
+                if robot_xy is None or robot_yaw is None:
+                    robot_xy = get_pos2d(ucv, robot_name)
+                    robot_yaw = get_yaw(ucv, robot_name)
+                local_xy = estimate_local_xy_from_detection(
+                    robot_xy,
+                    robot_yaw,
+                    det,
+                    sensor_forward_cm=sight_cfg.sensor_forward_cm,
+                )
+                trace.record_l2_estimate(local_xy)
+
+            def _on_perceive_pose_timing(ms: float) -> None:
                 acc = active_nav_timing["acc"]
                 if acc is not None:
-                    acc.perceive_pose_ms += (time.perf_counter() - pose_t0) * 1000.0
-                run_sight = (
-                    SIGHT_REGISTRY_EVERY_N <= 1
-                    or perceive_cycle["n"] % SIGHT_REGISTRY_EVERY_N == 1
+                    acc.perceive_pose_ms += ms
+
+            def _on_sight_registry_timing(ms: float) -> None:
+                acc = active_nav_timing["acc"]
+                if acc is not None:
+                    acc.sight_registry_ms += ms
+
+            perception_server = PerceptionServer(
+                SightPerceptionDeps(
+                    get_robot_pose=_get_robot_pose_cached,
+                    apply_l2_depth=_apply_l2_depth,
+                    update_registry=_update_sight_registry,
+                    should_run_registry=lambda n: (
+                        SIGHT_REGISTRY_EVERY_N <= 1 or n % SIGHT_REGISTRY_EVERY_N == 1
+                    ),
+                    record_detection_local=_record_sight_detection,
+                    should_skip_depth=_should_skip_depth,
+                    consume_gate_depth_fetch=_consume_gate_depth_fetch,
+                    on_timing_pose_ms=_on_perceive_pose_timing,
+                    on_timing_registry_ms=_on_sight_registry_timing,
                 )
-                if run_sight:
-                    reg_t0 = time.perf_counter()
-                    reg_result = update_object_registry_from_sight(
-                        ucv,
-                        object_registry,
-                        robot_name=robot_name,
-                        placement_reg=placement_reg_holder["reg"],
-                        humanoid_actor_name=registry.humanoid_actor_name,
-                        material_actor_name=registry.material_actor_name,
-                        config=sight_cfg,
-                    )
-                    if acc is not None:
-                        acc.sight_registry_ms += (time.perf_counter() - reg_t0) * 1000.0
-                else:
-                    reg_result = RegistryUpdateResult(
-                        detections=(),
-                        visible_actor_names=(),
-                        visible_slot_ids=(),
-                        backend="skipped",
-                        entries_added=0,
-                        entries_evicted=0,
-                    )
-                n_depth_cells = _apply_l2_depth(
-                    l2_seen_cells, robot_xy=robot_xy, robot_yaw=robot_yaw
-                )
-                for det in reg_result.detections:
-                    local_xy = estimate_local_xy_from_detection(
-                        robot_xy,
-                        robot_yaw,
-                        det,
-                        sensor_forward_cm=sight_cfg.sensor_forward_cm,
-                    )
-                    trace.record_l2_estimate(local_xy)
-                if reg_result.visible_actor_names or n_depth_cells > 0:
+            )
+
+            def _perceive_sight(*, layers, l2_seen_cells):
+                outcome = perception_server.perceive(layers=layers, l2_seen_cells=l2_seen_cells)
+                if outcome.detections or outcome.l2_changed:
                     print(
-                        f"[Site20] perceive ({reg_result.backend}): "
-                        f"visible={len(reg_result.visible_actor_names)} "
-                        f"registry+{reg_result.entries_added}/-{reg_result.entries_evicted} "
-                        f"depth+{n_depth_cells} cells"
+                        f"[Site20] perceive (sight): detections={len(outcome.detections)} "
+                        f"depth+{outcome.cells_added}/-{outcome.cells_removed} cells"
                     )
                 return PerceiveOutcome(
-                    detections=list(reg_result.detections),
-                    cells_added=n_depth_cells,
-                    cells_removed=0,
-                    l2_applied=True,
+                    detections=outcome.detections,
+                    cells_added=outcome.cells_added,
+                    cells_removed=outcome.cells_removed,
+                    l2_applied=outcome.l2_applied,
                 )
 
             _perceive = _perceive_sight
@@ -879,6 +946,7 @@ def main() -> int:
                 leg2_time_s=leg2_time_s,
                 timing_summary=timing_summary,
                 profile=nav_profile.name,
+                nav_kpi=nav_ctx.kpi.to_dict() if nav_ctx.kpi is not None else None,
             )
             metrics_path = save_metrics_json(metrics, args.artifact_dir, **artifact_kw)
             timing_path = save_timing_json(timing_summary, args.artifact_dir, **artifact_kw)
@@ -896,123 +964,149 @@ def main() -> int:
         tick_settle(ucv, settle_s=nav_profile.pre_leg1_settle_s, ticks=4)
         ucv = ensure_live_or_reconnect(ucv, reason="pre leg1 settle")
 
-        layers.reset_l2()
-        if l2_mode == "sight":
-            _reset_depth_state("leg1")
-        active_nav_timing["acc"] = leg1_timing
-        leg1_t0 = time.time()
-        leg1_ok = navigate_to_slot(
-            ucv,
-            layers,
-            registry.material_actor_name,
-            object_registry=object_registry,
-            perceive_fn=_perceive,
-            soft_reset_fn=_soft_reset_l2 if l2_mode == "sight" else None,
-            fallback_goal_local=material_local,
-            robot_name=robot_name,
-            nav_actor=nav_actor,
-            tolerance_cm=ARRIVE_TOLERANCE_CM,
-            label="to-material",
-            perception_interval_s=nav_profile.perception_interval_s,
-            max_total_steps=args.max_nav_steps,
-            trace=trace,
-            on_pose_sample=_on_pose,
-            nav_timing=leg1_timing,
-            extra_obstacle_positions_fn=lambda: _registry_obstacle_positions(
-                exclude_slot=registry.material_actor_name
-            ),
-            forward_depth_cm_fn=_cached_forward_depth_cm,
-            depth_refresh_fn=(
-                (lambda: _refresh_forward_depth_cm(in_perceive=False))
-                if l2_mode == "sight"
-                else None
-            ),
-            depth_invalidate_fn=_depth_invalidate_fn if l2_mode == "sight" else None,
-            on_move_cm_fn=_on_move_cm_fn if l2_mode == "sight" else None,
-            depth_prefetch_fn=_depth_prefetch_fn if l2_mode == "sight" else None,
-            pose_cache=nav_pose_cache,
-        )
-        leg1_time_s = time.time() - leg1_t0
-        _sync_depth_timing_stats()
-        print(f"[Site20] leg1_time_s={leg1_time_s:.1f}")
-        if not leg1_ok:
-            print("[Site20] FAIL: leg1 material approach")
-            mission_end = time.time()
-            _persist_mission_metrics(success=False, mission_end=mission_end)
-            save_site_transport_artifacts(
-                layers, registry, trace, metrics, output_dir=args.artifact_dir, **artifact_kw
-            )
-            return 3
+        mission_state: Dict[str, Any] = {
+            "carry_name": None,
+            "leg1_time_s": 0.0,
+            "leg2_time_s": 0.0,
+            "fail_exit": 0,
+        }
 
-        carry_name = begin_carry_from_material(ucv, registry, robot_name=robot_name)
-        if not carry_name:
-            print("[Site20] FAIL: carry start")
-            mission_end = time.time()
-            _persist_mission_metrics(success=False, mission_end=mission_end)
-            save_site_transport_artifacts(
-                layers, registry, trace, metrics, output_dir=args.artifact_dir, **artifact_kw
-            )
-            return 4
-        print(f"[Site20] carry: {carry_name}")
-        tick_settle(ucv, settle_s=2.0, ticks=3)
-        robot_xy = get_pos2d(ucv, robot_name)
-        print(
-            f"[Site20] leg2 start local={lc.world_xy_to_local(*robot_xy)} "
-            f"goal={human_local}"
-        )
-        if l2_mode == "camera" and _reset_l2_perceive_counter is not None:
-            _reset_l2_perceive_counter("leg2")
-
-        if l2_mode == "sight":
-            _reset_depth_state("leg2", carry_forward=True)
-        else:
+        def _run_leg1() -> bool:
+            nonlocal ucv
             layers.reset_l2()
-        active_nav_timing["acc"] = leg2_timing
-        leg2_t0 = time.time()
-        leg2_ok = deliver_to(
-            ucv,
-            layers,
-            registry.humanoid_actor_name,
-            object_registry=object_registry,
-            perceive_fn=_perceive,
-            soft_reset_fn=_soft_reset_l2 if l2_mode == "sight" else None,
-            fallback_goal_local=human_local,
-            robot_name=robot_name,
-            nav_actor=nav_actor,
-            tolerance_cm=ARRIVE_TOLERANCE_CM,
-            label="to-humanoid",
-            perception_interval_s=nav_profile.perception_interval_s,
-            max_total_steps=args.max_nav_steps,
-            trace=trace,
-            carry_sync_name=carry_name,
-            on_pose_sample=_on_pose,
-            nav_timing=leg2_timing,
-            extra_obstacle_positions_fn=lambda: _registry_obstacle_positions(
-                exclude_slot=registry.humanoid_actor_name
-            ),
-            forward_depth_cm_fn=_cached_forward_depth_cm,
-            depth_refresh_fn=(
-                (lambda: _refresh_forward_depth_cm(in_perceive=False))
-                if l2_mode == "sight"
-                else None
-            ),
-            depth_invalidate_fn=_depth_invalidate_fn if l2_mode == "sight" else None,
-            on_move_cm_fn=_on_move_cm_fn if l2_mode == "sight" else None,
-            depth_prefetch_fn=_depth_prefetch_fn if l2_mode == "sight" else None,
-            pose_cache=nav_pose_cache,
+            if l2_mode == "sight":
+                _reset_depth_state("leg1")
+            active_nav_timing["acc"] = leg1_timing
+            leg1_t0 = time.time()
+            leg1_ok = navigate_to_slot(
+                ucv,
+                layers,
+                registry.material_actor_name,
+                object_registry=object_registry,
+                perceive_fn=_perceive,
+                soft_reset_fn=_soft_reset_l2 if l2_mode == "sight" else None,
+                fallback_goal_local=material_local,
+                robot_name=robot_name,
+                nav_actor=nav_actor,
+                tolerance_cm=ARRIVE_TOLERANCE_CM,
+                label="to-material",
+                perception_interval_s=nav_profile.perception_interval_s,
+                max_total_steps=args.max_nav_steps,
+                trace=trace,
+                on_pose_sample=_on_pose,
+                nav_timing=leg1_timing,
+                extra_obstacle_positions_fn=lambda: _registry_obstacle_positions(
+                    exclude_slot=registry.material_actor_name
+                ),
+                forward_depth_cm_fn=_cached_forward_depth_cm,
+                depth_refresh_fn=(
+                    (lambda: _refresh_forward_depth_cm(in_perceive=False))
+                    if l2_mode == "sight"
+                    else None
+                ),
+                depth_invalidate_fn=_depth_invalidate_fn if l2_mode == "sight" else None,
+                on_move_cm_fn=_on_move_cm_fn if l2_mode == "sight" else None,
+                depth_prefetch_fn=_depth_prefetch_fn if l2_mode == "sight" else None,
+                pose_cache=nav_pose_cache,
+                nav_ctx=nav_ctx,
+                perceive_depth_refresh_fn=(
+                    _perceive_gate_depth_refresh if l2_mode == "sight" else None
+                ),
+            )
+            mission_state["leg1_time_s"] = time.time() - leg1_t0
+            _sync_depth_timing_stats()
+            print(f"[Site20] leg1_time_s={mission_state['leg1_time_s']:.1f}")
+            if not leg1_ok:
+                print("[Site20] FAIL: leg1 material approach")
+                mission_state["fail_exit"] = 3
+            return leg1_ok
+
+        def _run_carry() -> bool:
+            nonlocal ucv
+            carry_name = begin_carry_from_material(ucv, registry, robot_name=robot_name)
+            mission_state["carry_name"] = carry_name
+            if not carry_name:
+                print("[Site20] FAIL: carry start")
+                mission_state["fail_exit"] = 4
+                return False
+            print(f"[Site20] carry: {carry_name}")
+            tick_settle(ucv, settle_s=2.0, ticks=3)
+            robot_xy_local = get_pos2d(ucv, robot_name)
+            print(
+                f"[Site20] leg2 start local={lc.world_xy_to_local(*robot_xy_local)} "
+                f"goal={human_local}"
+            )
+            return True
+
+        def _run_leg2() -> bool:
+            nonlocal ucv
+            if l2_mode == "camera" and _reset_l2_perceive_counter is not None:
+                _reset_l2_perceive_counter("leg2")
+            if l2_mode == "sight":
+                _reset_depth_state("leg2", carry_forward=True)
+            else:
+                layers.reset_l2()
+            active_nav_timing["acc"] = leg2_timing
+            leg2_t0 = time.time()
+            leg2_ok = deliver_to(
+                ucv,
+                layers,
+                registry.humanoid_actor_name,
+                object_registry=object_registry,
+                perceive_fn=_perceive,
+                soft_reset_fn=_soft_reset_l2 if l2_mode == "sight" else None,
+                fallback_goal_local=human_local,
+                robot_name=robot_name,
+                nav_actor=nav_actor,
+                tolerance_cm=ARRIVE_TOLERANCE_CM,
+                label="to-humanoid",
+                perception_interval_s=nav_profile.perception_interval_s,
+                max_total_steps=args.max_nav_steps,
+                trace=trace,
+                carry_sync_name=mission_state["carry_name"],
+                on_pose_sample=_on_pose,
+                nav_timing=leg2_timing,
+                extra_obstacle_positions_fn=lambda: _registry_obstacle_positions(
+                    exclude_slot=registry.humanoid_actor_name
+                ),
+                forward_depth_cm_fn=_cached_forward_depth_cm,
+                depth_refresh_fn=(
+                    (lambda: _refresh_forward_depth_cm(in_perceive=False))
+                    if l2_mode == "sight"
+                    else None
+                ),
+                depth_invalidate_fn=_depth_invalidate_fn if l2_mode == "sight" else None,
+                on_move_cm_fn=_on_move_cm_fn if l2_mode == "sight" else None,
+                depth_prefetch_fn=_depth_prefetch_fn if l2_mode == "sight" else None,
+                pose_cache=nav_pose_cache,
+                nav_ctx=nav_ctx,
+                perceive_depth_refresh_fn=(
+                    _perceive_gate_depth_refresh if l2_mode == "sight" else None
+                ),
+            )
+            mission_state["leg2_time_s"] = time.time() - leg2_t0
+            _sync_depth_timing_stats()
+            print(f"[Site20] leg2_time_s={mission_state['leg2_time_s']:.1f}")
+            if not leg2_ok:
+                print("[Site20] FAIL: leg2 humanoid approach")
+                mission_state["fail_exit"] = 5
+            return leg2_ok
+
+        mission_runner = MissionRunner(
+            leg1_fn=_run_leg1,
+            carry_fn=_run_carry,
+            leg2_fn=_run_leg2,
         )
-        leg2_time_s = time.time() - leg2_t0
-        _sync_depth_timing_stats()
-        print(f"[Site20] leg2_time_s={leg2_time_s:.1f}")
-        if not leg2_ok:
-            print("[Site20] FAIL: leg2 humanoid approach")
+        print("[Site20] mission_bt: Leg1 → carry → Leg2")
+        if not mission_runner.run_to_completion():
             mission_end = time.time()
             _persist_mission_metrics(success=False, mission_end=mission_end)
             save_site_transport_artifacts(
                 layers, registry, trace, metrics, output_dir=args.artifact_dir, **artifact_kw
             )
-            return 5
+            return int(mission_state["fail_exit"] or 6)
 
+        carry_name = mission_state["carry_name"]
         delivered = deliver_carry_at_humanoid(ucv, registry, robot_name=robot_name)
         pos_xy = get_pos2d(ucv, robot_name)
         human_xy = lc.local_xy_to_world(*human_local)

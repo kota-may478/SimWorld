@@ -46,6 +46,7 @@ from pie_safety import PieSessionLost, require_live_ucv, tick_settle  # noqa: E4
 from pie_spawn_safety import ensure_live_or_reconnect  # noqa: E402
 from viz import NavTrace  # noqa: E402
 from metrics import NavTimingAccumulator  # noqa: E402
+from nav_stack.nav_types import PerceptionOutcome as PerceiveOutcome  # noqa: E402
 from simworld.communicator.unrealcv import UnrealCV  # noqa: E402
 
 WorldXY = Tuple[float, float]
@@ -107,6 +108,18 @@ def _sync_pose_cache(
         pose_cache["yaw"] = yaw_deg
 
 
+def _read_pose_cache(
+    pose_cache: Optional[PoseCache],
+) -> Optional[Tuple[WorldXY, float]]:
+    if pose_cache is None:
+        return None
+    xy = pose_cache.get("xy")
+    yaw = pose_cache.get("yaw")
+    if xy is None or yaw is None:
+        return None
+    return xy, float(yaw)
+
+
 def _fetch_nav_pose(
     ucv: UnrealCV,
     robot_name: str,
@@ -117,18 +130,6 @@ def _fetch_nav_pose(
     yaw_deg = _timed_get_yaw(ucv, robot_name, nav_timing)
     _sync_pose_cache(pose_cache, pos_xy, yaw_deg)
     return pos_xy, yaw_deg, ucv
-
-
-@dataclass(frozen=True)
-class PerceiveOutcome:
-    detections: list
-    cells_added: int = 0
-    cells_removed: int = 0
-    l2_applied: bool = False
-
-    @property
-    def l2_changed(self) -> bool:
-        return self.cells_added > 0 or self.cells_removed > 0
 
 
 def _invoke_perceive(
@@ -189,11 +190,37 @@ STANDOFF_BACKOFF_SPEED = 120.0
 STANDOFF_BACKOFF_MAX_CM = 80.0
 STANDOFF_EVICT_CONE_HALF_DEG = 55.0
 STANDOFF_EVICT_DEPTH_MARGIN_CM = 10.0
+USE_RPP_CONTROLLER = False
+RPP_LOOKAHEAD_CM = 80.0
+RPP_REGULATED_MIN_RADIUS_CM = 120.0
+SEGMENT_CHUNK_MAX_MOVE_CM = 50.0
+OPEN_LOOP_DISTANCE_SCALE = 1.0
+SIGHT_REGISTRY_EVERY_N = 1
+
+
+def _stack_config_from_ctx(nav_ctx: Optional[Any]) -> Any:
+    from nav_stack.nav_stack_config import NavStackConfig  # noqa: WPS433
+
+    if nav_ctx is not None and getattr(nav_ctx, "stack_config", None) is not None:
+        return nav_ctx.stack_config
+    return NavStackConfig.from_layered_nav_globals(sys.modules[__name__])
+
+
+def _kpi_from_ctx(nav_ctx: Optional[Any]) -> Optional[Any]:
+    if nav_ctx is None:
+        return None
+    return getattr(nav_ctx, "kpi", None)
 
 
 def _l2_cell_delta_warrants_replan(cells_added: int, cells_removed: int = 0) -> bool:
     """Replan on L2 updates only when cell delta exceeds threshold (path-block uses separate replan)."""
-    return (cells_added + cells_removed) >= L2_REPLAN_CELL_DELTA_THRESHOLD
+    from nav_stack.l2_replan_policy import l2_cell_delta_warrants_replan  # noqa: WPS433
+
+    return l2_cell_delta_warrants_replan(
+        cells_added,
+        cells_removed,
+        threshold=L2_REPLAN_CELL_DELTA_THRESHOLD,
+    )
 
 
 def _nav_settle(
@@ -218,6 +245,7 @@ def _timed_replan_on_merged_layers(
     trace: Optional[NavTrace],
     l2_seen_cells: Set[Tuple[int, int]],
     nav_timing: Optional[NavTimingAccumulator],
+    nav_kpi: Optional[Any] = None,
 ) -> Optional[list]:
     t0 = time.perf_counter()
     result = _replan_on_merged_layers(
@@ -227,6 +255,7 @@ def _timed_replan_on_merged_layers(
         reason=reason,
         trace=trace,
         l2_seen_cells=l2_seen_cells,
+        nav_kpi=nav_kpi,
     )
     if nav_timing is not None:
         nav_timing.replan_ms += (time.perf_counter() - t0) * 1000.0
@@ -246,40 +275,12 @@ def _timed_planning_costmap(
 
 def _planning_costmap(layers: LayeredCostmap) -> Costmap2D:
     """Merged map plus soft 1m clearance cost around lethal cells for planning."""
-    base = layers.to_costmap2d()
-    radius_cells = max(0, int(math.ceil(SITE_PLANNING_CLEARANCE_CM / base.resolution_cm)))
-    if radius_cells <= 0:
-        return base
-    costs = base.costs.copy()
-    lethal = costs >= base.lethal_cost * 0.5
-    lethal_ys, lethal_xs = np.nonzero(lethal)
-    if lethal_xs.size == 0:
-        return base
-    for cx, cy in zip(lethal_xs, lethal_ys):
-        gx0 = max(0, int(cx) - radius_cells)
-        gx1 = min(base.width_cells, int(cx) + radius_cells + 1)
-        gy0 = max(0, int(cy) - radius_cells)
-        gy1 = min(base.height_cells, int(cy) + radius_cells + 1)
-        for gy in range(gy0, gy1):
-            for gx in range(gx0, gx1):
-                if lethal[gy, gx]:
-                    continue
-                dist_cm = math.hypot(gx - int(cx), gy - int(cy)) * base.resolution_cm
-                if dist_cm <= SITE_PLANNING_CLEARANCE_CM:
-                    costs[gy, gx] = max(float(costs[gy, gx]), SITE_PLANNING_CLEARANCE_COST)
-    for gy in range(base.height_cells):
-        for gx in range(base.width_cells):
-            if lethal[gy, gx]:
-                continue
-            border_dist_cells = min(gx, gy, base.width_cells - 1 - gx, base.height_cells - 1 - gy)
-            border_dist_cm = border_dist_cells * base.resolution_cm
-            if border_dist_cm <= SITE_PLANNING_CLEARANCE_CM:
-                costs[gy, gx] = max(float(costs[gy, gx]), SITE_PLANNING_CLEARANCE_COST)
-    return Costmap2D(
-        costs=costs,
-        origin_xy=base.origin_xy,
-        resolution_cm=base.resolution_cm,
-        lethal_cost=base.lethal_cost,
+    from nav_stack.global_costmap import build_planning_costmap  # noqa: WPS433
+
+    return build_planning_costmap(
+        layers,
+        planning_clearance_cm=SITE_PLANNING_CLEARANCE_CM,
+        planning_clearance_cost=SITE_PLANNING_CLEARANCE_COST,
     )
 
 
@@ -313,21 +314,74 @@ def _dynamic_max_move_cm(
     forward_depth_cm: Optional[float],
 ) -> float:
     """Shrink open-loop moves when L2 or forward depth shows nearby obstacles."""
-    refs = [
-        d
-        for d in (nearest_dist_cm, forward_depth_cm)
-        if d is not None and math.isfinite(d) and d < float("inf")
-    ]
-    if not refs:
-        return SITE_MAX_OPEN_LOOP_MOVE_CM
-    nearest = min(refs)
-    if nearest >= NEAR_OBSTACLE_SLOW_CM:
-        return SITE_MAX_OPEN_LOOP_MOVE_CM
-    if nearest >= PERCEPTION_STANDOFF_CM + 40.0:
-        return min(SITE_MAX_OPEN_LOOP_MOVE_CM, 140.0)
-    if nearest >= PERCEPTION_STANDOFF_CM:
-        return 70.0
-    return 35.0
+    from nav_stack.controllers.velocity_scaler import (  # noqa: WPS433
+        VelocityScaleConfig,
+        dynamic_max_move_cm,
+    )
+
+    return dynamic_max_move_cm(
+        nearest_dist_cm,
+        forward_depth_cm,
+        config=VelocityScaleConfig(
+            max_move_cm=SITE_MAX_OPEN_LOOP_MOVE_CM,
+            near_obstacle_slow_cm=NEAR_OBSTACLE_SLOW_CM,
+            perception_standoff_cm=PERCEPTION_STANDOFF_CM,
+        ),
+    )
+
+
+def _rpp_config():
+    from nav_stack.controllers.rpp import RppConfig  # noqa: WPS433
+
+    return RppConfig(
+        lookahead_cm=RPP_LOOKAHEAD_CM,
+        regulated_linear_scaling_min_radius_cm=RPP_REGULATED_MIN_RADIUS_CM,
+        rotate_to_heading_threshold_deg=SITE_SMOOTH_TURN_MOVE_DEG,
+        rotate_thr_deg=SITE_ROTATE_THR_DEG,
+    )
+
+
+def _get_controller_server():
+    from nav_stack.controller_server import ControllerServer, ControllerServerConfig  # noqa: WPS433
+    from nav_stack.controllers.segment_executor import SegmentExecutorConfig  # noqa: WPS433
+    from nav_stack.controllers.velocity_scaler import VelocityScaleConfig  # noqa: WPS433
+
+    return ControllerServer(
+        ControllerServerConfig(
+            use_rpp=USE_RPP_CONTROLLER,
+            rpp=_rpp_config(),
+            executor=SegmentExecutorConfig(
+                chunk_max_move_cm=SEGMENT_CHUNK_MAX_MOVE_CM,
+                chunk_max_turn_deg=MAX_TURN_DEG_PER_STEP,
+                open_loop_distance_scale=OPEN_LOOP_DISTANCE_SCALE,
+            ),
+            velocity=VelocityScaleConfig(
+                max_move_cm=SITE_MAX_OPEN_LOOP_MOVE_CM,
+                near_obstacle_slow_cm=NEAR_OBSTACLE_SLOW_CM,
+                perception_standoff_cm=PERCEPTION_STANDOFF_CM,
+            ),
+            wp_reach_tolerance_cm=PATH_WP_REACH_TOLERANCE_CM,
+        )
+    )
+
+
+def _segment_command_for_waypoint(
+    pos_xy: WorldXY,
+    yaw_deg: float,
+    waypoint_xy: WorldXY,
+    *,
+    waypoints: Optional[Sequence[WorldXY]] = None,
+    wp_index: int = 0,
+) -> Optional[SegmentCommand]:
+    server = _get_controller_server()
+    return server.compute_segment_command(
+        pos_xy,
+        yaw_deg,
+        waypoint_xy,
+        waypoints or [],
+        wp_index,
+        legacy_command_fn=_smooth_segment_command,
+    )
 
 
 def _clamp_segment_move(command: SegmentCommand, max_move_cm: float) -> SegmentCommand:
@@ -447,7 +501,7 @@ def _ensure_move_standoff(
     if PERCEPTION_STANDOFF_CM <= 0.0:
         return True, pos_xy, forward_depth_cm, float("inf")
 
-    if depth_refresh_fn is not None:
+    if forward_depth_cm is None and depth_refresh_fn is not None:
         forward_depth_cm = depth_refresh_fn()
 
     _maybe_evict_stale_l2_for_depth(
@@ -764,47 +818,37 @@ def _replan_on_merged_layers(
     reason: str,
     trace: Optional[NavTrace],
     l2_seen_cells: Set[Tuple[int, int]],
+    nav_kpi: Optional[Any] = None,
 ) -> Optional[list]:
-    """Replan using merged L0+L1+L2 costmap."""
+    """Replan using planner_server (Nav2 planner_server equivalent)."""
+    from nav_stack.planner_server import replan_on_merged_layers  # noqa: WPS433
+
     removed_self = _exclude_robot_self_from_l2(layers, pos_xy, l2_seen_cells)
     if removed_self:
         print(f"  [SiteNav] L2 self-exclude {removed_self} cells before replan")
-    costmap = _planning_costmap(layers)
-    replan = None
-    try:
-        replan = _safe_replan_astar(costmap, pos_xy, goal_xy)
-    except (ValueError, RuntimeError):
-        try:
-            replan = _safe_replan_astar(layers.to_costmap2d(), pos_xy, goal_xy)
-            print("  [SiteNav] replan using tight merged L0+L1+L2 clearance")
-        except (ValueError, RuntimeError):
-            try:
-                merged_l01 = Costmap2D(
-                    costs=np.maximum(
-                        layers.l0.astype(np.float32),
-                        layers.l1.astype(np.float32),
-                    ),
-                    origin_xy=layers.origin_xy,
-                    resolution_cm=layers.resolution_cm,
-                    lethal_cost=layers.lethal_cost,
-                )
-                replan = _safe_replan_astar(merged_l01, pos_xy, goal_xy)
-                print("  [SiteNav] replan using L0+L1 (L2 ignored)")
-            except (ValueError, RuntimeError) as exc_l01:
-                try:
-                    replan = _safe_replan_astar(layers.to_l0_costmap2d(), pos_xy, goal_xy)
-                    print(
-                        f"  [SiteNav] L0+L1 replan failed ({exc_l01});"
-                        " escape replan on L0 only"
-                    )
-                except (ValueError, RuntimeError) as exc:
-                    print(f"  [SiteNav] tight merged replan failed: {exc}")
-                    replan = None
-    if replan is not None and replan.waypoints_xy:
+    result = replan_on_merged_layers(
+        layers,
+        pos_xy,
+        goal_xy,
+        planning_clearance_cm=SITE_PLANNING_CLEARANCE_CM,
+        planning_clearance_cost=SITE_PLANNING_CLEARANCE_COST,
+        l2_seen_cells=l2_seen_cells,
+    )
+    if nav_kpi is not None:
+        nav_kpi.record_replan(success=bool(result.waypoints))
+    if result.stage == "tight_merged":
+        print("  [SiteNav] replan using tight merged L0+L1+L2 clearance")
+    elif result.stage == "l0_l1":
+        print("  [SiteNav] replan using L0+L1 (L2 ignored)")
+    elif result.stage == "l0_only":
+        print("  [SiteNav] escape replan on L0 only")
+    elif result.stage == "failed":
+        print("  [SiteNav] tight merged replan failed")
+    if result.waypoints:
         if trace is not None:
-            trace.record_plan(replan.waypoints_xy, reason=reason)
+            trace.record_plan(result.waypoints, reason=reason)
             trace.l2_cell_count = len(l2_seen_cells)
-        return replan.waypoints_xy
+        return result.waypoints
     return None
 
 
@@ -904,7 +948,7 @@ def _gate_perception_standoff(
     if PERCEPTION_STANDOFF_CM <= 0.0:
         return True, pos_xy
 
-    if depth_refresh_fn is not None:
+    if forward_depth_cm is None and depth_refresh_fn is not None:
         forward_depth_cm = depth_refresh_fn()
 
     _maybe_evict_stale_l2_for_depth(
@@ -1225,6 +1269,61 @@ def _execute_segment_command(
             on_after_motion()
 
 
+def _execute_rpp_closed_loop(
+    ucv: UnrealCV,
+    robot_name: str,
+    pos_xy: WorldXY,
+    yaw_deg: float,
+    waypoint_xy: WorldXY,
+    waypoints: Sequence[WorldXY],
+    wp_index: int,
+    *,
+    max_move_cm: float,
+    diag: bool = False,
+    on_after_motion: Optional[CarrySyncFn] = None,
+    nav_timing: Optional[NavTimingAccumulator] = None,
+    on_move_cm_fn: Optional[Callable[[float], None]] = None,
+) -> Tuple[WorldXY, float, UnrealCV, bool]:
+    """RPP closed-loop chunks toward ``waypoint_xy``; returns (pos, yaw, ucv, stalled)."""
+    server = _get_controller_server()
+    state = {"ucv": ucv, "xy": pos_xy, "yaw": yaw_deg}
+
+    def _get_pose() -> Tuple[WorldXY, float]:
+        state["xy"], state["ucv"] = _timed_get_pos2d(state["ucv"], robot_name, nav_timing)
+        state["yaw"] = _timed_get_yaw(state["ucv"], robot_name, nav_timing)
+        return state["xy"], state["yaw"]
+
+    def _compute_command(current_xy: WorldXY, current_yaw: float) -> Optional[SegmentCommand]:
+        return server.compute_segment_command(
+            current_xy,
+            current_yaw,
+            waypoint_xy,
+            waypoints,
+            wp_index,
+            legacy_command_fn=_smooth_segment_command,
+        )
+
+    def _execute_chunk(command: SegmentCommand) -> None:
+        _execute_segment_command(
+            state["ucv"],
+            command,
+            robot_name,
+            diag=diag,
+            on_after_motion=on_after_motion,
+            nav_timing=nav_timing,
+        )
+        if command.move_cm > 1e-3 and on_move_cm_fn is not None:
+            on_move_cm_fn(command.move_cm)
+
+    result = server.execute_closed_loop(
+        target_xy=waypoint_xy,
+        get_pose=_get_pose,
+        compute_command=_compute_command,
+        execute_chunk=_execute_chunk,
+    )
+    return result.final_pos, result.final_yaw_deg, state["ucv"], result.stalled
+
+
 def _timed_get_pos2d(
     ucv: UnrealCV,
     robot_name: str,
@@ -1273,6 +1372,105 @@ class _StuckRecoveryOutcome:
     mission_failed: bool
 
 
+def _stuck_recovery_callbacks(
+    *,
+    soft_reset_fn: Optional[Callable[..., None]] = None,
+) -> "StuckRecoveryCallbacks":
+    from nav_stack.stuck_recovery import StuckRecoveryCallbacks  # noqa: WPS433
+
+    def _mark(session: "StuckRecoverySession") -> Tuple[int, int, int]:
+        mark_radius = min(4, 1 + (session.unstuck_attempts + 1) // 2)
+        n_marked = _mark_stuck_cells_on_l2(
+            session.layers,
+            session.stuck_xy,
+            session.l2_seen_cells,
+            radius_cells=mark_radius,
+        )
+        n_hotspot = _mark_stuck_hotspot_on_l2(
+            session.layers, session.stuck_xy, session.l2_seen_cells
+        )
+        block_xy = (
+            session.waypoint_xy
+            if session.wp_index < len(session.waypoints)
+            else session.goal_xy
+        )
+        n_corridor = _mark_stuck_corridor_on_l2(
+            session.layers, session.stuck_xy, block_xy, session.l2_seen_cells
+        )
+        return n_marked, n_hotspot, n_corridor
+
+    def _record_plan(session: "StuckRecoverySession", waypoints: list, reason: str) -> None:
+        if session.trace is not None:
+            session.trace.record_plan(waypoints, reason=reason)
+            session.trace.l2_cell_count = len(session.l2_seen_cells)
+
+    def _clear_local(session: "StuckRecoverySession") -> int:
+        before = _l2_occupied_count(session.layers)
+        if soft_reset_fn is not None:
+            soft_reset_fn(session.l2_seen_cells, session.stuck_xy, aggressive=False)
+        after = _l2_occupied_count(session.layers)
+        return max(0, before - after)
+
+    return StuckRecoveryCallbacks(
+        mark_stuck_cells=_mark,
+        unstuck_backup=lambda s: _unstuck_backup(s.ucv, s.robot_name, backup_cm=s.backup_cm),
+        safe_get_pos2d=lambda s: _safe_get_pos2d(s.ucv, s.robot_name),
+        execute_escape_step=lambda s, backup_xy: _execute_escape_step(
+            s.ucv,
+            s.layers,
+            s.robot_name,
+            backup_xy,
+            s.goal_xy,
+            stuck_hotspots=s.stuck_hotspots,
+            on_after_motion=s.carry_motion_cb,
+        ),
+        world_to_local=lambda xy: world_xy_to_local(*xy),
+        record_plan=_record_plan,
+        spin_backup=lambda s: _lateral_unstuck_rotate_backup(
+            s.ucv, s.robot_name, on_after_motion=s.carry_motion_cb
+        ),
+        clear_local_l2=_clear_local if soft_reset_fn is not None else None,
+        wait_settle=lambda s: _nav_settle(s.ucv, settle_s=0.5, ticks=2, nav_timing=None),
+    )
+
+
+def _run_last_resort_recovery(
+    *,
+    layers: LayeredCostmap,
+    pos_xy: WorldXY,
+    goal_xy: WorldXY,
+    l2_seen_cells: Set[Tuple[int, int]],
+    stuck_xy: WorldXY,
+    soft_reset_fn: Optional[Callable[..., None]],
+    nav_ctx: Optional[Any],
+) -> Optional[Tuple[list, int, int]]:
+    from nav_stack.last_resort_recovery import try_last_resort_recovery  # noqa: WPS433
+
+    flush_count = nav_ctx.l2_flush_count if nav_ctx is not None else 0
+    outcome = try_last_resort_recovery(
+        layers=layers,
+        pos_xy=pos_xy,
+        goal_xy=goal_xy,
+        l2_seen_cells=l2_seen_cells,
+        l2_flush_count=flush_count,
+        stuck_xy=stuck_xy,
+        soft_reset_fn=soft_reset_fn,
+        replan_fn=lambda start_xy, end_xy: _safe_replan_astar(
+            layers.to_costmap2d(), start_xy, end_xy
+        ),
+        nearest_wp_index_fn=_nearest_waypoint_index_ahead,
+        max_flush_count=MAX_L2_FLUSH_COUNT,
+        perceive_pause_steps=LAST_RESORT_PERCEIVE_PAUSE_STEPS,
+    )
+    if outcome is None:
+        return None
+    if nav_ctx is not None:
+        nav_ctx.l2_flush_count = outcome.l2_flush_count
+    if not outcome.success:
+        return None
+    return outcome.waypoints, outcome.wp_index, outcome.perceive_pause_steps
+
+
 def _apply_stuck_recovery(
     ucv: UnrealCV,
     layers: LayeredCostmap,
@@ -1288,100 +1486,52 @@ def _apply_stuck_recovery(
     l2_seen_cells: Set[Tuple[int, int]],
     trace: Optional[NavTrace],
     carry_motion_cb: Optional[CarrySyncFn],
+    soft_reset_fn: Optional[Callable[..., None]] = None,
+    nav_kpi: Optional[Any] = None,
 ) -> _StuckRecoveryOutcome:
-    stuck_hotspots = list(stuck_hotspots)
-    stuck_hotspots.append(stuck_xy)
-    pending_attempt = unstuck_attempts + 1
-    mark_radius = min(4, 1 + pending_attempt // 2)
-    n_marked = _mark_stuck_cells_on_l2(
-        layers, stuck_xy, l2_seen_cells, radius_cells=mark_radius
+    from nav_stack.stuck_recovery import (  # noqa: WPS433
+        StuckRecoverySession,
+        run_site_stuck_recovery,
     )
-    n_hotspot = _mark_stuck_hotspot_on_l2(layers, stuck_xy, l2_seen_cells)
-    block_xy = waypoint_xy if wp_index < len(waypoints) else goal_xy
-    n_corridor = _mark_stuck_corridor_on_l2(
-        layers, stuck_xy, block_xy, l2_seen_cells
-    )
-    print(
-        f"  [SiteNav] STUCK @ local={world_xy_to_local(*stuck_xy)} "
-        f"mark_l2={n_marked} hotspot={n_hotspot} corridor={n_corridor} "
-        f"→ backup {UNSTUCK_BACKUP_CM:.0f}cm + replan "
-        f"(attempt {pending_attempt}/{MAX_UNSTUCK_ATTEMPTS})"
-    )
-    _unstuck_backup(ucv, robot_name)
-    if carry_motion_cb is not None:
-        carry_motion_cb()
-    backup_xy, ucv = _safe_get_pos2d(ucv, robot_name)
-    if dist2d(backup_xy, stuck_xy) < STUCK_MOVE_THRESHOLD_CM * 2.0:
-        escape_xy = _execute_escape_step(
-            ucv,
-            layers,
-            robot_name,
-            backup_xy,
-            goal_xy,
-            stuck_hotspots=stuck_hotspots,
-            on_after_motion=carry_motion_cb,
-        )
-        if escape_xy is not None:
-            backup_xy = escape_xy
-            if carry_motion_cb is not None:
-                carry_motion_cb()
-    displacement = dist2d(backup_xy, stuck_xy)
-    if displacement >= ESCAPE_MIN_DISPLACEMENT_CM:
-        print(f"  [SiteNav] unstuck displacement={displacement:.0f}cm")
-        unstuck_attempts = 0
-    else:
-        unstuck_attempts = pending_attempt
-        if displacement < 5.0 and pending_attempt >= 3:
-            print(
-                f"  [SiteNav] zero-displacement for {pending_attempt} attempts"
-                " — fast-track to LAST RESORT"
-            )
-            unstuck_attempts = MAX_UNSTUCK_ATTEMPTS
-        if unstuck_attempts >= MAX_UNSTUCK_ATTEMPTS:
-            print(
-                f"  [SiteNav] FAIL: stuck at local={world_xy_to_local(*backup_xy)} "
-                f"after {MAX_UNSTUCK_ATTEMPTS} backup+replan attempts"
-            )
-            if trace is not None:
-                trace.l2_cell_count = len(l2_seen_cells)
-            return _StuckRecoveryOutcome(
-                ucv=ucv,
-                pos_xy=backup_xy,
-                waypoints=waypoints,
-                wp_index=wp_index,
-                steps_on_wp=0,
-                unstuck_attempts=unstuck_attempts,
-                stuck_hotspots=stuck_hotspots,
-                mission_failed=True,
-            )
-    new_wps = _replan_on_merged_layers(
-        layers,
-        backup_xy,
-        goal_xy,
-        reason="unstuck_replan",
-        trace=trace,
-        l2_seen_cells=l2_seen_cells,
-    )
-    if new_wps is not None:
-        waypoints = new_wps
-        wp_index = _nearest_waypoint_index_ahead(backup_xy, waypoints, wp_index)
-        print(
-            f"  [SiteNav] unstuck replan → {len(waypoints)} WP (merged L0+L1+L2)"
-        )
-    else:
-        print(
-            f"  [SiteNav] unstuck replan failed at "
-            f"local={world_xy_to_local(*backup_xy)}"
-        )
-    return _StuckRecoveryOutcome(
+
+    if nav_kpi is not None:
+        nav_kpi.record_stuck()
+
+    session = StuckRecoverySession(
         ucv=ucv,
-        pos_xy=backup_xy,
+        layers=layers,
+        robot_name=robot_name,
+        goal_xy=goal_xy,
+        stuck_xy=stuck_xy,
         waypoints=waypoints,
         wp_index=wp_index,
-        steps_on_wp=0,
+        waypoint_xy=waypoint_xy,
+        stuck_hotspots=list(stuck_hotspots),
         unstuck_attempts=unstuck_attempts,
-        stuck_hotspots=stuck_hotspots,
-        mission_failed=False,
+        l2_seen_cells=l2_seen_cells,
+        trace=trace,
+        carry_motion_cb=carry_motion_cb,
+        planning_clearance_cm=SITE_PLANNING_CLEARANCE_CM,
+        planning_clearance_cost=SITE_PLANNING_CLEARANCE_COST,
+        backup_cm=UNSTUCK_BACKUP_CM,
+        stuck_move_threshold_cm=STUCK_MOVE_THRESHOLD_CM,
+        escape_min_displacement_cm=ESCAPE_MIN_DISPLACEMENT_CM,
+        max_unstuck_attempts=MAX_UNSTUCK_ATTEMPTS,
+        nearest_wp_index_fn=_nearest_waypoint_index_ahead,
+    )
+    outcome = run_site_stuck_recovery(
+        session,
+        callbacks=_stuck_recovery_callbacks(soft_reset_fn=soft_reset_fn),
+    )
+    return _StuckRecoveryOutcome(
+        ucv=outcome.ucv,
+        pos_xy=outcome.pos_xy,
+        waypoints=outcome.waypoints,
+        wp_index=outcome.wp_index,
+        steps_on_wp=outcome.steps_on_wp,
+        unstuck_attempts=outcome.unstuck_attempts,
+        stuck_hotspots=outcome.stuck_hotspots,
+        mission_failed=outcome.mission_failed,
     )
 
 
@@ -1409,8 +1559,12 @@ def navigate_layered_with_fusion(
     on_move_cm_fn: Optional[Callable[[float], None]] = None,
     depth_prefetch_fn: Optional[Callable[[], None]] = None,
     pose_cache: Optional[PoseCache] = None,
+    nav_ctx: Optional[Any] = None,
+    perceive_depth_refresh_fn: Optional[Callable[[], Optional[float]]] = None,
 ) -> bool:
     require_live_ucv(ucv, context="site transport fusion nav")
+    stack_cfg = _stack_config_from_ctx(nav_ctx)
+    nav_kpi = _kpi_from_ctx(nav_ctx)
     goal_xy = local_xy_to_world(*goal_local_xy)
     l2_seen_cells: Set[Tuple[int, int]] = set()
     _sync_seen_cells_from_l2(layers, l2_seen_cells)
@@ -1448,7 +1602,7 @@ def navigate_layered_with_fusion(
     nav_t0 = time.time()
     moves_executed = 0
     last_motion_t = nav_t0
-    _l2_flush_count = 0
+    _l2_flush_count = nav_ctx.l2_flush_count if nav_ctx is not None else 0
     _l2_perceive_pause_steps = 0
 
     print(
@@ -1499,6 +1653,7 @@ def navigate_layered_with_fusion(
                     trace=trace,
                     l2_seen_cells=l2_seen_cells,
                     nav_timing=nav_timing,
+                    nav_kpi=nav_kpi,
                 )
                 if new_wps is not None:
                     waypoints = new_wps
@@ -1550,6 +1705,7 @@ def navigate_layered_with_fusion(
                         trace=trace,
                         l2_seen_cells=l2_seen_cells,
                         nav_timing=nav_timing,
+                        nav_kpi=nav_kpi,
                     )
                     if new_wps is not None:
                         waypoints = new_wps
@@ -1585,6 +1741,7 @@ def navigate_layered_with_fusion(
                     trace=trace,
                     l2_seen_cells=l2_seen_cells,
                     nav_timing=nav_timing,
+                    nav_kpi=nav_kpi,
                 )
                 if new_wps is not None:
                     waypoints = new_wps
@@ -1651,6 +1808,14 @@ def navigate_layered_with_fusion(
             trace.record_position(world_xy_to_local(*pos_xy))
         if on_pose_sample is not None:
             on_pose_sample(pos_xy, time.time())
+        if nav_kpi is not None and waypoints:
+            from nav_stack.nav_kpi import cross_track_error_cm  # noqa: WPS433
+
+            seg_start = waypoints[wp_index - 1] if wp_index > 0 else pos_xy
+            seg_end = waypoints[wp_index] if wp_index < len(waypoints) else goal_xy
+            nav_kpi.record_cross_track(
+                cross_track_error_cm(pos_xy, seg_start, seg_end)
+            )
         dist_goal = dist2d(pos_xy, goal_xy)
         if dist_goal + 40.0 < best_dist_goal:
             best_dist_goal = dist_goal
@@ -1664,6 +1829,7 @@ def navigate_layered_with_fusion(
                 trace=trace,
                 l2_seen_cells=l2_seen_cells,
                 nav_timing=nav_timing,
+                nav_kpi=nav_kpi,
             )
             if new_wps is not None:
                 waypoints = new_wps
@@ -1702,6 +1868,10 @@ def navigate_layered_with_fusion(
             registry_positions: Sequence[WorldXY] = ()
             if extra_obstacle_positions_fn is not None:
                 registry_positions = extra_obstacle_positions_fn()
+            perceive_depth_fn = perceive_depth_refresh_fn or depth_refresh_fn
+            gate_forward_depth: Optional[float] = None
+            if perceive_depth_fn is not None:
+                gate_forward_depth = perceive_depth_fn()
             run_perceive, pos_xy = _gate_perception_standoff(
                 ucv,
                 robot_name,
@@ -1710,10 +1880,8 @@ def navigate_layered_with_fusion(
                 registry_positions=registry_positions,
                 carry_motion_cb=carry_motion_cb,
                 nav_timing=nav_timing,
-                forward_depth_cm=(
-                    _refresh_depth_once()
-                ),
-                depth_refresh_fn=_refresh_depth_once,
+                forward_depth_cm=gate_forward_depth,
+                depth_refresh_fn=perceive_depth_fn,
                 l2_seen_cells=l2_seen_cells,
                 depth_invalidate_fn=depth_invalidate_fn,
                 robot_yaw_deg=robot_yaw_deg,
@@ -1753,10 +1921,12 @@ def navigate_layered_with_fusion(
                         steps_on_wp = 0
                         continue
 
-                command = _smooth_segment_command(
+                command = _segment_command_for_waypoint(
                     pos_xy,
                     robot_yaw_deg,
                     waypoint_xy,
+                    waypoints=waypoints,
+                    wp_index=wp_index,
                 )
                 if command is None:
                     if wp_index >= len(waypoints):
@@ -1807,7 +1977,24 @@ def navigate_layered_with_fusion(
                         nav_timing.move_gate_spin_ms += (time.perf_counter() - spin_t0) * 1000.0
                     continue
                 with _loop_bucket(nav_timing, "nav_branch_ms"):
-                    allowed_move = _dynamic_max_move_cm(nearest_dist, forward_depth_cm)
+                    server = _get_controller_server()
+                    allowed_move = server.allowed_move_cm(nearest_dist, forward_depth_cm)
+                    if USE_RPP_CONTROLLER:
+                        from nav_stack.local_costmap import build_local_costmap  # noqa: WPS433
+
+                        local_map = build_local_costmap(
+                            layers,
+                            pos_xy,
+                            size_cm=stack_cfg.local_costmap_size_cm,
+                            resolution_cm=stack_cfg.local_costmap_resolution_cm,
+                        )
+                        if nav_kpi is not None:
+                            nav_kpi.record_local_costmap_update()
+                        local_nearest = local_map.nearest_lethal_dist_cm(pos_xy)
+                        allowed_move = min(
+                            allowed_move,
+                            _dynamic_max_move_cm(local_nearest, forward_depth_cm),
+                        )
                     if forward_depth_cm is not None:
                         depth_cap = max(
                             0.0,
@@ -1837,6 +2024,7 @@ def navigate_layered_with_fusion(
                         trace=trace,
                         l2_seen_cells=l2_seen_cells,
                         nav_timing=nav_timing,
+                        nav_kpi=nav_kpi,
                     )
                     if new_wps is not None:
                         waypoints = new_wps
@@ -1863,47 +2051,32 @@ def navigate_layered_with_fusion(
                                 l2_seen_cells=l2_seen_cells,
                                 trace=trace,
                                 carry_motion_cb=carry_motion_cb,
+                                soft_reset_fn=soft_reset_fn,
+                                nav_kpi=nav_kpi,
                             )
                             if recovery.mission_failed:
-                                if _l2_flush_count < MAX_L2_FLUSH_COUNT:
-                                    print(
-                                        f"  [SiteNav] LAST RESORT #{_l2_flush_count + 1}:"
-                                        " flush all L2 cells, replan on L0+L1 only"
-                                    )
-                                    if soft_reset_fn is not None:
-                                        soft_reset_fn(l2_seen_cells, stuck_xy, aggressive=True)
-                                    else:
-                                        layers.l2[:, :] = 0
-                                        l2_seen_cells.clear()
-                                    _l2_flush_count += 1
-                                    _l2_perceive_pause_steps = LAST_RESORT_PERCEIVE_PAUSE_STEPS
-                                    unstuck_attempts = 0
-                                    moves_since_progress = 0
-                                    stuck_hotspots = []
-                                    ucv = recovery.ucv
-                                    last_motion_t = time.time()
-                                    try:
-                                        flush_plan = _safe_replan_astar(
-                                            layers.to_costmap2d(), pos_xy, goal_xy
-                                        )
-                                        waypoints = flush_plan.waypoints_xy
-                                        wp_index = _nearest_waypoint_index_ahead(
-                                            pos_xy, waypoints, 0
-                                        )
-                                        last_progress_xy = pos_xy
-                                        print(
-                                            f"  [SiteNav] L2 flush replan"
-                                            f" → {len(waypoints)} WP on L0+L1"
-                                            f" (perception paused {LAST_RESORT_PERCEIVE_PAUSE_STEPS} steps)"
-                                        )
-                                    except (ValueError, RuntimeError) as exc:
-                                        print(
-                                            f"  [SiteNav] L2 flush replan also failed: {exc}"
-                                        )
-                                        return False
-                                    continue  # skip recovery attr overwrite below
-                                else:
+                                last_resort = _run_last_resort_recovery(
+                                    layers=layers,
+                                    pos_xy=pos_xy,
+                                    goal_xy=goal_xy,
+                                    l2_seen_cells=l2_seen_cells,
+                                    stuck_xy=stuck_xy,
+                                    soft_reset_fn=soft_reset_fn,
+                                    nav_ctx=nav_ctx,
+                                )
+                                if last_resort is None:
                                     return False
+                                waypoints, wp_index, _l2_perceive_pause_steps = last_resort
+                                _l2_flush_count = (
+                                    nav_ctx.l2_flush_count if nav_ctx is not None else _l2_flush_count + 1
+                                )
+                                unstuck_attempts = 0
+                                moves_since_progress = 0
+                                stuck_hotspots = []
+                                ucv = recovery.ucv
+                                last_motion_t = time.time()
+                                last_progress_xy = pos_xy
+                                continue
                             ucv = recovery.ucv
                             waypoints = recovery.waypoints
                             wp_index = recovery.wp_index
@@ -1919,18 +2092,38 @@ def navigate_layered_with_fusion(
                     continue
 
             move_t0 = time.perf_counter()
-            _execute_segment_command(
-                ucv,
-                command,
-                robot_name,
-                diag=(moves_executed == 0),
-                on_after_motion=carry_motion_cb,
-                nav_timing=nav_timing,
-            )
+            rpp_stalled = False
+            pos_before_move = pos_xy
+            if USE_RPP_CONTROLLER and command.move_cm > 1e-3:
+                pos_xy, robot_yaw_deg, ucv, rpp_stalled = _execute_rpp_closed_loop(
+                    ucv,
+                    robot_name,
+                    pos_xy,
+                    robot_yaw_deg,
+                    waypoint_xy,
+                    waypoints,
+                    wp_index,
+                    max_move_cm=allowed_move if command.move_cm > 1e-3 else SITE_MAX_OPEN_LOOP_MOVE_CM,
+                    diag=(moves_executed == 0),
+                    on_after_motion=carry_motion_cb,
+                    nav_timing=nav_timing,
+                    on_move_cm_fn=on_move_cm_fn,
+                )
+            else:
+                _execute_segment_command(
+                    ucv,
+                    command,
+                    robot_name,
+                    diag=(moves_executed == 0),
+                    on_after_motion=carry_motion_cb,
+                    nav_timing=nav_timing,
+                )
+                if command.move_cm > 1e-3 and on_move_cm_fn is not None:
+                    on_move_cm_fn(command.move_cm)
             if nav_timing is not None:
                 nav_timing.move_ms += (time.perf_counter() - move_t0) * 1000.0
-            if command.move_cm > 1e-3 and on_move_cm_fn is not None:
-                on_move_cm_fn(command.move_cm)
+            if rpp_stalled:
+                moves_since_progress += 1
             if command.move_cm <= 1e-3 and command.turn_deg > SITE_ROTATE_THR_DEG:
                 with _loop_bucket(nav_timing, "nav_branch_ms"):
                     turn_only_steps += 1
@@ -1945,6 +2138,7 @@ def navigate_layered_with_fusion(
                     trace=trace,
                     l2_seen_cells=l2_seen_cells,
                     nav_timing=nav_timing,
+                    nav_kpi=nav_kpi,
                 )
                 if new_wps is not None:
                     waypoints = new_wps
@@ -1967,6 +2161,10 @@ def navigate_layered_with_fusion(
             pos_xy, robot_yaw_deg, ucv = _fetch_nav_pose(
                 ucv, robot_name, nav_timing, pose_cache
             )
+            if nav_kpi is not None and command.move_cm > 1e-3:
+                nav_kpi.update_open_loop_scale(
+                    command.move_cm, dist2d(pos_before_move, pos_xy)
+                )
             moves_executed += 1
             total_steps += 1
             steps_on_wp += 1
@@ -1991,47 +2189,32 @@ def navigate_layered_with_fusion(
                         l2_seen_cells=l2_seen_cells,
                         trace=trace,
                         carry_motion_cb=carry_motion_cb,
+                        soft_reset_fn=soft_reset_fn,
+                        nav_kpi=nav_kpi,
                     )
                     if recovery.mission_failed:
-                        if _l2_flush_count < MAX_L2_FLUSH_COUNT:
-                            print(
-                                f"  [SiteNav] LAST RESORT #{_l2_flush_count + 1}:"
-                                " flush all L2 cells, replan on L0+L1 only"
-                            )
-                            if soft_reset_fn is not None:
-                                soft_reset_fn(l2_seen_cells, new_xy, aggressive=True)
-                            else:
-                                layers.l2[:, :] = 0
-                                l2_seen_cells.clear()
-                            _l2_flush_count += 1
-                            _l2_perceive_pause_steps = LAST_RESORT_PERCEIVE_PAUSE_STEPS
-                            unstuck_attempts = 0
-                            moves_since_progress = 0
-                            stuck_hotspots = []
-                            ucv = recovery.ucv
-                            last_motion_t = time.time()
-                            try:
-                                flush_plan = _safe_replan_astar(
-                                    layers.to_costmap2d(), new_xy, goal_xy
-                                )
-                                waypoints = flush_plan.waypoints_xy
-                                wp_index = _nearest_waypoint_index_ahead(
-                                    new_xy, waypoints, 0
-                                )
-                                last_progress_xy = new_xy
-                                print(
-                                    f"  [SiteNav] L2 flush replan"
-                                    f" → {len(waypoints)} WP on L0+L1"
-                                    f" (perception paused {LAST_RESORT_PERCEIVE_PAUSE_STEPS} steps)"
-                                )
-                            except (ValueError, RuntimeError) as exc:
-                                print(
-                                    f"  [SiteNav] L2 flush replan also failed: {exc}"
-                                )
-                                return False
-                            continue  # skip recovery attr overwrite below
-                        else:
+                        last_resort = _run_last_resort_recovery(
+                            layers=layers,
+                            pos_xy=new_xy,
+                            goal_xy=goal_xy,
+                            l2_seen_cells=l2_seen_cells,
+                            stuck_xy=new_xy,
+                            soft_reset_fn=soft_reset_fn,
+                            nav_ctx=nav_ctx,
+                        )
+                        if last_resort is None:
                             return False
+                        waypoints, wp_index, _l2_perceive_pause_steps = last_resort
+                        _l2_flush_count = (
+                            nav_ctx.l2_flush_count if nav_ctx is not None else _l2_flush_count + 1
+                        )
+                        unstuck_attempts = 0
+                        moves_since_progress = 0
+                        stuck_hotspots = []
+                        ucv = recovery.ucv
+                        last_motion_t = time.time()
+                        last_progress_xy = new_xy
+                        continue
                     ucv = recovery.ucv
                     waypoints = recovery.waypoints
                     wp_index = recovery.wp_index
@@ -2099,6 +2282,8 @@ def navigate_to_slot(
     on_move_cm_fn: Optional[Callable[[float], None]] = None,
     depth_prefetch_fn: Optional[Callable[[], None]] = None,
     pose_cache: Optional[PoseCache] = None,
+    nav_ctx: Optional[Any] = None,
+    perceive_depth_refresh_fn: Optional[Callable[[], Optional[float]]] = None,
 ) -> bool:
     from carry import pickup_standoff_xy  # noqa: WPS433
 
@@ -2139,6 +2324,8 @@ def navigate_to_slot(
         on_move_cm_fn=on_move_cm_fn,
         depth_prefetch_fn=depth_prefetch_fn,
         pose_cache=pose_cache,
+        nav_ctx=nav_ctx,
+        perceive_depth_refresh_fn=perceive_depth_refresh_fn,
     )
 
 
@@ -2168,6 +2355,8 @@ def deliver_to(
     on_move_cm_fn: Optional[Callable[[float], None]] = None,
     depth_prefetch_fn: Optional[Callable[[], None]] = None,
     pose_cache: Optional[PoseCache] = None,
+    nav_ctx: Optional[Any] = None,
+    perceive_depth_refresh_fn: Optional[Callable[[], Optional[float]]] = None,
 ) -> bool:
     """Navigate directly to semantic slot goal (e.g. humanoid delivery point)."""
     goal_local = object_registry.goal_local(slot_id) if hasattr(object_registry, "goal_local") else None
@@ -2201,4 +2390,6 @@ def deliver_to(
         on_move_cm_fn=on_move_cm_fn,
         depth_prefetch_fn=depth_prefetch_fn,
         pose_cache=pose_cache,
+        nav_ctx=nav_ctx,
+        perceive_depth_refresh_fn=perceive_depth_refresh_fn,
     )
