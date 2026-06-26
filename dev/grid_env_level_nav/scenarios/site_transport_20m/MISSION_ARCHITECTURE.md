@@ -298,7 +298,32 @@ fast の `min_obstacle_height_cm=55cm` は、SpotDog 自身の脚をノイズと
 
 ## 6. プランニングと移動
 
-`layered_nav.py` の `navigate_layered_with_fusion()` が1レグの全ナビゲーションを担います。
+`nav_stack/` が Nav2 相当のサーバを提供し、`layered_nav.py` の `navigate_layered_with_fusion()` が1レグのオーケストレーションを担います。
+
+### Nav2 スタック構成（`nav_stack/`）
+
+| モジュール | Nav2 相当 | 役割 |
+|---|---|---|
+| `perception_server.py` | perception_server | sight 深度→L2 + ObjectRegistry 更新 |
+| `planner_server.py` | planner_server | merged L0+L1+L2 の段階的リプラン |
+| `controller_server.py` + `controllers/rpp.py` | controller_server | RPP 閉ループ速度制御（default/fast プロファイル） |
+| `behavior_server.py` + `stuck_recovery.py` | behavior_server | mark→backup→escape→spin→clear_local_l2→replan |
+| `last_resort_recovery.py` | — | L2 全フラッシュ + L0+L1 リプラン（LAST RESORT） |
+| `mission_bt.py` | BT Navigator | Leg1→carry→Leg2 のミッション遷移 |
+| `nav_context.py` | — | `NavStackConfig` + `NavKpiTracker` をレグ横断で共有 |
+
+`run_test.py` は `build_nav_context()` で `nav_ctx` を構築し、各レグへ `nav_ctx=` として渡します。KPI（`stuck_events`, `replan_success_rate`, `mean_cross_track_error_cm`, `local_costmap_updates`）は `metrics.json` の `nav_kpi` に出力されます。
+
+### RPP コントローラ（default / fast）
+
+| パラメータ | default | fast |
+|---|---|---|
+| `use_rpp_controller` | true | true |
+| `rpp_lookahead_cm` | 80 | 100 |
+| `segment_chunk_max_move_cm` | 50 | 70 |
+| `local_costmap_resolution_cm` | 50 | 50 |
+
+`navigate_layered_with_fusion()` が1レグの全ナビゲーションを担います。
 
 ### メインループ
 
@@ -355,14 +380,16 @@ while total_steps < max_total_steps:
 | ≥ standoff | 70cm |
 | standoff 未満 | 35cm |
 
-### スタック検出と回復（`_apply_stuck_recovery`）
+### スタック検出と回復（`stuck_recovery.py` → `behavior_server`）
 
 `STUCK_CHECK_MOVES = 4` 回の移動で変位が `STUCK_MOVE_THRESHOLD_CM = 14cm` 以下ならスタックと判定し、次の順で回復します。
 
-1. 現在位置の周囲に L2 lethal セルをマーク（障害物とみなす）
+1. 現在位置の周囲に L2 lethal セルをマーク（`mark_l2`）
 2. `UNSTUCK_BACKUP_CM = 100cm` バックアップ
-3. エスケープ候補を探索し、コスト最小の方向へ短距離移動
-4. 失敗が重なると `MAX_UNSTUCK_ATTEMPTS = 16` でラストリゾート（L2 を積極的にフラッシュ）
+3. エスケープ候補を探索し、コスト最小の方向へ短距離移動（`escape`）
+4. 2回目以降: `spin + backup + wait`（`tiered_recovery`）
+5. 4回目以降: `clear_local_l2`（非 aggressive soft reset）+ リプラン
+6. 失敗が重なると `MAX_UNSTUCK_ATTEMPTS = 16` でミッション失敗 → `last_resort_recovery`（L2 積極フラッシュ、最大3回）
 
 ---
 
