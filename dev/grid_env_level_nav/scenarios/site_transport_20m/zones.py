@@ -74,6 +74,46 @@ def point_in_forbidden_local(
     return False
 
 
+def sw_cluster_rect_from_points(
+    points: Sequence[Tuple[float, float]],
+    *,
+    padding_cm: float = 80.0,
+) -> RectLocal:
+    """Axis-aligned bounding rect for SW clutter props (L1 last-resort block)."""
+    if not points:
+        return SW_CLUSTER_RECT_LOCAL_CM
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    return (
+        min(xs) - padding_cm,
+        min(ys) - padding_cm,
+        max(xs) + padding_cm,
+        max(ys) + padding_cm,
+    )
+
+
+def forbidden_zones_for_layout(
+  pit_rect: RectLocal,
+  sw_cluster_rect: RectLocal,
+) -> Tuple[ForbiddenZone, ...]:
+    """Build L1 forbidden zones for a layout variant."""
+    return (
+        ForbiddenZone(
+            zone_id="no_entry_pit",
+            rect_local_cm=pit_rect,
+            note=(
+                f"Excavation / machinery zone enclosed by "
+                f"{ROADBLOCKS_PER_SIDE * 4} {ROADBLOCK_BP_NAME} actors"
+            ),
+        ),
+        ForbiddenZone(
+            zone_id="sw_prop_cluster",
+            rect_local_cm=sw_cluster_rect,
+            note="SW quadrant prop cluster (auto bounds from variant placement)",
+        ),
+    )
+
+
 def apply_forbidden_zones_l1(
     layers: LayeredCostmap,
     zones: Sequence[ForbiddenZone],

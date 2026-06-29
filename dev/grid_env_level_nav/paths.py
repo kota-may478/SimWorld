@@ -21,6 +21,12 @@ L0_VIZ_STRICT = L0_CACHE_DIR / "l0_viz_30cm_strict.png"
 COMPACT_NAV_REGISTRY = REGISTRY_DIR / "compact_nav_placement.json"
 CONSTRUCTION_SITE_REGISTRY = REGISTRY_DIR / "construction_site_placement.json"
 SITE_TRANSPORT_20M_REGISTRY = REGISTRY_DIR / "site_transport_20m_layout_01.json"
+SITE_TRANSPORT_20M_LAYOUT_MANIFEST = REGISTRY_DIR / "site_transport_20m_layout_manifest.json"
+
+
+def site_transport_registry_path(layout_id: str) -> Path:
+    """JSON registry path for a site_transport_20m layout variant."""
+    return REGISTRY_DIR / f"site_transport_20m_{layout_id}.json"
 PROP_CATALOG_CONSTRUCTION = REGISTRY_DIR / "prop_catalog_construction_vol1.json"
 
 ZONE_CATALOG_TEMPLATE = REGISTRY_DIR / "zone_catalog.template.json"

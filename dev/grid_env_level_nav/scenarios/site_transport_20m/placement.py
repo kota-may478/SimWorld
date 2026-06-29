@@ -14,7 +14,7 @@ _PKG = Path(__file__).resolve().parents[2]
 if str(_PKG) not in sys.path:
     sys.path.insert(0, str(_PKG))
 
-from paths import SITE_TRANSPORT_20M_REGISTRY, REGISTRY_DIR  # noqa: E402
+from paths import SITE_TRANSPORT_20M_REGISTRY, REGISTRY_DIR, site_transport_registry_path  # noqa: E402
 from region import (  # noqa: E402
     HUMANOID_LOCAL_CM,
     LAYOUT_ID,
@@ -233,10 +233,16 @@ def _catalog_by_bp_name():
     return {e.bp_name: e for e in ensure_catalog()}
 
 
-def build_registry(*, seed: int = DEFAULT_SEED, layout_id: str = LAYOUT_ID) -> SiteTransportRegistry:
+def build_registry_from_layout(
+    layout_entries: Sequence[LayoutEntry],
+    *,
+    seed: int,
+    layout_id: str,
+    forbidden_zones: Sequence[ForbiddenZone],
+) -> SiteTransportRegistry:
     catalog = _catalog_by_bp_name()
     props: List[SitePropSlot] = []
-    for idx, (bp_name, cluster, role, local_xy, yaw_deg, is_target) in enumerate(_CURATED_LAYOUT):
+    for idx, (bp_name, cluster, role, local_xy, yaw_deg, is_target) in enumerate(layout_entries):
         if bp_name not in catalog:
             raise RuntimeError(f"missing catalog entry: {bp_name}")
         entry = catalog[bp_name]
@@ -268,8 +274,17 @@ def build_registry(*, seed: int = DEFAULT_SEED, layout_id: str = LAYOUT_ID) -> S
         material_actor_name=MATERIAL_ACTOR_NAME,
         carry_actor_name=CARRY_ACTOR_NAME,
         humanoid_actor_name=HUMANOID_ACTOR_NAME,
-        forbidden_zones=FORBIDDEN_ZONES_LAYOUT_01,
+        forbidden_zones=tuple(forbidden_zones),
         props=tuple(props),
+    )
+
+
+def build_registry(*, seed: int = DEFAULT_SEED, layout_id: str = LAYOUT_ID) -> SiteTransportRegistry:
+    return build_registry_from_layout(
+        _CURATED_LAYOUT,
+        seed=seed,
+        layout_id=layout_id,
+        forbidden_zones=FORBIDDEN_ZONES_LAYOUT_01,
     )
 
 
@@ -290,11 +305,23 @@ def load_registry(path: Path = REGISTRY_PATH) -> SiteTransportRegistry:
     return SiteTransportRegistry.from_dict(json.loads(path.read_text(encoding="utf-8")))
 
 
-def ensure_registry(*, seed: int = DEFAULT_SEED, force_rebuild: bool = False) -> SiteTransportRegistry:
-    if REGISTRY_PATH.is_file() and not force_rebuild:
-        return load_registry()
-    registry = build_registry(seed=seed)
-    save_registry(registry)
+def ensure_registry(
+    *,
+    layout_id: str = LAYOUT_ID,
+    seed: int = DEFAULT_SEED,
+    force_rebuild: bool = False,
+) -> SiteTransportRegistry:
+    path = site_transport_registry_path(layout_id)
+    if path.is_file() and not force_rebuild:
+        return load_registry(path)
+    if layout_id == LAYOUT_ID:
+        registry = build_registry(seed=seed, layout_id=layout_id)
+    else:
+        from layout_variants import build_layout_registry  # noqa: WPS433
+
+        index = int(layout_id.rsplit("_", 1)[-1])
+        registry = build_layout_registry(index)
+    save_registry(registry, path)
     return registry
 
 
