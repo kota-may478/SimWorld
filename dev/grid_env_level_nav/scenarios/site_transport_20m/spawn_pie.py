@@ -26,6 +26,7 @@ from pie_spawn_safety import (  # noqa: E402
     ensure_live_or_reconnect,
     spawn_bp_resilient,
 )
+from paths import site_transport_registry_path  # noqa: E402
 from placement import (  # noqa: E402
     SitePropSlot,
     SiteTransportRegistry,
@@ -249,13 +250,14 @@ def _orient_robot_toward_yard(ucv, registry: SiteTransportRegistry, robot_name: 
 
 def spawn_site_transport_scene(
     *,
+    layout_id: str = "layout_01",
     force_rebuild: bool = False,
     force_respawn: bool = False,
     skip_cleanup: bool = False,
     ucv=None,
     manage_connection: bool = True,
 ) -> Tuple[int, Optional[object]]:
-    registry = ensure_registry(force_rebuild=force_rebuild)
+    registry = ensure_registry(layout_id=layout_id, force_rebuild=force_rebuild)
     respawn = force_respawn and not skip_cleanup
     own_session = manage_connection and ucv is None
 
@@ -290,7 +292,7 @@ def spawn_site_transport_scene(
         tick_settle(active_ucv, settle_s=1.5, ticks=2)
         print("[Site20Spawn] barrier collisions enabled")
         active_ucv, human_ok = _place_humanoid(active_ucv, updated, force_respawn=respawn)
-        save_registry(updated)
+        save_registry(updated, site_transport_registry_path(updated.layout_id))
         ok, name = lnr.soft_reset_level_spotdog(
             active_ucv,
             updated.robot_start_local_cm,
@@ -323,9 +325,11 @@ def main() -> int:
     parser.add_argument("--force-rebuild", action="store_true")
     parser.add_argument("--force-respawn", action="store_true")
     parser.add_argument("--skip-cleanup", action="store_true")
+    parser.add_argument("--layout-id", default="layout_01", help="layout_01 .. layout_10")
     args = parser.parse_args()
     try:
         rc, _ = spawn_site_transport_scene(
+            layout_id=args.layout_id,
             force_rebuild=args.force_rebuild,
             force_respawn=args.force_respawn,
             skip_cleanup=args.skip_cleanup,

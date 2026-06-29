@@ -240,10 +240,13 @@ def save_timing_json(
     *,
     run_label: str | None = None,
     trial_index: int | None = None,
+    artifact_suffix: str | None = None,
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    if run_label is not None and trial_index is not None:
+    if artifact_suffix:
+        path = output_dir / f"timing_{artifact_suffix}.json"
+    elif run_label is not None and trial_index is not None:
         path = output_dir / f"timing_{run_label}_{trial_index}.json"
     elif run_label is not None:
         path = output_dir / f"timing_{run_label}_{stamp}.json"
@@ -504,10 +507,14 @@ def save_metrics_json(
     *,
     run_label: str | None = None,
     trial_index: int | None = None,
+    artifact_suffix: str | None = None,
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    if run_label is not None and trial_index is not None:
+    if artifact_suffix:
+        suffix = artifact_suffix
+        path = output_dir / f"metricsSummary_{suffix}.json"
+    elif run_label is not None and trial_index is not None:
         suffix = f"{run_label}_{trial_index}"
         path = output_dir / f"metricsSummary_{suffix}.json"
     else:

@@ -139,6 +139,11 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--max-nav-steps", type=int, default=600)
     p.add_argument("--force-rebuild-registry", action="store_true")
     p.add_argument(
+        "--force-respawn",
+        action="store_true",
+        help="Destroy and re-spawn scene props (without rebuilding registry JSON)",
+    )
+    p.add_argument(
         "--l2-mode",
         choices=("sight", "geom", "camera", "off"),
         default="sight",
@@ -160,6 +165,11 @@ def _parse_args() -> argparse.Namespace:
         default="default",
         help="Navigation profile: default/careful (conservative) or fast (quick-wins)",
     )
+    p.add_argument(
+        "--layout-id",
+        default="layout_01",
+        help="Site layout variant (layout_01 .. layout_10)",
+    )
     p.add_argument("--artifact-dir", type=Path, default=DEFAULT_ARTIFACT_DIR)
     p.add_argument(
         "--run-label",
@@ -171,6 +181,11 @@ def _parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Trial number for labeled artifacts (e.g. 1..5); requires --run-label",
+    )
+    p.add_argument(
+        "--artifact-suffix",
+        default=None,
+        help="Fixed artifact suffix (e.g. layout_01_test) for costMap/timing/metrics files",
     )
     return p.parse_args()
 
@@ -187,6 +202,8 @@ def _humanoid_goal_local(registry) -> tuple[float, float]:
 
 
 def _artifact_kwargs(args: argparse.Namespace) -> dict[str, Any]:
+    if args.artifact_suffix:
+        return {"artifact_suffix": args.artifact_suffix}
     if (args.run_label is None) != (args.trial_index is None):
         raise ValueError("--run-label and --trial-index must be used together")
     if args.run_label is None:
@@ -216,7 +233,11 @@ def main() -> int:
         print(f"[Site20] missing L0: {args.l0}")
         return 1
 
-    registry = ensure_registry(force_rebuild=args.force_rebuild_registry)
+    registry = ensure_registry(
+        layout_id=args.layout_id,
+        force_rebuild=args.force_rebuild_registry,
+    )
+    print(f"[Site20] layout={registry.layout_id} transport={registry.transport_slot().bp_name if registry.transport_slot() else '?'}")
     layers = crop_l0_to_local_region(args.l0, size_x_cm=REGION_SIZE_CM, size_y_cm=REGION_SIZE_CM)
     if args.no_l1:
         n_l1 = 0
@@ -245,7 +266,10 @@ def main() -> int:
         return 0
 
     if args.spawn_only:
-        rc, _ = spawn_site_transport_scene(force_rebuild=args.force_rebuild_registry)
+        rc, _ = spawn_site_transport_scene(
+            layout_id=args.layout_id,
+            force_rebuild=args.force_rebuild_registry,
+        )
         return rc
 
     mission_t0 = time.time()
@@ -265,15 +289,16 @@ def main() -> int:
         fresh_spawn = False
         if not args.skip_spawn:
             spawn_rc, ucv = spawn_site_transport_scene(
+                layout_id=args.layout_id,
                 force_rebuild=args.force_rebuild_registry,
-                force_respawn=args.force_rebuild_registry,
+                force_respawn=args.force_respawn or args.force_rebuild_registry,
                 ucv=ucv,
                 manage_connection=False,
             )
             if spawn_rc != 0:
                 return spawn_rc
             fresh_spawn = True
-            registry = ensure_registry()
+            registry = ensure_registry(layout_id=args.layout_id)
             tick_settle(ucv, settle_s=5.0, ticks=4)
             ucv = ensure_live_or_reconnect(ucv, reason="post spawn settle")
 

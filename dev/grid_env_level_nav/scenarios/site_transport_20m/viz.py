@@ -64,8 +64,11 @@ def _artifact_suffix(
     *,
     run_label: Optional[str] = None,
     trial_index: Optional[int] = None,
+    artifact_suffix: Optional[str] = None,
     stamp: Optional[str] = None,
 ) -> str:
+    if artifact_suffix:
+        return artifact_suffix
     if run_label is not None and trial_index is not None:
         return f"{run_label}_{trial_index}"
     if stamp is None:
@@ -82,11 +85,19 @@ def save_site_transport_artifacts(
     output_dir: Path = DEFAULT_ARTIFACT_DIR,
     run_label: Optional[str] = None,
     trial_index: Optional[int] = None,
+    artifact_suffix: Optional[str] = None,
 ) -> Dict[str, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    suffix = _artifact_suffix(run_label=run_label, trial_index=trial_index, stamp=stamp)
-    labeled = run_label is not None and trial_index is not None
+    suffix = _artifact_suffix(
+        run_label=run_label,
+        trial_index=trial_index,
+        artifact_suffix=artifact_suffix,
+        stamp=stamp,
+    )
+    labeled = artifact_suffix is not None or (
+        run_label is not None and trial_index is not None
+    )
     paths: Dict[str, Path] = {}
 
     snap = layers.snapshot_layers()
