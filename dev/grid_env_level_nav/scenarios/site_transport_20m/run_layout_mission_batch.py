@@ -48,6 +48,7 @@ def _run_one(
     profile: str,
     l2_mode: str,
     skip_spawn: bool,
+    no_l1: bool,
     log_path: Path,
 ) -> Dict[str, Any]:
     layout_id = _layout_id(index)
@@ -74,6 +75,8 @@ def _run_one(
         cmd.append("--force-respawn")
     else:
         cmd.append("--skip-spawn")
+    if no_l1:
+        cmd.append("--no-l1")
 
     header = (
         f"\n{'=' * 72}\n"
@@ -136,6 +139,11 @@ def main() -> int:
     p.add_argument("--l2-mode", default="sight", choices=("sight", "geom", "camera", "off"))
     p.add_argument("--skip-spawn", action="store_true")
     p.add_argument(
+        "--no-l1",
+        action="store_true",
+        help="Disable L1 forbidden zones (L0+L2 navigation only)",
+    )
+    p.add_argument(
         "--batch-dir",
         type=Path,
         default=None,
@@ -152,7 +160,11 @@ def main() -> int:
     results: List[Dict[str, Any]] = []
     t0 = time.time()
     print(f"[Batch] output dir: {batch_dir}")
-    print(f"[Batch] layouts {args.start}..{args.end} profile={args.profile} l2={args.l2_mode}")
+    l1_label = "off" if args.no_l1 else "on"
+    print(
+        f"[Batch] layouts {args.start}..{args.end} profile={args.profile} "
+        f"l2={args.l2_mode} l1={l1_label}"
+    )
 
     for index in range(args.start, args.end + 1):
         row = _run_one(
@@ -160,6 +172,7 @@ def main() -> int:
             profile=args.profile,
             l2_mode=args.l2_mode,
             skip_spawn=args.skip_spawn,
+            no_l1=args.no_l1,
             log_path=master_log,
         )
         results.append(row)
@@ -167,6 +180,7 @@ def main() -> int:
             "batch_stamp": stamp,
             "profile": args.profile,
             "l2_mode": args.l2_mode,
+            "l1_enabled": not args.no_l1,
             "started_at": stamp,
             "elapsed_s": round(time.time() - t0, 1),
             "results": results,
