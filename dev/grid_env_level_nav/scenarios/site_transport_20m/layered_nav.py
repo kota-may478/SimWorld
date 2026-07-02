@@ -201,6 +201,11 @@ PROGRESS_REGRESS_THRESHOLD_CM = 350.0
 MAX_TURN_ONLY_STEPS = 12
 MAX_L2_FLUSH_COUNT = 3
 LAST_RESORT_PERCEIVE_PAUSE_STEPS = 40
+L2_REPLAN_THRASH_POS_CM = 35.0
+L2_REPLAN_THRASH_GOAL_CM = 50.0
+L2_REPLAN_THRASH_MAX = 4
+GOAL_DIST_STALL_STEPS = 45
+GOAL_DIST_STALL_IMPROVE_CM = 25.0
 SITE_PLANNING_CLEARANCE_CM = 100.0
 SITE_PLANNING_CLEARANCE_COST = 300.0
 ROBOT_L2_SELF_EXCLUDE_RADIUS_CM = 70.0
@@ -866,10 +871,10 @@ def _replan_on_merged_layers(
     elif result.stage == "l0_l1":
         print("  [SiteNav] replan using L0+L1 (L2 ignored)")
     elif result.stage == "l0_only":
-        print("  [SiteNav] escape replan on L0 only")
+        print("  [SiteNav] replan skipped: L0-only path ignores L1 forbidden zones")
     elif result.stage == "failed":
         print("  [SiteNav] tight merged replan failed")
-    if result.waypoints:
+    if result.waypoints and result.stage != "l0_only":
         if trace is not None:
             trace.record_plan(result.waypoints, reason=reason)
             trace.l2_cell_count = len(l2_seen_cells)
@@ -1643,6 +1648,35 @@ def navigate_layered_with_fusion(
     last_motion_t = nav_t0
     _l2_flush_count = nav_ctx.l2_flush_count if nav_ctx is not None else 0
     _l2_perceive_pause_steps = 0
+    last_l2_replan_xy = start_xy
+    last_l2_replan_dist_goal = best_dist_goal
+    l2_replan_thrash_count = 0
+    goal_stall_anchor_dist = best_dist_goal
+    goal_stall_steps = 0
+
+    def _l2_replan_thrash_blocked(pos: WorldXY, dist_goal_cm: float) -> bool:
+        nonlocal l2_replan_thrash_count, last_l2_replan_xy, last_l2_replan_dist_goal
+        pos_moved = dist2d(pos, last_l2_replan_xy) >= L2_REPLAN_THRASH_POS_CM
+        goal_moved = abs(dist_goal_cm - last_l2_replan_dist_goal) >= L2_REPLAN_THRASH_GOAL_CM
+        if pos_moved or goal_moved:
+            l2_replan_thrash_count = 0
+            last_l2_replan_xy = pos
+            last_l2_replan_dist_goal = dist_goal_cm
+            return False
+        l2_replan_thrash_count += 1
+        if l2_replan_thrash_count >= L2_REPLAN_THRASH_MAX:
+            print(
+                "  [SiteNav] L2 replan thrash suppressed "
+                f"({l2_replan_thrash_count} cycles, dist_goal={dist_goal_cm:.0f}cm)"
+            )
+            return True
+        return False
+
+    def _note_l2_replan(pos: WorldXY, dist_goal_cm: float) -> None:
+        nonlocal l2_replan_thrash_count, last_l2_replan_xy, last_l2_replan_dist_goal
+        l2_replan_thrash_count = 0
+        last_l2_replan_xy = pos
+        last_l2_replan_dist_goal = dist_goal_cm
 
     print(
         f"  [SiteNav]{f' {label}' if label else ''} goal_local={goal_local_xy} "
@@ -1670,6 +1704,7 @@ def navigate_layered_with_fusion(
         l2_count_before = _l2_occupied_count(layers)
         l2_snapshot = layers.l2.copy()
         l2_seen_snapshot = set(l2_seen_cells)
+        dist_goal_now = dist2d(pos_xy, goal_xy)
         try:
             outcome = _invoke_perceive(
                 perceive_fn, layers=layers, l2_seen_cells=l2_seen_cells
@@ -1679,37 +1714,45 @@ def navigate_layered_with_fusion(
             outcome = PerceiveOutcome(detections=[], l2_applied=False)
         detections = outcome.detections
         l2_count_after = _l2_occupied_count(layers)
+
+        def _rollback_l2_snapshot() -> None:
+            layers.l2[:, :] = l2_snapshot
+            l2_seen_cells.clear()
+            l2_seen_cells.update(l2_seen_snapshot)
+
         if outcome.l2_applied:
             if outcome.l2_changed and _l2_cell_delta_warrants_replan(
                 outcome.cells_added, outcome.cells_removed
             ):
-                summary = detections_summary(detections) if detections else {}
-                new_wps = _timed_replan_on_merged_layers(
-                    layers,
-                    pos_xy,
-                    goal_xy,
-                    reason="l2_depth",
-                    trace=trace,
-                    l2_seen_cells=l2_seen_cells,
-                    nav_timing=nav_timing,
-                    nav_kpi=nav_kpi,
-                )
-                if new_wps is not None:
-                    waypoints = new_wps
-                    wp_index = _nearest_waypoint_index_ahead(pos_xy, waypoints, wp_index)
-                    print(
-                        f"  [SiteNav] L2 sight +{outcome.cells_added}/-{outcome.cells_removed} "
-                        f"cells detect={list(summary.keys())} "
-                        f"→ replan {len(waypoints)} WP (merged L0+L1+L2)"
-                    )
+                if _l2_replan_thrash_blocked(pos_xy, dist_goal_now):
+                    _rollback_l2_snapshot()
                 else:
-                    layers.l2[:, :] = l2_snapshot
-                    l2_seen_cells.clear()
-                    l2_seen_cells.update(l2_seen_snapshot)
-                    print(
-                        f"  [SiteNav] L2 sight +{outcome.cells_added}/-{outcome.cells_removed} "
-                        f"cells → replan failed; rolled back latest L2 update"
+                    summary = detections_summary(detections) if detections else {}
+                    new_wps = _timed_replan_on_merged_layers(
+                        layers,
+                        pos_xy,
+                        goal_xy,
+                        reason="l2_depth",
+                        trace=trace,
+                        l2_seen_cells=l2_seen_cells,
+                        nav_timing=nav_timing,
+                        nav_kpi=nav_kpi,
                     )
+                    if new_wps is not None:
+                        waypoints = new_wps
+                        wp_index = _nearest_waypoint_index_ahead(pos_xy, waypoints, wp_index)
+                        _note_l2_replan(pos_xy, dist_goal_now)
+                        print(
+                            f"  [SiteNav] L2 sight +{outcome.cells_added}/-{outcome.cells_removed} "
+                            f"cells detect={list(summary.keys())} "
+                            f"→ replan {len(waypoints)} WP (merged L0+L1+L2)"
+                        )
+                    else:
+                        _rollback_l2_snapshot()
+                        print(
+                            f"  [SiteNav] L2 sight +{outcome.cells_added}/-{outcome.cells_removed} "
+                            f"cells → replan failed; rolled back latest L2 update"
+                        )
             elif outcome.l2_changed:
                 print(
                     f"  [SiteNav] L2 sight delta +{outcome.cells_added}/-{outcome.cells_removed} "
@@ -1736,28 +1779,32 @@ def navigate_layered_with_fusion(
                 )
                 summary = detections_summary(detections)
                 if n_cells > 0 and _l2_cell_delta_warrants_replan(n_cells):
-                    new_wps = _timed_replan_on_merged_layers(
-                        layers,
-                        pos_xy,
-                        goal_xy,
-                        reason="l2_perception",
-                        trace=trace,
-                        l2_seen_cells=l2_seen_cells,
-                        nav_timing=nav_timing,
-                        nav_kpi=nav_kpi,
-                    )
-                    if new_wps is not None:
-                        waypoints = new_wps
-                        wp_index = _nearest_waypoint_index_ahead(pos_xy, waypoints, wp_index)
-                        print(
-                            f"  [SiteNav] L2 +{n_cells} cells detect={list(summary.keys())} "
-                            f"→ replan {len(waypoints)} WP (merged L0+L1+L2)"
-                        )
+                    if _l2_replan_thrash_blocked(pos_xy, dist_goal_now):
+                        _rollback_l2_snapshot()
                     else:
-                        print(
-                            f"  [SiteNav] L2 +{n_cells} cells detect={list(summary.keys())} "
-                            f"→ replan failed (merged map)"
+                        new_wps = _timed_replan_on_merged_layers(
+                            layers,
+                            pos_xy,
+                            goal_xy,
+                            reason="l2_perception",
+                            trace=trace,
+                            l2_seen_cells=l2_seen_cells,
+                            nav_timing=nav_timing,
+                            nav_kpi=nav_kpi,
                         )
+                        if new_wps is not None:
+                            waypoints = new_wps
+                            wp_index = _nearest_waypoint_index_ahead(pos_xy, waypoints, wp_index)
+                            _note_l2_replan(pos_xy, dist_goal_now)
+                            print(
+                                f"  [SiteNav] L2 +{n_cells} cells detect={list(summary.keys())} "
+                                f"→ replan {len(waypoints)} WP (merged L0+L1+L2)"
+                            )
+                        else:
+                            print(
+                                f"  [SiteNav] L2 +{n_cells} cells detect={list(summary.keys())} "
+                                f"→ replan failed (merged map)"
+                            )
                 elif n_cells > 0:
                     print(
                         f"  [SiteNav] L2 +{n_cells} cells below replan threshold "
@@ -1772,31 +1819,33 @@ def navigate_layered_with_fusion(
             depth_delta = l2_count_after - l2_count_before
             _sync_seen_cells_from_l2(layers, l2_seen_cells)
             if _l2_cell_delta_warrants_replan(depth_delta):
-                new_wps = _timed_replan_on_merged_layers(
-                    layers,
-                    pos_xy,
-                    goal_xy,
-                    reason="l2_depth",
-                    trace=trace,
-                    l2_seen_cells=l2_seen_cells,
-                    nav_timing=nav_timing,
-                    nav_kpi=nav_kpi,
-                )
-                if new_wps is not None:
-                    waypoints = new_wps
-                    wp_index = _nearest_waypoint_index_ahead(pos_xy, waypoints, wp_index)
-                    print(
-                        f"  [SiteNav] L2 depth +{depth_delta} cells "
-                        f"→ replan {len(waypoints)} WP (merged L0+L1+L2)"
-                    )
+                if _l2_replan_thrash_blocked(pos_xy, dist_goal_now):
+                    _rollback_l2_snapshot()
                 else:
-                    layers.l2[:, :] = l2_snapshot
-                    l2_seen_cells.clear()
-                    l2_seen_cells.update(l2_seen_snapshot)
-                    print(
-                        f"  [SiteNav] L2 depth +{depth_delta} cells "
-                        f"→ replan failed; rolled back latest L2 update"
+                    new_wps = _timed_replan_on_merged_layers(
+                        layers,
+                        pos_xy,
+                        goal_xy,
+                        reason="l2_depth",
+                        trace=trace,
+                        l2_seen_cells=l2_seen_cells,
+                        nav_timing=nav_timing,
+                        nav_kpi=nav_kpi,
                     )
+                    if new_wps is not None:
+                        waypoints = new_wps
+                        wp_index = _nearest_waypoint_index_ahead(pos_xy, waypoints, wp_index)
+                        _note_l2_replan(pos_xy, dist_goal_now)
+                        print(
+                            f"  [SiteNav] L2 depth +{depth_delta} cells "
+                            f"→ replan {len(waypoints)} WP (merged L0+L1+L2)"
+                        )
+                    else:
+                        _rollback_l2_snapshot()
+                        print(
+                            f"  [SiteNav] L2 depth +{depth_delta} cells "
+                            f"→ replan failed; rolled back latest L2 update"
+                        )
             else:
                 print(
                     f"  [SiteNav] L2 depth +{depth_delta} cells below replan threshold "
@@ -1859,6 +1908,64 @@ def navigate_layered_with_fusion(
                 cross_track_error_cm(pos_xy, seg_start, seg_end)
             )
         dist_goal = dist2d(pos_xy, goal_xy)
+        if dist_goal < goal_stall_anchor_dist - GOAL_DIST_STALL_IMPROVE_CM:
+            goal_stall_anchor_dist = dist_goal
+            goal_stall_steps = 0
+        else:
+            goal_stall_steps += 1
+        if goal_stall_steps >= GOAL_DIST_STALL_STEPS and dist_goal > tolerance_cm:
+            print(
+                f"  [SiteNav] goal-distance stall ({goal_stall_steps} steps) "
+                f"dist={dist_goal:.0f}cm → stuck recovery"
+            )
+            recovery = _apply_stuck_recovery(
+                ucv,
+                layers,
+                robot_name,
+                goal_xy,
+                stuck_xy=pos_xy,
+                waypoints=waypoints,
+                wp_index=wp_index,
+                waypoint_xy=waypoints[wp_index] if wp_index < len(waypoints) else goal_xy,
+                stuck_hotspots=stuck_hotspots,
+                unstuck_attempts=unstuck_attempts,
+                l2_seen_cells=l2_seen_cells,
+                trace=trace,
+                carry_motion_cb=carry_motion_cb,
+                soft_reset_fn=soft_reset_fn,
+                nav_kpi=nav_kpi,
+            )
+            if recovery.mission_failed:
+                last_resort = _run_last_resort_recovery(
+                    layers=layers,
+                    pos_xy=pos_xy,
+                    goal_xy=goal_xy,
+                    l2_seen_cells=l2_seen_cells,
+                    stuck_xy=pos_xy,
+                    soft_reset_fn=soft_reset_fn,
+                    nav_ctx=nav_ctx,
+                )
+                if last_resort is None:
+                    _finalize_nav_timing()
+                    return False
+                waypoints, wp_index, _l2_perceive_pause_steps = last_resort
+                _l2_flush_count = (
+                    nav_ctx.l2_flush_count if nav_ctx is not None else _l2_flush_count + 1
+                )
+            else:
+                ucv = recovery.ucv
+                waypoints = recovery.waypoints
+                wp_index = recovery.wp_index
+                steps_on_wp = recovery.steps_on_wp
+                unstuck_attempts = recovery.unstuck_attempts
+                stuck_hotspots = recovery.stuck_hotspots
+                pos_xy = recovery.pos_xy
+            goal_stall_steps = 0
+            goal_stall_anchor_dist = dist_goal
+            moves_since_progress = 0
+            last_progress_xy = pos_xy
+            last_motion_t = time.time()
+            continue
         if dist_goal + 40.0 < best_dist_goal:
             best_dist_goal = dist_goal
             turn_only_steps = 0

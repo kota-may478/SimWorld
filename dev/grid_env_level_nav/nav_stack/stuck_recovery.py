@@ -184,6 +184,11 @@ def run_site_stuck_recovery(
         session.replan_stage = result.stage
         if result.stage in {"tight_merged", "l0_l1", "l0_only"}:
             print(f"  [SiteNav] {_stage_log_message(result.stage)}")
+        if result.stage == "l0_only":
+            print(
+                "  [SiteNav] unstuck replan rejected: L0-only path ignores L1 forbidden zones"
+            )
+            return RecoveryResult(success=False, message="l0_only_rejected")
         if result.waypoints:
             callbacks.record_plan(session, result.waypoints, "unstuck_replan")
             session.waypoints = result.waypoints

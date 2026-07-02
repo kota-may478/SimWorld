@@ -91,6 +91,45 @@ class StuckRecoveryTest(unittest.TestCase):
         self.assertFalse(outcome.mission_failed)
         self.assertEqual(len(outcome.waypoints), 1)
 
+    def test_l0_only_replan_rejected(self) -> None:
+        layers = MagicMock()
+        session = StuckRecoverySession(
+            ucv=MagicMock(),
+            layers=layers,
+            robot_name="robot",
+            goal_xy=(100.0, 0.0),
+            stuck_xy=(0.0, 0.0),
+            waypoints=[(50.0, 0.0)],
+            wp_index=0,
+            waypoint_xy=(50.0, 0.0),
+            unstuck_attempts=0,
+            max_unstuck_attempts=16,
+        )
+
+        import nav_stack.stuck_recovery as sr
+
+        original = sr.replan_on_merged_layers
+        sr.replan_on_merged_layers = lambda *a, **k: MagicMock(
+            stage="l0_only", waypoints=[(80.0, 0.0)]
+        )
+        try:
+            outcome = run_site_stuck_recovery(
+                session,
+                callbacks=StuckRecoveryCallbacks(
+                    mark_stuck_cells=lambda _s: (1, 0, 0),
+                    unstuck_backup=lambda _s: None,
+                    safe_get_pos2d=lambda s: (s.stuck_xy, s.ucv),
+                    execute_escape_step=lambda _s, _xy: None,
+                    world_to_local=lambda xy: xy,
+                    record_plan=lambda _s, _wps, _reason: None,
+                ),
+            )
+        finally:
+            sr.replan_on_merged_layers = original
+
+        self.assertEqual(len(outcome.waypoints), 1)
+        self.assertEqual(outcome.waypoints[0], (50.0, 0.0))
+
     def test_mission_failed_at_max_attempts(self) -> None:
         layers = MagicMock()
         session = StuckRecoverySession(
