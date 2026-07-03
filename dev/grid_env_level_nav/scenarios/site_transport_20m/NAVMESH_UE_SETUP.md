@@ -40,6 +40,8 @@ UE Editor でも確認: **Project Settings → Navigation Mesh → Runtime Gener
 設定変更後は **Editor 再起動** と **Build → Build Paths** が必要です。
 Dynamic Modifiers Only だけだと PIE 開始時に NavMesh が空のままになることがあります。
 
+**Phase 5（UE MoveTo）** は [`NAVMESH_PHASE5_UE_SETUP.md`](NAVMESH_PHASE5_UE_SETUP.md) を参照。
+
 ## Step 3 — Visual Studio で Rebuild
 
 1. **UE Editor を完全終了**
