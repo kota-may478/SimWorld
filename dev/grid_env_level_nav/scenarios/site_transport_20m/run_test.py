@@ -28,6 +28,7 @@ import ue_client_guard  # noqa: E402
 import level_coords as lc  # noqa: E402
 import level_nav_robot as lnr  # noqa: E402
 import nav_query as nq  # noqa: E402
+import nav_move as nm  # noqa: E402
 from carry import (  # noqa: E402
     begin_carry_from_material,
     deliver_carry_at_humanoid,
@@ -192,6 +193,12 @@ def _parse_args() -> argparse.Namespace:
         help="costmap: L0+L1+L2 A* (default); navmesh: Dynamic NavMesh NavFindPath (no L2)",
     )
     p.add_argument(
+        "--nav-exec",
+        choices=("vbp", "moveto"),
+        default="vbp",
+        help="navmesh only: vbp=open-loop Move_Speed (default); moveto=UE SpotDogNavController",
+    )
+    p.add_argument(
         "--artifact-suffix",
         default=None,
         help="Fixed artifact suffix (e.g. layout_01_test) for costMap/timing/metrics files",
@@ -228,12 +235,16 @@ def main() -> int:
         print(f"[Site20] {exc}")
         return 1
     nav_mode = args.nav_mode
+    nav_exec = args.nav_exec
+    if nav_mode != "navmesh" and nav_exec != "vbp":
+        print("[Site20] --nav-exec moveto requires --nav-mode navmesh")
+        return 1
     if nav_mode == "navmesh":
         nav_profile = resolve_profile("navmesh")
         apply_profile_to_layered_nav(nav_profile)
         l2_mode = "off"
         print(
-            f"[Site20] nav-mode=navmesh profile={nav_profile.name} "
+            f"[Site20] nav-mode=navmesh nav-exec={nav_exec} profile={nav_profile.name} "
             f"(NavFindPath, L2 off, surface-distance metrics)"
         )
     else:
@@ -383,6 +394,12 @@ def main() -> int:
                 print(
                     "[Site20] FAIL: NavMesh runtime API unavailable — "
                     "rebuild UE with ue_native/NavQueryService (see NAVMESH_UE_SETUP.md)"
+                )
+                return 2
+            if nav_exec == "moveto" and not nm.nav_move_api_available(ucv, robot_name):
+                print(
+                    "[Site20] FAIL: NavMove API unavailable — "
+                    "complete NAVMESH_PHASE5_UE_SETUP.md Steps 1–3 and PIE Play"
                 )
                 return 2
             human_bounds = fetch_actor_bounds(
@@ -1151,6 +1168,7 @@ def main() -> int:
                     on_pose_sample=_on_pose,
                     nav_timing=leg1_timing,
                     pose_cache=nav_pose_cache,
+                    nav_exec=nav_exec,
                 )
             else:
                 leg1_ok = navigate_to_slot(
@@ -1245,6 +1263,7 @@ def main() -> int:
                     on_pose_sample=_on_pose,
                     nav_timing=leg2_timing,
                     pose_cache=nav_pose_cache,
+                    nav_exec=nav_exec,
                 )
             else:
                 leg2_ok = deliver_to(

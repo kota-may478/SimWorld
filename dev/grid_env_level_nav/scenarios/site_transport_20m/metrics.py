@@ -83,6 +83,10 @@ class NavTimingAccumulator:
     humanoid_replan_count: int = 0
     wp_timeout_replan_count: int = 0
     nav_loop_iterations: int = 0
+    nav_moveto_poll_ms: float = 0.0
+    nav_moveto_wait_ms: float = 0.0
+    nav_moveto_request_count: int = 0
+    nav_moveto_replan_count: int = 0
 
     def record_elapsed(self, attr: str, t0: float) -> None:
         """Add wall time since *t0* (perf_counter) into a millisecond bucket."""
@@ -140,6 +144,10 @@ class NavTimingAccumulator:
         self.humanoid_replan_count += other.humanoid_replan_count
         self.wp_timeout_replan_count += other.wp_timeout_replan_count
         self.nav_loop_iterations += other.nav_loop_iterations
+        self.nav_moveto_poll_ms += other.nav_moveto_poll_ms
+        self.nav_moveto_wait_ms += other.nav_moveto_wait_ms
+        self.nav_moveto_request_count += other.nav_moveto_request_count
+        self.nav_moveto_replan_count += other.nav_moveto_replan_count
 
     def loop_overhead_breakdown_ms(self) -> float:
         return (
@@ -170,6 +178,8 @@ class NavTimingAccumulator:
             + self.nav_clear_ms
             + self.carry_sync_ms
             + self.nav_densify_ms
+            + self.nav_moveto_poll_ms
+            + self.nav_moveto_wait_ms
         )
 
     def total_ms(self) -> float:
@@ -242,6 +252,10 @@ class NavTimingAccumulator:
             "humanoid_replan_count": self.humanoid_replan_count,
             "wp_timeout_replan_count": self.wp_timeout_replan_count,
             "nav_loop_iterations": self.nav_loop_iterations,
+            "nav_moveto_poll_ms": round(self.nav_moveto_poll_ms, 2),
+            "nav_moveto_wait_ms": round(self.nav_moveto_wait_ms, 2),
+            "nav_moveto_request_count": self.nav_moveto_request_count,
+            "nav_moveto_replan_count": self.nav_moveto_replan_count,
             "accounted_ms": round(self.accounted_ms(), 2),
             "total_ms": round(self.total_ms(), 2),
         }
