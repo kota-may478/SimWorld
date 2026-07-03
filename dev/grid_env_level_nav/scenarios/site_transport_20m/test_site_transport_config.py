@@ -56,6 +56,19 @@ def test_apply_fast_profile_updates_layered_nav() -> None:
     assert ln.USE_RPP_CONTROLLER is True
 
 
+def test_navmesh_accounted_ms_includes_rpc_buckets() -> None:
+    acc = NavTimingAccumulator(
+        label="leg1",
+        move_ms=100.0,
+        nav_rebuild_ms=500.0,
+        nav_find_path_ms=50.0,
+        nav_project_ms=20.0,
+        pose_query_ms=30.0,
+        settle_ms=10.0,
+    )
+    assert acc.accounted_ms() == 710.0
+
+
 def test_build_timing_summary() -> None:
     leg1 = NavTimingAccumulator(label="leg1", move_ms=1000.0, perceive_ms=200.0)
     leg2 = NavTimingAccumulator(label="leg2", move_ms=800.0, replan_ms=50.0)

@@ -47,6 +47,7 @@ def _run_one(
     *,
     profile: str,
     l2_mode: str,
+    nav_mode: str,
     skip_spawn: bool,
     no_l1: bool,
     log_path: Path,
@@ -70,6 +71,8 @@ def _run_one(
         layout_id,
         "--artifact-suffix",
         suffix,
+        "--nav-mode",
+        nav_mode,
     ]
     if not skip_spawn:
         cmd.append("--force-respawn")
@@ -144,7 +147,12 @@ def main() -> int:
         help="Disable L1 forbidden zones (L0+L2 navigation only)",
     )
     p.add_argument(
-        "--batch-dir",
+        "--nav-mode",
+        default="costmap",
+        choices=("costmap", "navmesh"),
+        help="Pass --nav-mode navmesh to run_test.py",
+    )
+    p.add_argument(
         type=Path,
         default=None,
         help="Directory for batch transcript + per-layout records",
@@ -163,7 +171,7 @@ def main() -> int:
     l1_label = "off" if args.no_l1 else "on"
     print(
         f"[Batch] layouts {args.start}..{args.end} profile={args.profile} "
-        f"l2={args.l2_mode} l1={l1_label}"
+        f"l2={args.l2_mode} l1={l1_label} nav_mode={args.nav_mode}"
     )
 
     for index in range(args.start, args.end + 1):
@@ -171,6 +179,7 @@ def main() -> int:
             index,
             profile=args.profile,
             l2_mode=args.l2_mode,
+            nav_mode=args.nav_mode,
             skip_spawn=args.skip_spawn,
             no_l1=args.no_l1,
             log_path=master_log,
@@ -180,6 +189,7 @@ def main() -> int:
             "batch_stamp": stamp,
             "profile": args.profile,
             "l2_mode": args.l2_mode,
+            "nav_mode": args.nav_mode,
             "l1_enabled": not args.no_l1,
             "started_at": stamp,
             "elapsed_s": round(time.time() - t0, 1),

@@ -70,11 +70,50 @@ def _nav_spawn_xyz(ucv, nav_actor: str, lx: float, ly: float) -> Tuple[Optional[
     if not raw.get("ok"):
         if not geh._ping_ucv(ucv):  # noqa: SLF001
             ucv = ensure_live_or_reconnect(ucv, reason="nav_project_point connection lost")
-        return None, ucv
+        fx, fy, fz = lc.foot_world_xyz_from_local_xy(lx, ly)
+        print(
+            f"[Site20Spawn] nav snap miss local=({lx:.0f},{ly:.0f}) "
+            f"-> layout foot ({fx:.0f},{fy:.0f},{fz:.0f})"
+        )
+        return (fx, fy, fz), ucv
     px, py, pz = float(raw["x"]), float(raw["y"]), float(raw["z"])
     if math.hypot(px - wx, py - wy) > NAV_XY_TOLERANCE_CM:
-        return None, ucv
+        fx, fy, fz = lc.foot_world_xyz_from_local_xy(lx, ly)
+        print(
+            f"[Site20Spawn] nav snap drift {math.hypot(px - wx, py - wy):.0f}cm "
+            f"local=({lx:.0f},{ly:.0f}) -> layout foot ({fx:.0f},{fy:.0f},{fz:.0f})"
+        )
+        return (fx, fy, fz), ucv
     return (px, py, pz + DEFAULT_FOOT_Z_OFFSET_CM), ucv
+
+
+def _ensure_navmesh_ready(
+    ucv,
+    nav_actor: str,
+    probe_local: Tuple[float, float],
+) -> object:
+    """Build/warm up NavMesh before prop spawn (required when RuntimeGeneration=Dynamic)."""
+    wx, wy = lc.local_xy_to_world(*probe_local)
+    raw = nq.nav_project_point(ucv, nav_actor, wx, wy, lc.NAV_PROJECT_PROBE_Z_CM)
+    if raw.get("ok"):
+        return ucv
+    print("[Site20Spawn] NavMesh empty — NavRebuild warmup...")
+    rebuild = nq.nav_rebuild(ucv, nav_actor)
+    if not rebuild.get("ok"):
+        raise PieSessionLost(
+            f"NavRebuild failed before spawn: {rebuild.get('error', rebuild)}"
+        )
+    tick_settle(ucv, settle_s=3.0, ticks=4)
+    raw = nq.nav_project_point(ucv, nav_actor, wx, wy, lc.NAV_PROJECT_PROBE_Z_CM)
+    if not raw.get("ok"):
+        raise PieSessionLost(
+            "NavMesh unavailable after NavRebuild — stop PIE, restart UE Editor "
+            "(RuntimeGeneration=Dynamic), then Build → Build Paths before Play"
+        )
+    print(
+        f"[Site20Spawn] NavMesh ready @ ({raw['x']:.0f},{raw['y']:.0f},{raw['z']:.0f})"
+    )
+    return ucv
 
 
 def _is_barrier_prop(prop: SitePropSlot) -> bool:
@@ -272,6 +311,11 @@ def spawn_site_transport_scene(
             print("[Site20Spawn] NavQueryService unavailable")
             return 1, active_ucv
 
+        active_ucv = _ensure_navmesh_ready(
+            active_ucv,
+            nav_actor,
+            registry.robot_start_local_cm,
+        )
         updated, active_ucv, spawned_count = _spawn_props(
             active_ucv,
             registry,

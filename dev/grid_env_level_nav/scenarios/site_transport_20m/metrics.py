@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -63,6 +64,30 @@ class NavTimingAccumulator:
     async_wait_ms: float = 0.0
     prefetch_hit_ms: float = 0.0
     prefetch_hits: int = 0
+    # NavMesh UE RPC buckets (navmesh mode)
+    nav_rebuild_ms: float = 0.0
+    nav_find_path_ms: float = 0.0
+    nav_project_ms: float = 0.0
+    nav_bounds_ms: float = 0.0
+    nav_register_ms: float = 0.0
+    nav_clear_ms: float = 0.0
+    carry_sync_ms: float = 0.0
+    nav_densify_ms: float = 0.0
+    # Counters (navmesh mode)
+    nav_rebuild_count: int = 0
+    nav_find_path_count: int = 0
+    nav_project_count: int = 0
+    nav_bounds_count: int = 0
+    nav_register_count: int = 0
+    stuck_replan_count: int = 0
+    humanoid_replan_count: int = 0
+    wp_timeout_replan_count: int = 0
+    nav_loop_iterations: int = 0
+
+    def record_elapsed(self, attr: str, t0: float) -> None:
+        """Add wall time since *t0* (perf_counter) into a millisecond bucket."""
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        setattr(self, attr, float(getattr(self, attr)) + elapsed_ms)
 
     def add(self, other: "NavTimingAccumulator") -> None:
         self.perceive_ms += other.perceive_ms
@@ -98,6 +123,23 @@ class NavTimingAccumulator:
         self.async_wait_ms += other.async_wait_ms
         self.prefetch_hit_ms += other.prefetch_hit_ms
         self.prefetch_hits += other.prefetch_hits
+        self.nav_rebuild_ms += other.nav_rebuild_ms
+        self.nav_find_path_ms += other.nav_find_path_ms
+        self.nav_project_ms += other.nav_project_ms
+        self.nav_bounds_ms += other.nav_bounds_ms
+        self.nav_register_ms += other.nav_register_ms
+        self.nav_clear_ms += other.nav_clear_ms
+        self.carry_sync_ms += other.carry_sync_ms
+        self.nav_densify_ms += other.nav_densify_ms
+        self.nav_rebuild_count += other.nav_rebuild_count
+        self.nav_find_path_count += other.nav_find_path_count
+        self.nav_project_count += other.nav_project_count
+        self.nav_bounds_count += other.nav_bounds_count
+        self.nav_register_count += other.nav_register_count
+        self.stuck_replan_count += other.stuck_replan_count
+        self.humanoid_replan_count += other.humanoid_replan_count
+        self.wp_timeout_replan_count += other.wp_timeout_replan_count
+        self.nav_loop_iterations += other.nav_loop_iterations
 
     def loop_overhead_breakdown_ms(self) -> float:
         return (
@@ -120,6 +162,14 @@ class NavTimingAccumulator:
             + self.pose_query_ms
             + self.move_gate_spin_ms
             + self.loop_overhead_ms
+            + self.nav_rebuild_ms
+            + self.nav_find_path_ms
+            + self.nav_project_ms
+            + self.nav_bounds_ms
+            + self.nav_register_ms
+            + self.nav_clear_ms
+            + self.carry_sync_ms
+            + self.nav_densify_ms
         )
 
     def total_ms(self) -> float:
@@ -175,6 +225,23 @@ class NavTimingAccumulator:
             "async_wait_ms": round(self.async_wait_ms, 2),
             "prefetch_hit_ms": round(self.prefetch_hit_ms, 2),
             "prefetch_hits": self.prefetch_hits,
+            "nav_rebuild_ms": round(self.nav_rebuild_ms, 2),
+            "nav_find_path_ms": round(self.nav_find_path_ms, 2),
+            "nav_project_ms": round(self.nav_project_ms, 2),
+            "nav_bounds_ms": round(self.nav_bounds_ms, 2),
+            "nav_register_ms": round(self.nav_register_ms, 2),
+            "nav_clear_ms": round(self.nav_clear_ms, 2),
+            "carry_sync_ms": round(self.carry_sync_ms, 2),
+            "nav_densify_ms": round(self.nav_densify_ms, 2),
+            "nav_rebuild_count": self.nav_rebuild_count,
+            "nav_find_path_count": self.nav_find_path_count,
+            "nav_project_count": self.nav_project_count,
+            "nav_bounds_count": self.nav_bounds_count,
+            "nav_register_count": self.nav_register_count,
+            "stuck_replan_count": self.stuck_replan_count,
+            "humanoid_replan_count": self.humanoid_replan_count,
+            "wp_timeout_replan_count": self.wp_timeout_replan_count,
+            "nav_loop_iterations": self.nav_loop_iterations,
             "accounted_ms": round(self.accounted_ms(), 2),
             "total_ms": round(self.total_ms(), 2),
         }
@@ -222,7 +289,9 @@ def build_timing_summary(
         "per_leg": per_leg,
         "accounting_note": (
             "accounted_ms = perceive+move+replan+settle+standoff+depth_refresh+"
-            "pose_query+move_gate_spin+loop_overhead; residual_ms = wall_time - accounted_ms"
+            "pose_query+move_gate_spin+loop_overhead+nav_rebuild+nav_find_path+"
+            "nav_project+nav_bounds+nav_register+nav_clear+carry_sync+nav_densify; "
+            "residual_ms = wall_time - accounted_ms"
         ),
     }
     if leg1_time_s is not None:
@@ -267,6 +336,8 @@ class MotionSample:
     overspeed: bool
     proximity_violation: bool = False
     proximity_dist_cm: Optional[float] = None
+    surface_dist_cm: Optional[float] = None
+    surface_proximity_violation: bool = False
 
 
 @dataclass
@@ -283,6 +354,7 @@ class MissionRecorder:
         *,
         now: Optional[float] = None,
         proximity_dist_cm: Optional[float] = None,
+        surface_dist_cm: Optional[float] = None,
     ) -> None:
         t = now if now is not None else self.mission_t0
         lx, ly = world_xy_to_local(pos_xy[0], pos_xy[1])
@@ -297,6 +369,11 @@ class MissionRecorder:
             and math.isfinite(proximity_dist_cm)
             and proximity_dist_cm <= PROXIMITY_VIOLATION_CM
         )
+        surface_proximity_violation = (
+            surface_dist_cm is not None
+            and math.isfinite(surface_dist_cm)
+            and surface_dist_cm <= PROXIMITY_VIOLATION_CM
+        )
         self.samples.append(
             MotionSample(
                 t_s=t - self.mission_t0,
@@ -306,6 +383,8 @@ class MissionRecorder:
                 overspeed=overspeed,
                 proximity_violation=proximity_violation,
                 proximity_dist_cm=proximity_dist_cm,
+                surface_dist_cm=surface_dist_cm,
+                surface_proximity_violation=surface_proximity_violation,
             )
         )
         self._last_t = t
@@ -336,6 +415,7 @@ class MissionRecorder:
         forbidden_time_s = 0.0
         overspeed_time_s = 0.0
         proximity_violation_time_s = 0.0
+        surface_proximity_violation_time_s = 0.0
         for i in range(len(self.samples) - 1):
             dt = max(0.0, self.samples[i + 1].t_s - self.samples[i].t_s)
             if self.samples[i].in_forbidden:
@@ -344,10 +424,15 @@ class MissionRecorder:
                 overspeed_time_s += dt
             if self.samples[i].proximity_violation:
                 proximity_violation_time_s += dt
+            if self.samples[i].surface_proximity_violation:
+                surface_proximity_violation_time_s += dt
         violation_forbidden = forbidden_time_s / dt_total if dt_total > 0 else 0.0
         violation_speed = overspeed_time_s / dt_total if dt_total > 0 else 0.0
         proximity_violation_rate = (
             proximity_violation_time_s / total_time_s if total_time_s > 0 else 0.0
+        )
+        surface_proximity_violation_rate = (
+            surface_proximity_violation_time_s / total_time_s if total_time_s > 0 else 0.0
         )
         success_rate = 1.0 if success else 0.0
         trials = 1
@@ -374,6 +459,14 @@ class MissionRecorder:
                 "proximity_violation_rate": round(proximity_violation_rate, 6),
                 "proximity_violation_threshold_cm": PROXIMITY_VIOLATION_CM,
                 "proximity_violation_denominator": "total_time_s",
+                "surface_proximity_violation_time_s": round(
+                    surface_proximity_violation_time_s, 3
+                ),
+                "surface_proximity_violation_rate": round(
+                    surface_proximity_violation_rate, 6
+                ),
+                "surface_proximity_threshold_cm": PROXIMITY_VIOLATION_CM,
+                "surface_proximity_denominator": "total_time_s",
                 "tracked_motion_time_s": round(dt_total, 3),
                 "sample_count": len(self.samples),
             },
@@ -442,6 +535,14 @@ def timing_breakdown_rows(metrics: Mapping[str, Any]) -> List[Tuple[str, str]]:
         "nav_branch_ms": "  ↳ nav branch",
         "loop_residual_ms": "  ↳ loop residual",
         "loop_overhead_breakdown_ms": "  ↳ loop overhead breakdown",
+        "nav_rebuild_ms": "NavMesh rebuild",
+        "nav_find_path_ms": "NavFindPath",
+        "nav_project_ms": "NavProjectPoint",
+        "nav_bounds_ms": "GetActorBounds",
+        "nav_register_ms": "NavRegisterObstacle",
+        "nav_clear_ms": "NavClearObstacles",
+        "carry_sync_ms": "Carry pose sync",
+        "nav_densify_ms": "Waypoint densify (local)",
     }
     sortable: List[Tuple[float, str, str]] = []
     for key, label in ms_bucket_labels.items():
@@ -470,6 +571,13 @@ def timing_breakdown_rows(metrics: Mapping[str, Any]) -> List[Tuple[str, str]]:
     count_specs = (
         ("standoff_events", "Standoff events"),
         ("prefetch_hits", "Prefetch hits"),
+        ("nav_rebuild_count", "NavRebuild calls"),
+        ("nav_find_path_count", "NavFindPath calls"),
+        ("nav_project_count", "NavProjectPoint calls"),
+        ("stuck_replan_count", "Stuck replans"),
+        ("humanoid_replan_count", "Humanoid replans"),
+        ("wp_timeout_replan_count", "WP-timeout replans"),
+        ("nav_loop_iterations", "Nav loop iterations"),
     )
     for key, label in count_specs:
         raw = totals.get(key)

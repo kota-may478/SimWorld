@@ -87,10 +87,38 @@ FAST_PROFILE = NavProfile(
     open_loop_distance_scale=1.05,
 )
 
+from navmesh_config import (
+    NAVMESH_MOVES_PER_CYCLE,
+    NAVMESH_NAV_WARMUP_SETTLE_S,
+    NAVMESH_PERCEPTION_INTERVAL_S,
+    NAVMESH_POST_MOTION_SETTLE_S,
+    NAVMESH_PRE_LEG1_SETTLE_S,
+)
+
+NAVMESH_PROFILE = NavProfile(
+    name="navmesh",
+    perception_interval_s=NAVMESH_PERCEPTION_INTERVAL_S,
+    l2_replan_cell_delta_threshold=999,
+    enable_l1_by_default=False,
+    site_max_open_loop_move_cm=200.0,
+    moves_per_cycle=NAVMESH_MOVES_PER_CYCLE,
+    site_robot_speed=220.0,
+    nav_warmup_settle_s=NAVMESH_NAV_WARMUP_SETTLE_S,
+    post_motion_settle_s=NAVMESH_POST_MOTION_SETTLE_S,
+    pre_leg1_settle_s=NAVMESH_PRE_LEG1_SETTLE_S,
+    depth_stride_px=12,
+    planning_clearance_cm=100.0,
+    perception_standoff_cm=100.0,
+    sight_registry_every_n=2,
+    use_rpp_controller=False,
+    segment_chunk_max_move_cm=60.0,
+)
+
 PROFILES: Dict[str, NavProfile] = {
     "default": DEFAULT_PROFILE,
     "careful": DEFAULT_PROFILE,
     "fast": FAST_PROFILE,
+    "navmesh": NAVMESH_PROFILE,
 }
 
 PERCEPTION_STANDOFF_CM = FAST_PROFILE.perception_standoff_cm

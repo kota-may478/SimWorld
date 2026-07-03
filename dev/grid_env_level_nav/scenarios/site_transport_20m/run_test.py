@@ -89,6 +89,9 @@ from robot_sensor import (  # noqa: E402
 from pie_spawn_safety import ensure_live_or_reconnect  # noqa: E402
 from runtime_sight_sources import ensure_runtime_site20_sight_sources  # noqa: E402
 from spawn_pie import spawn_site_transport_scene  # noqa: E402
+from navmesh_mission_nav import deliver_to_navmesh, navigate_to_slot_navmesh
+from navmesh_obstacles import fetch_actor_bounds, setup_static_navmesh_obstacles
+from surface_distance import build_surface_obstacles_from_bounds, nearest_surface_distance_cm
 from viz import DEFAULT_ARTIFACT_DIR, NavTrace, save_site_transport_artifacts  # noqa: E402
 from zones import apply_forbidden_zones_l1  # noqa: E402
 
@@ -183,6 +186,12 @@ def _parse_args() -> argparse.Namespace:
         help="Trial number for labeled artifacts (e.g. 1..5); requires --run-label",
     )
     p.add_argument(
+        "--nav-mode",
+        choices=("costmap", "navmesh"),
+        default="costmap",
+        help="costmap: L0+L1+L2 A* (default); navmesh: Dynamic NavMesh NavFindPath (no L2)",
+    )
+    p.add_argument(
         "--artifact-suffix",
         default=None,
         help="Fixed artifact suffix (e.g. layout_01_test) for costMap/timing/metrics files",
@@ -218,17 +227,27 @@ def main() -> int:
     except ValueError as exc:
         print(f"[Site20] {exc}")
         return 1
-    try:
-        nav_profile = resolve_profile(args.profile)
-    except ValueError as exc:
-        print(f"[Site20] {exc}")
-        return 1
-    apply_profile_to_layered_nav(nav_profile)
+    nav_mode = args.nav_mode
+    if nav_mode == "navmesh":
+        nav_profile = resolve_profile("navmesh")
+        apply_profile_to_layered_nav(nav_profile)
+        l2_mode = "off"
+        print(
+            f"[Site20] nav-mode=navmesh profile={nav_profile.name} "
+            f"(NavFindPath, L2 off, surface-distance metrics)"
+        )
+    else:
+        try:
+            nav_profile = resolve_profile(args.profile)
+        except ValueError as exc:
+            print(f"[Site20] {exc}")
+            return 1
+        apply_profile_to_layered_nav(nav_profile)
+        l2_mode = "off" if args.no_l2 else args.l2_mode
     print(
         f"[Site20] profile={nav_profile.name} perception_interval={nav_profile.perception_interval_s}s "
         f"standoff={nav_profile.perception_standoff_cm:.0f}cm"
     )
-    l2_mode = "off" if args.no_l2 else args.l2_mode
     if not args.l0.is_file():
         print(f"[Site20] missing L0: {args.l0}")
         return 1
@@ -261,7 +280,9 @@ def main() -> int:
         f"[Site20] L0+L1 plan to humanoid: {len(plan_back.waypoints_xy)} WP cost={plan_back.total_cost:.1f}"
     )
     if not plan_out.waypoints_xy or not plan_back.waypoints_xy:
-        return 1
+        if nav_mode != "navmesh":
+            return 1
+        print("[Site20] navmesh mode: skipping offline L0+L1 plan sanity check")
     if args.plan_only:
         return 0
 
@@ -282,6 +303,7 @@ def main() -> int:
     leg2_time_s: Optional[float] = None
     leg1_timing = NavTimingAccumulator(label="leg1")
     leg2_timing = NavTimingAccumulator(label="leg2")
+    navmesh_setup_timing = NavTimingAccumulator(label="navmesh_setup")
     timing_summary: Optional[dict] = None
 
     try:
@@ -351,6 +373,28 @@ def main() -> int:
         tick_settle(ucv, settle_s=0.8, ticks=2)
         ucv = ensure_live_or_reconnect(ucv, reason="before nav")
 
+        bounds_cache: Dict[str, Any] = {}
+        surface_obstacles = ()
+        if nav_mode == "navmesh":
+            bounds_cache, navmesh_ready = setup_static_navmesh_obstacles(
+                ucv, nav_actor, registry, nav_timing=navmesh_setup_timing
+            )
+            if not navmesh_ready:
+                print(
+                    "[Site20] FAIL: NavMesh runtime API unavailable — "
+                    "rebuild UE with ue_native/NavQueryService (see NAVMESH_UE_SETUP.md)"
+                )
+                return 2
+            human_bounds = fetch_actor_bounds(
+                ucv,
+                nav_actor,
+                registry.humanoid_actor_name,
+                nav_timing=navmesh_setup_timing,
+            )
+            if human_bounds is not None:
+                bounds_cache[registry.humanoid_actor_name] = human_bounds
+            surface_obstacles = build_surface_obstacles_from_bounds(bounds_cache)
+
         if l2_mode == "off":
             print("[Site20] L2 perception disabled (--l2-mode off)")
 
@@ -408,7 +452,7 @@ def main() -> int:
         depth_log_next_fetch = {"enabled": False}
         active_nav_timing: dict = {"acc": None}
         nav_pose_cache: Dict[str, Any] = {"xy": None, "yaw": None}
-        from nav_pose_query import init_pose_cache  # noqa: WPS433
+        from nav_pose_query import init_pose_cache, invalidate_robot_pose  # noqa: WPS433
 
         init_pose_cache(nav_pose_cache)
         depth_meta: dict = {"unit": "unknown", "min_scene_m": None}
@@ -587,7 +631,7 @@ def main() -> int:
             _sync_depth_timing_stats()
 
         def _reset_depth_state(label: str, *, carry_forward: bool = False) -> None:
-            from nav_pose_query import init_pose_cache  # noqa: WPS433
+            from nav_pose_query import init_pose_cache, invalidate_robot_pose  # noqa: WPS433
 
             depth_frame.invalidate(label)
             perceive_cycle["n"] = 0
@@ -986,6 +1030,17 @@ def main() -> int:
         recorder = MissionRecorder(mission_t0, registry.forbidden_zones)
 
         def _on_pose(pos_xy, now_t: float) -> None:
+            if nav_mode == "navmesh":
+                surface_dist_cm, _ = nearest_surface_distance_cm(
+                    pos_xy, surface_obstacles
+                )
+                recorder.record_pose(
+                    pos_xy,
+                    now=now_t,
+                    surface_dist_cm=surface_dist_cm,
+                    proximity_dist_cm=surface_dist_cm,
+                )
+                return
             from perception_standoff import nearest_environment_distance_cm  # noqa: WPS433
 
             forward_depth_cm = depth_frame.min_fwd_cm
@@ -1003,8 +1058,11 @@ def main() -> int:
 
         def _persist_mission_metrics(*, success: bool, mission_end: float) -> dict:
             nonlocal timing_summary, metrics
+            timing_legs = [leg1_timing, leg2_timing]
+            if nav_mode == "navmesh":
+                timing_legs = [navmesh_setup_timing, leg1_timing, leg2_timing]
             timing_summary = build_timing_summary(
-                legs=[leg1_timing, leg2_timing],
+                legs=timing_legs,
                 leg1_time_s=leg1_time_s,
                 leg2_time_s=leg2_time_s,
                 profile=nav_profile.name,
@@ -1027,6 +1085,32 @@ def main() -> int:
                 f"[Site20] timing_summary total_ms={timing_summary['totals']['total_ms']:.0f} "
                 f"leg1_s={timing_summary.get('leg1_time_s')} leg2_s={timing_summary.get('leg2_time_s')}"
             )
+            if nav_mode == "navmesh":
+                totals = timing_summary["totals"]
+                print(
+                    "[Site20] navmesh_timing_ms "
+                    f"rebuild={totals.get('nav_rebuild_ms', 0):.0f} "
+                    f"find_path={totals.get('nav_find_path_ms', 0):.0f} "
+                    f"project={totals.get('nav_project_ms', 0):.0f} "
+                    f"bounds={totals.get('nav_bounds_ms', 0):.0f} "
+                    f"register={totals.get('nav_register_ms', 0):.0f} "
+                    f"move={totals.get('move_ms', 0):.0f} "
+                    f"pose={totals.get('pose_query_ms', 0):.0f} "
+                    f"settle={totals.get('settle_ms', 0):.0f} "
+                    f"loop_oh={totals.get('loop_overhead_ms', 0):.0f} "
+                    f"accounted={totals.get('accounted_ms', 0):.0f} "
+                    f"residual={totals.get('residual_ms', 0):.0f}"
+                )
+                print(
+                    "[Site20] navmesh_timing_counts "
+                    f"rebuild={totals.get('nav_rebuild_count', 0)} "
+                    f"find_path={totals.get('nav_find_path_count', 0)} "
+                    f"project={totals.get('nav_project_count', 0)} "
+                    f"stuck_replan={totals.get('stuck_replan_count', 0)} "
+                    f"humanoid_replan={totals.get('humanoid_replan_count', 0)} "
+                    f"loop_iter={totals.get('nav_loop_iterations', 0)} "
+                    f"pose_cache_hits={totals.get('pose_cache_hits', 0)}"
+                )
             return metrics
 
         material_xy = _material_goal_xy(registry)
@@ -1043,49 +1127,70 @@ def main() -> int:
         }
 
         def _run_leg1() -> bool:
-            nonlocal ucv
+            nonlocal ucv, leg1_time_s
             layers.reset_l2()
             if l2_mode == "sight":
                 _reset_depth_state("leg1")
+            invalidate_robot_pose(nav_pose_cache, reason="leg1_start")
             active_nav_timing["acc"] = leg1_timing
             leg1_t0 = time.time()
-            leg1_ok = navigate_to_slot(
-                ucv,
-                layers,
-                registry.material_actor_name,
-                object_registry=object_registry,
-                perceive_fn=_perceive,
-                soft_reset_fn=_soft_reset_l2 if l2_mode == "sight" else None,
-                fallback_goal_local=material_local,
-                robot_name=robot_name,
-                nav_actor=nav_actor,
-                tolerance_cm=ARRIVE_TOLERANCE_CM,
-                label="to-material",
-                perception_interval_s=nav_profile.perception_interval_s,
-                max_total_steps=args.max_nav_steps,
-                trace=trace,
-                on_pose_sample=_on_pose,
-                nav_timing=leg1_timing,
-                extra_obstacle_positions_fn=lambda: _registry_obstacle_positions(
-                    exclude_slot=registry.material_actor_name
-                ),
-                forward_depth_cm_fn=_cached_forward_depth_cm,
-                depth_refresh_fn=(
-                    (lambda: _refresh_forward_depth_cm(in_perceive=False))
-                    if l2_mode == "sight"
-                    else None
-                ),
-                depth_invalidate_fn=_depth_invalidate_fn if l2_mode == "sight" else None,
-                on_move_cm_fn=_on_move_cm_fn if l2_mode == "sight" else None,
-                depth_prefetch_fn=_depth_prefetch_fn if l2_mode == "sight" else None,
-                on_nav_iter_start_fn=_begin_depth_nav_iter if l2_mode == "sight" else None,
-                pose_cache=nav_pose_cache,
-                nav_ctx=nav_ctx,
-                perceive_depth_refresh_fn=(
-                    _perceive_gate_depth_refresh if l2_mode == "sight" else None
-                ),
-            )
+            if nav_mode == "navmesh":
+                leg1_ok = navigate_to_slot_navmesh(
+                    ucv,
+                    registry.material_actor_name,
+                    object_registry=object_registry,
+                    nav_actor=nav_actor,
+                    robot_name=robot_name,
+                    profile=nav_profile,
+                    fallback_goal_local=material_local,
+                    tolerance_cm=ARRIVE_TOLERANCE_CM,
+                    label="to-material",
+                    perception_interval_s=nav_profile.perception_interval_s,
+                    max_total_steps=args.max_nav_steps,
+                    trace=trace,
+                    on_pose_sample=_on_pose,
+                    nav_timing=leg1_timing,
+                    pose_cache=nav_pose_cache,
+                )
+            else:
+                leg1_ok = navigate_to_slot(
+                    ucv,
+                    layers,
+                    registry.material_actor_name,
+                    object_registry=object_registry,
+                    perceive_fn=_perceive,
+                    soft_reset_fn=_soft_reset_l2 if l2_mode == "sight" else None,
+                    fallback_goal_local=material_local,
+                    robot_name=robot_name,
+                    nav_actor=nav_actor,
+                    tolerance_cm=ARRIVE_TOLERANCE_CM,
+                    label="to-material",
+                    perception_interval_s=nav_profile.perception_interval_s,
+                    max_total_steps=args.max_nav_steps,
+                    trace=trace,
+                    on_pose_sample=_on_pose,
+                    nav_timing=leg1_timing,
+                    extra_obstacle_positions_fn=lambda: _registry_obstacle_positions(
+                        exclude_slot=registry.material_actor_name
+                    ),
+                    forward_depth_cm_fn=_cached_forward_depth_cm,
+                    depth_refresh_fn=(
+                        (lambda: _refresh_forward_depth_cm(in_perceive=False))
+                        if l2_mode == "sight"
+                        else None
+                    ),
+                    depth_invalidate_fn=_depth_invalidate_fn if l2_mode == "sight" else None,
+                    on_move_cm_fn=_on_move_cm_fn if l2_mode == "sight" else None,
+                    depth_prefetch_fn=_depth_prefetch_fn if l2_mode == "sight" else None,
+                    on_nav_iter_start_fn=_begin_depth_nav_iter if l2_mode == "sight" else None,
+                    pose_cache=nav_pose_cache,
+                    nav_ctx=nav_ctx,
+                    perceive_depth_refresh_fn=(
+                        _perceive_gate_depth_refresh if l2_mode == "sight" else None
+                    ),
+                )
             mission_state["leg1_time_s"] = time.time() - leg1_t0
+            leg1_time_s = mission_state["leg1_time_s"]
             _sync_depth_timing_stats()
             print(f"[Site20] leg1_time_s={mission_state['leg1_time_s']:.1f}")
             if not leg1_ok:
@@ -1111,53 +1216,76 @@ def main() -> int:
             return True
 
         def _run_leg2() -> bool:
-            nonlocal ucv
+            nonlocal ucv, leg2_time_s
             if l2_mode == "camera" and _reset_l2_perceive_counter is not None:
                 _reset_l2_perceive_counter("leg2")
             if l2_mode == "sight":
                 _reset_depth_state("leg2", carry_forward=True)
             else:
                 layers.reset_l2()
+            invalidate_robot_pose(nav_pose_cache, reason="leg2_start")
             active_nav_timing["acc"] = leg2_timing
             leg2_t0 = time.time()
-            leg2_ok = deliver_to(
-                ucv,
-                layers,
-                registry.humanoid_actor_name,
-                object_registry=object_registry,
-                perceive_fn=_perceive,
-                soft_reset_fn=_soft_reset_l2 if l2_mode == "sight" else None,
-                fallback_goal_local=human_local,
-                robot_name=robot_name,
-                nav_actor=nav_actor,
-                tolerance_cm=ARRIVE_TOLERANCE_CM,
-                label="to-humanoid",
-                perception_interval_s=nav_profile.perception_interval_s,
-                max_total_steps=args.max_nav_steps,
-                trace=trace,
-                carry_sync_name=mission_state["carry_name"],
-                on_pose_sample=_on_pose,
-                nav_timing=leg2_timing,
-                extra_obstacle_positions_fn=lambda: _registry_obstacle_positions(
-                    exclude_slot=registry.humanoid_actor_name
-                ),
-                forward_depth_cm_fn=_cached_forward_depth_cm,
-                depth_refresh_fn=(
-                    (lambda: _refresh_forward_depth_cm(in_perceive=False))
-                    if l2_mode == "sight"
-                    else None
-                ),
-                depth_invalidate_fn=_depth_invalidate_fn if l2_mode == "sight" else None,
-                on_move_cm_fn=_on_move_cm_fn if l2_mode == "sight" else None,
-                depth_prefetch_fn=_depth_prefetch_fn if l2_mode == "sight" else None,
-                on_nav_iter_start_fn=_begin_depth_nav_iter if l2_mode == "sight" else None,
-                pose_cache=nav_pose_cache,
-                nav_ctx=nav_ctx,
-                perceive_depth_refresh_fn=(
-                    _perceive_gate_depth_refresh if l2_mode == "sight" else None
-                ),
-            )
+            if nav_mode == "navmesh":
+                leg2_ok = deliver_to_navmesh(
+                    ucv,
+                    registry.humanoid_actor_name,
+                    object_registry=object_registry,
+                    nav_actor=nav_actor,
+                    robot_name=robot_name,
+                    profile=nav_profile,
+                    fallback_goal_local=human_local,
+                    humanoid_actor_name=registry.humanoid_actor_name,
+                    tolerance_cm=ARRIVE_TOLERANCE_CM,
+                    label="to-humanoid",
+                    perception_interval_s=nav_profile.perception_interval_s,
+                    max_total_steps=args.max_nav_steps,
+                    trace=trace,
+                    carry_sync_name=mission_state["carry_name"],
+                    on_pose_sample=_on_pose,
+                    nav_timing=leg2_timing,
+                    pose_cache=nav_pose_cache,
+                )
+            else:
+                leg2_ok = deliver_to(
+                    ucv,
+                    layers,
+                    registry.humanoid_actor_name,
+                    object_registry=object_registry,
+                    perceive_fn=_perceive,
+                    soft_reset_fn=_soft_reset_l2 if l2_mode == "sight" else None,
+                    fallback_goal_local=human_local,
+                    robot_name=robot_name,
+                    nav_actor=nav_actor,
+                    tolerance_cm=ARRIVE_TOLERANCE_CM,
+                    label="to-humanoid",
+                    perception_interval_s=nav_profile.perception_interval_s,
+                    max_total_steps=args.max_nav_steps,
+                    trace=trace,
+                    carry_sync_name=mission_state["carry_name"],
+                    on_pose_sample=_on_pose,
+                    nav_timing=leg2_timing,
+                    extra_obstacle_positions_fn=lambda: _registry_obstacle_positions(
+                        exclude_slot=registry.humanoid_actor_name
+                    ),
+                    forward_depth_cm_fn=_cached_forward_depth_cm,
+                    depth_refresh_fn=(
+                        (lambda: _refresh_forward_depth_cm(in_perceive=False))
+                        if l2_mode == "sight"
+                        else None
+                    ),
+                    depth_invalidate_fn=_depth_invalidate_fn if l2_mode == "sight" else None,
+                    on_move_cm_fn=_on_move_cm_fn if l2_mode == "sight" else None,
+                    depth_prefetch_fn=_depth_prefetch_fn if l2_mode == "sight" else None,
+                    on_nav_iter_start_fn=_begin_depth_nav_iter if l2_mode == "sight" else None,
+                    pose_cache=nav_pose_cache,
+                    nav_ctx=nav_ctx,
+                    perceive_depth_refresh_fn=(
+                        _perceive_gate_depth_refresh if l2_mode == "sight" else None
+                    ),
+                )
             mission_state["leg2_time_s"] = time.time() - leg2_t0
+            leg2_time_s = mission_state["leg2_time_s"]
             _sync_depth_timing_stats()
             print(f"[Site20] leg2_time_s={mission_state['leg2_time_s']:.1f}")
             if not leg2_ok:
