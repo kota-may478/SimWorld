@@ -23,6 +23,17 @@ trials = plotFig_discover_trials(batchDir);
 
 %% Step 3: 試行を選んでデータ読み込み（layout_01 → trialIdx=1）
 trialIdx = 1;
+readyIdx = find([trials.ready], 1, 'first');
+if isempty(readyIdx)
+    reasons = strcat({trials.name}, ': ', {trials.skipReason});
+    error('plotFig:NoReadyTrial', 'No trial with costmap npz + trajectory json.\n%s', ...
+        strjoin(reasons, newline));
+end
+if ~trials(trialIdx).ready
+    fprintf('Trial %s skipped (%s); using %s instead.\n', ...
+        trials(trialIdx).name, trials(trialIdx).skipReason, trials(readyIdx).name);
+    trialIdx = readyIdx;
+end
 trial = trials(trialIdx);
 data = plotFig_load_costmap_data(trial.npzPath, trial.trajPath, registryPath);
 outPath = plotFig_default_output_path(trial.npzPath);
