@@ -51,9 +51,9 @@
       "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Dumpster.BP_Dumpster",
       "prop_type_id": "dumpster",
       "mask_color_rgb": [
-        145,
-        165,
-        87
+        87,
+        163,
+        232
       ],
       "cluster_id": "facilities_sw",
       "role": "waste_dumpster",
@@ -75,9 +75,9 @@
       "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_LightGenerator_01a.BP_LightGenerator_01a",
       "prop_type_id": "lightgenerator_01a",
       "mask_color_rgb": [
-        188,
-        36,
-        158
+        87,
+        163,
+        232
       ],
       "cluster_id": "equipment_sw",
       "role": "light_tower",
@@ -99,9 +99,9 @@
       "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_CableReel.BP_CableReel",
       "prop_type_id": "cablereel",
       "mask_color_rgb": [
-        41,
-        97,
-        39
+        87,
+        163,
+        232
       ],
       "cluster_id": "equipment_sw",
       "role": "cable_spool",
@@ -123,9 +123,9 @@
       "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Portapotty_01.BP_Portapotty_01",
       "prop_type_id": "portapotty_01",
       "mask_color_rgb": [
-        84,
-        158,
-        110
+        87,
+        163,
+        232
       ],
       "cluster_id": "facilities_sw",
       "role": "portable_toilet",
@@ -147,9 +147,9 @@
       "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_WaterTank_01a.BP_WaterTank_01a",
       "prop_type_id": "watertank_01a",
       "mask_color_rgb": [
-        127,
-        219,
-        181
+        87,
+        163,
+        232
       ],
       "cluster_id": "facilities_sw",
       "role": "water_tank",
@@ -171,9 +171,9 @@
       "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Barrel_01.BP_Barrel_01",
       "prop_type_id": "barrel_01",
       "mask_color_rgb": [
-        170,
-        90,
-        62
+        87,
+        163,
+        232
       ],
       "cluster_id": "mid_site",
       "role": "barrel",
@@ -195,9 +195,9 @@
       "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Drywall_01a.BP_Drywall_01a",
       "prop_type_id": "drywall_01a",
       "mask_color_rgb": [
-        213,
-        151,
-        133
+        87,
+        163,
+        232
       ],
       "cluster_id": "mid_site",
       "role": "drywall",
@@ -210,7 +210,7 @@
       "world_xyz_cm": [
         -450.0,
         -1100.0,
-        6455.0
+        6490.0
       ]
     },
     {
@@ -219,9 +219,9 @@
       "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_CinderStack_01a.BP_CinderStack_01a",
       "prop_type_id": "cinderstack_01a",
       "mask_color_rgb": [
-        66,
-        212,
-        204
+        87,
+        163,
+        232
       ],
       "cluster_id": "mid_site",
       "role": "cinder_blocks",
@@ -243,9 +243,9 @@
       "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_CinderStack_01a.BP_CinderStack_01a",
       "prop_type_id": "cinderstack_01a",
       "mask_color_rgb": [
-        109,
-        83,
-        85
+        87,
+        163,
+        232
       ],
       "cluster_id": "mid_site",
       "role": "cinder_blocks",
@@ -267,9 +267,9 @@
       "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_woodenpalette_01.BP_woodenpalette_01",
       "prop_type_id": "woodenpalette_01",
       "mask_color_rgb": [
-        152,
-        144,
-        156
+        87,
+        163,
+        232
       ],
       "cluster_id": "mid_site",
       "role": "pallet",
@@ -282,7 +282,7 @@
       "world_xyz_cm": [
         -700.0,
         -1000.0,
-        6490.0
+        6485.0
       ]
     },
     {
@@ -291,9 +291,9 @@
       "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_ConstructionPylons_01d.BP_ConstructionPylons_01d",
       "prop_type_id": "constructionpylons_01d",
       "mask_color_rgb": [
-        195,
-        205,
-        37
+        87,
+        163,
+        232
       ],
       "cluster_id": "mid_site",
       "role": "safety_pylon",
@@ -315,9 +315,9 @@
       "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_woodenpalette_01.BP_woodenpalette_01",
       "prop_type_id": "woodenpalette_01",
       "mask_color_rgb": [
-        48,
-        76,
-        108
+        87,
+        163,
+        232
       ],
       "cluster_id": "material_yard",
       "role": "pallet",
@@ -339,9 +339,9 @@
       "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Boxes_03a.BP_Boxes_03a",
       "prop_type_id": "boxes_03a",
       "mask_color_rgb": [
-        91,
-        137,
-        179
+        87,
+        163,
+        232
       ],
       "cluster_id": "material_yard",
       "role": "cardboard_boxes",
@@ -363,9 +363,9 @@
       "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_BrickPaletteStack_01a.BP_BrickPaletteStack_01a",
       "prop_type_id": "brickpalettestack_01a",
       "mask_color_rgb": [
-        134,
-        198,
-        60
+        87,
+        163,
+        232
       ],
       "cluster_id": "material_yard",
       "role": "brick_pallet",
@@ -387,9 +387,9 @@
       "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_ConcreteBag_01a.BP_ConcreteBag_01a",
       "prop_type_id": "concretebag_01a",
       "mask_color_rgb": [
-        177,
-        69,
-        131
+        87,
+        163,
+        232
       ],
       "cluster_id": "material_yard",
       "role": "bagged_concrete",
@@ -411,9 +411,9 @@
       "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Rebar_01a.BP_Rebar_01a",
       "prop_type_id": "rebar_01a",
       "mask_color_rgb": [
-        220,
-        130,
-        202
+        87,
+        163,
+        232
       ],
       "cluster_id": "material_yard",
       "role": "rebar_bundle",
@@ -459,9 +459,9 @@
       "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_03b.BP_Roadblock_03b",
       "prop_type_id": "roadblock_03b",
       "mask_color_rgb": [
-        116,
-        62,
-        154
+        87,
+        163,
+        232
       ],
       "cluster_id": "no_entry_roadblock",
       "role": "roadblock_south",
@@ -483,9 +483,9 @@
       "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_03b.BP_Roadblock_03b",
       "prop_type_id": "roadblock_03b",
       "mask_color_rgb": [
-        159,
-        123,
-        35
+        87,
+        163,
+        232
       ],
       "cluster_id": "no_entry_roadblock",
       "role": "roadblock_north",
@@ -507,9 +507,9 @@
       "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_03b.BP_Roadblock_03b",
       "prop_type_id": "roadblock_03b",
       "mask_color_rgb": [
-        202,
-        184,
-        106
+        87,
+        163,
+        232
       ],
       "cluster_id": "no_entry_roadblock",
       "role": "roadblock_west",
@@ -531,9 +531,9 @@
       "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_03b.BP_Roadblock_03b",
       "prop_type_id": "roadblock_03b",
       "mask_color_rgb": [
-        55,
-        55,
-        177
+        87,
+        163,
+        232
       ],
       "cluster_id": "no_entry_roadblock",
       "role": "roadblock_east",
@@ -555,9 +555,9 @@
       "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_03b.BP_Roadblock_03b",
       "prop_type_id": "roadblock_03b",
       "mask_color_rgb": [
-        98,
-        116,
-        58
+        87,
+        163,
+        232
       ],
       "cluster_id": "no_entry_roadblock",
       "role": "roadblock_south",
@@ -579,9 +579,9 @@
       "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_03b.BP_Roadblock_03b",
       "prop_type_id": "roadblock_03b",
       "mask_color_rgb": [
-        141,
-        177,
-        129
+        87,
+        163,
+        232
       ],
       "cluster_id": "no_entry_roadblock",
       "role": "roadblock_north",
@@ -603,9 +603,9 @@
       "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_03b.BP_Roadblock_03b",
       "prop_type_id": "roadblock_03b",
       "mask_color_rgb": [
-        184,
-        48,
-        200
+        87,
+        163,
+        232
       ],
       "cluster_id": "no_entry_roadblock",
       "role": "roadblock_west",
@@ -627,9 +627,9 @@
       "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_03b.BP_Roadblock_03b",
       "prop_type_id": "roadblock_03b",
       "mask_color_rgb": [
-        37,
-        109,
-        81
+        87,
+        163,
+        232
       ],
       "cluster_id": "no_entry_roadblock",
       "role": "roadblock_east",
@@ -651,9 +651,9 @@
       "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_03b.BP_Roadblock_03b",
       "prop_type_id": "roadblock_03b",
       "mask_color_rgb": [
-        80,
-        170,
-        152
+        87,
+        163,
+        232
       ],
       "cluster_id": "no_entry_roadblock",
       "role": "roadblock_south",
@@ -675,9 +675,9 @@
       "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_03b.BP_Roadblock_03b",
       "prop_type_id": "roadblock_03b",
       "mask_color_rgb": [
-        123,
-        41,
-        223
+        87,
+        163,
+        232
       ],
       "cluster_id": "no_entry_roadblock",
       "role": "roadblock_north",
@@ -699,9 +699,9 @@
       "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_03b.BP_Roadblock_03b",
       "prop_type_id": "roadblock_03b",
       "mask_color_rgb": [
-        166,
-        102,
-        104
+        87,
+        163,
+        232
       ],
       "cluster_id": "no_entry_roadblock",
       "role": "roadblock_west",
@@ -723,9 +723,9 @@
       "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_03b.BP_Roadblock_03b",
       "prop_type_id": "roadblock_03b",
       "mask_color_rgb": [
-        209,
+        87,
         163,
-        175
+        232
       ],
       "cluster_id": "no_entry_roadblock",
       "role": "roadblock_east",
