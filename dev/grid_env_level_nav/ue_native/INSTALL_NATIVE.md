@@ -8,6 +8,8 @@ Phase 2 の 2-1 で追加する C++ ファイルです。UE プロジェクト�
 | --- | --- |
 | `dev/grid_env_level_nav/ue_native/NavQueryService.h` | `Source/SimWorld/Public/NavQueryService.h` |
 | `dev/grid_env_level_nav/ue_native/NavQueryService.cpp` | `Source/SimWorld/Private/NavQueryService.cpp` |
+| `dev/grid_env_level_nav/ue_native/SpotDogNavController.h` | `Source/SimWorld/Public/SpotDogNavController.h` |
+| `dev/grid_env_level_nav/ue_native/SpotDogNavController.cpp` | `Source/SimWorld/Private/SpotDogNavController.cpp` |
 
 モジュール名が `SimWorld` でない場合はパスを読み替えてください。
 
@@ -18,6 +20,8 @@ Phase 2 の 2-1 で追加する C++ ファイルです。UE プロジェクト�
 ```csharp
 "NavigationSystem",
 "AIModule",
+"Json",          // Phase 5 SpotDogNavController (NavFollowPathJson)
+"JsonUtilities",
 ```
 
 ## 3. Visual Studio で Rebuild
