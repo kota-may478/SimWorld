@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "seed": 20260639,
+  "seed": 20260619,
   "prop_count": 29,
   "region_x_max_cm": 2000.0,
   "region_y_max_cm": 2000.0,
@@ -22,13 +22,13 @@
         87
       ],
       "local_xy_cm": [
-        628.5832860899557,
-        788.9340045201388
+        400.0,
+        450.0
       ],
       "world_xyz_cm": [
-        -211.066,
-        -1571.417,
-        6455.0
+        -550.0,
+        -1800.0,
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -43,22 +43,22 @@
     {
       "slot_id": "site20_prop_001",
       "catalog_index": 1,
-      "prop_type_id": "trafficbarrier_01",
-      "bp_name": "BP_Trafficbarrier_01",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Trafficbarrier_01.BP_Trafficbarrier_01",
+      "prop_type_id": "lightgenerator_01a",
+      "bp_name": "BP_LightGenerator_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_LightGenerator_01a.BP_LightGenerator_01a",
       "mask_color_rgb": [
         188,
         36,
         158
       ],
       "local_xy_cm": [
-        677.7085748500588,
-        953.8182163710735
+        550.0,
+        600.0
       ],
       "world_xyz_cm": [
-        -46.182,
-        -1522.291,
-        6455.0
+        -400.0,
+        -1650.0,
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -73,22 +73,22 @@
     {
       "slot_id": "site20_prop_002",
       "catalog_index": 2,
-      "prop_type_id": "watertank_01a",
-      "bp_name": "BP_WaterTank_01a",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_WaterTank_01a.BP_WaterTank_01a",
+      "prop_type_id": "cablereel",
+      "bp_name": "BP_CableReel",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_CableReel.BP_CableReel",
       "mask_color_rgb": [
         41,
         97,
         39
       ],
       "local_xy_cm": [
-        309.3816087685929,
-        502.74844679401167
+        650.0,
+        400.0
       ],
       "world_xyz_cm": [
-        -497.252,
-        -1890.618,
-        6455.0
+        -600.0,
+        -1550.0,
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -103,22 +103,22 @@
     {
       "slot_id": "site20_prop_003",
       "catalog_index": 3,
-      "prop_type_id": "portapotty_02",
-      "bp_name": "BP_Portapotty_02",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Portapotty_02.BP_Portapotty_02",
+      "prop_type_id": "portapotty_01",
+      "bp_name": "BP_Portapotty_01",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Portapotty_01.BP_Portapotty_01",
       "mask_color_rgb": [
         84,
         158,
         110
       ],
       "local_xy_cm": [
-        649.7289875882288,
-        332.94978809184005
+        350.0,
+        750.0
       ],
       "world_xyz_cm": [
-        -667.05,
-        -1550.271,
-        6455.0
+        -250.0,
+        -1850.0,
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -133,22 +133,22 @@
     {
       "slot_id": "site20_prop_004",
       "catalog_index": 4,
-      "prop_type_id": "tarp_02",
-      "bp_name": "BP_Tarp_02",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Tarp_02.BP_Tarp_02",
+      "prop_type_id": "watertank_01a",
+      "bp_name": "BP_WaterTank_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_WaterTank_01a.BP_WaterTank_01a",
       "mask_color_rgb": [
         127,
         219,
         181
       ],
       "local_xy_cm": [
-        455.1329949417137,
-        966.0659898735101
+        500.0,
+        850.0
       ],
       "world_xyz_cm": [
-        -33.934,
-        -1744.867,
-        6455.0
+        -150.0,
+        -1700.0,
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -172,13 +172,13 @@
         62
       ],
       "local_xy_cm": [
-        1007.1740403086494,
-        751.2396479890008
+        900.0,
+        700.0
       ],
       "world_xyz_cm": [
-        -248.76,
-        -1192.826,
-        6455.0
+        -300.0,
+        -1300.0,
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -193,21 +193,21 @@
     {
       "slot_id": "site20_prop_006",
       "catalog_index": 6,
-      "prop_type_id": "tarp_03",
-      "bp_name": "BP_Tarp_03",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Tarp_03.BP_Tarp_03",
+      "prop_type_id": "drywall_01a",
+      "bp_name": "BP_Drywall_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Drywall_01a.BP_Drywall_01a",
       "mask_color_rgb": [
         213,
         151,
         133
       ],
       "local_xy_cm": [
-        1181.9038748306227,
-        286.9489648907515
+        1100.0,
+        550.0
       ],
       "world_xyz_cm": [
-        -713.051,
-        -1018.096,
+        -450.0,
+        -1100.0,
         6455.0
       ],
       "visit_order": null,
@@ -232,13 +232,13 @@
         204
       ],
       "local_xy_cm": [
-        1361.8818999008859,
-        461.9998789935746
+        750.0,
+        1100.0
       ],
       "world_xyz_cm": [
-        -538.0,
-        -838.118,
-        6455.0
+        100.0,
+        -1450.0,
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -253,22 +253,22 @@
     {
       "slot_id": "site20_prop_008",
       "catalog_index": 8,
-      "prop_type_id": "drywall_01a",
-      "bp_name": "BP_Drywall_01a",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Drywall_01a.BP_Drywall_01a",
+      "prop_type_id": "cinderstack_01a",
+      "bp_name": "BP_CinderStack_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_CinderStack_01a.BP_CinderStack_01a",
       "mask_color_rgb": [
         109,
         83,
         85
       ],
       "local_xy_cm": [
-        853.532049609852,
-        442.9467794945966
+        850.0,
+        1200.0
       ],
       "world_xyz_cm": [
-        -557.053,
-        -1346.468,
-        6455.0
+        200.0,
+        -1350.0,
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -283,22 +283,22 @@
     {
       "slot_id": "site20_prop_009",
       "catalog_index": 9,
-      "prop_type_id": "cinderstack_01b",
-      "bp_name": "BP_CinderStack_01b",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_CinderStack_01b.BP_CinderStack_01b",
+      "prop_type_id": "woodenpalette_01",
+      "bp_name": "BP_woodenpalette_01",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_woodenpalette_01.BP_woodenpalette_01",
       "mask_color_rgb": [
         152,
         144,
         156
       ],
       "local_xy_cm": [
-        1104.474475018648,
-        1306.9230819559957
+        1200.0,
+        300.0
       ],
       "world_xyz_cm": [
-        306.923,
-        -1095.526,
-        6455.0
+        -700.0,
+        -1000.0,
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -313,22 +313,22 @@
     {
       "slot_id": "site20_prop_010",
       "catalog_index": 10,
-      "prop_type_id": "cinderstack_02a",
-      "bp_name": "BP_CinderStack_02a",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_CinderStack_02a.BP_CinderStack_02a",
+      "prop_type_id": "constructionpylons_01d",
+      "bp_name": "BP_ConstructionPylons_01d",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_ConstructionPylons_01d.BP_ConstructionPylons_01d",
       "mask_color_rgb": [
         195,
         205,
         37
       ],
       "local_xy_cm": [
-        987.0590628046525,
-        1256.745217389751
+        1000.0,
+        950.0
       ],
       "world_xyz_cm": [
-        256.745,
-        -1212.941,
-        6455.0
+        -50.0,
+        -1200.0,
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -343,22 +343,22 @@
     {
       "slot_id": "site20_prop_011",
       "catalog_index": 11,
-      "prop_type_id": "boxes_03a",
-      "bp_name": "BP_Boxes_03a",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Boxes_03a.BP_Boxes_03a",
+      "prop_type_id": "woodenpalette_01",
+      "bp_name": "BP_woodenpalette_01",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_woodenpalette_01.BP_woodenpalette_01",
       "mask_color_rgb": [
         48,
         76,
         108
       ],
       "local_xy_cm": [
-        1763.0839174441437,
-        1894.7314721671269
+        1720.0,
+        1780.0
       ],
       "world_xyz_cm": [
-        894.731,
-        -436.916,
-        6455.0
+        780.0,
+        -480.0,
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -373,9 +373,9 @@
     {
       "slot_id": "site20_prop_012",
       "catalog_index": 12,
-      "prop_type_id": "concretebag_02a",
-      "bp_name": "BP_ConcreteBag_02a",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_ConcreteBag_02a.BP_ConcreteBag_02a",
+      "prop_type_id": "boxes_03a",
+      "bp_name": "BP_Boxes_03a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Boxes_03a.BP_Boxes_03a",
       "mask_color_rgb": [
         91,
         137,
@@ -383,12 +383,12 @@
       ],
       "local_xy_cm": [
         1780.0,
-        1910.0
+        1920.0
       ],
       "world_xyz_cm": [
-        910.0,
+        920.0,
         -420.0,
-        6455.0
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -403,9 +403,9 @@
     {
       "slot_id": "site20_prop_013",
       "catalog_index": 13,
-      "prop_type_id": "boxes_03a",
-      "bp_name": "BP_Boxes_03a",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Boxes_03a.BP_Boxes_03a",
+      "prop_type_id": "brickpalettestack_01a",
+      "bp_name": "BP_BrickPaletteStack_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_BrickPaletteStack_01a.BP_BrickPaletteStack_01a",
       "mask_color_rgb": [
         134,
         198,
@@ -413,12 +413,12 @@
       ],
       "local_xy_cm": [
         1920.0,
-        1757.3342162573872
+        1720.0
       ],
       "world_xyz_cm": [
-        757.334,
+        720.0,
         -280.0,
-        6455.0
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -433,22 +433,22 @@
     {
       "slot_id": "site20_prop_014",
       "catalog_index": 14,
-      "prop_type_id": "woodenpalette_01",
-      "bp_name": "BP_woodenpalette_01",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_woodenpalette_01.BP_woodenpalette_01",
+      "prop_type_id": "concretebag_01a",
+      "bp_name": "BP_ConcreteBag_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_ConcreteBag_01a.BP_ConcreteBag_01a",
       "mask_color_rgb": [
         177,
         69,
         131
       ],
       "local_xy_cm": [
-        1860.0,
-        1780.0
+        1680.0,
+        1880.0
       ],
       "world_xyz_cm": [
-        780.0,
-        -340.0,
-        6455.0
+        880.0,
+        -520.0,
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -463,22 +463,22 @@
     {
       "slot_id": "site20_prop_015",
       "catalog_index": 15,
-      "prop_type_id": "boxes_03a",
-      "bp_name": "BP_Boxes_03a",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Boxes_03a.BP_Boxes_03a",
+      "prop_type_id": "rebar_01a",
+      "bp_name": "BP_Rebar_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Rebar_01a.BP_Rebar_01a",
       "mask_color_rgb": [
         220,
         130,
         202
       ],
       "local_xy_cm": [
-        1910.0,
-        1720.0
+        1900.0,
+        1900.0
       ],
       "world_xyz_cm": [
-        720.0,
-        -290.0,
-        6455.0
+        900.0,
+        -300.0,
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -493,9 +493,9 @@
     {
       "slot_id": "site20_material",
       "catalog_index": 16,
-      "prop_type_id": "brickpalettestack_01c",
-      "bp_name": "BP_BrickPaletteStack_01c",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_BrickPaletteStack_01c.BP_BrickPaletteStack_01c",
+      "prop_type_id": "crate_01a",
+      "bp_name": "BP_Crate_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Crate_01a.BP_Crate_01a",
       "mask_color_rgb": [
         73,
         191,
@@ -506,7 +506,7 @@
         1850.0
       ],
       "world_xyz_cm": [
-        850.0,
+        840.0,
         -350.0,
         6455.0
       ],
@@ -532,13 +532,13 @@
         154
       ],
       "local_xy_cm": [
-        1216.641854357109,
-        755.9724441542703
+        1330.0,
+        910.0
       ],
       "world_xyz_cm": [
-        -244.028,
-        -983.358,
-        6455.0
+        -90.0,
+        -870.0,
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -562,13 +562,13 @@
         35
       ],
       "local_xy_cm": [
-        1216.641854357109,
-        1115.9724441542703
+        1330.0,
+        1270.0
       ],
       "world_xyz_cm": [
-        115.972,
-        -983.358,
-        6455.0
+        270.0,
+        -870.0,
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -592,13 +592,13 @@
         106
       ],
       "local_xy_cm": [
-        1156.641854357109,
-        815.9724441542703
+        1270.0,
+        970.0
       ],
       "world_xyz_cm": [
-        -184.028,
-        -1043.358,
-        6455.0
+        -30.0,
+        -930.0,
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -622,13 +622,13 @@
         177
       ],
       "local_xy_cm": [
-        1516.641854357109,
-        815.9724441542703
+        1630.0,
+        970.0
       ],
       "world_xyz_cm": [
-        -184.028,
-        -683.358,
-        6455.0
+        -30.0,
+        -570.0,
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -652,13 +652,13 @@
         58
       ],
       "local_xy_cm": [
-        1336.641854357109,
-        755.9724441542703
+        1450.0,
+        910.0
       ],
       "world_xyz_cm": [
-        -244.028,
-        -863.358,
-        6455.0
+        -90.0,
+        -750.0,
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -682,13 +682,13 @@
         129
       ],
       "local_xy_cm": [
-        1336.641854357109,
-        1115.9724441542703
+        1450.0,
+        1270.0
       ],
       "world_xyz_cm": [
-        115.972,
-        -863.358,
-        6455.0
+        270.0,
+        -750.0,
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -712,13 +712,13 @@
         200
       ],
       "local_xy_cm": [
-        1156.641854357109,
-        935.9724441542703
+        1270.0,
+        1090.0
       ],
       "world_xyz_cm": [
-        -64.028,
-        -1043.358,
-        6455.0
+        90.0,
+        -930.0,
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -742,13 +742,13 @@
         81
       ],
       "local_xy_cm": [
-        1516.641854357109,
-        935.9724441542703
+        1630.0,
+        1090.0
       ],
       "world_xyz_cm": [
-        -64.028,
-        -683.358,
-        6455.0
+        90.0,
+        -570.0,
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -772,13 +772,13 @@
         152
       ],
       "local_xy_cm": [
-        1456.641854357109,
-        755.9724441542703
+        1570.0,
+        910.0
       ],
       "world_xyz_cm": [
-        -244.028,
-        -743.358,
-        6455.0
+        -90.0,
+        -630.0,
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -802,13 +802,13 @@
         223
       ],
       "local_xy_cm": [
-        1456.641854357109,
-        1115.9724441542703
+        1570.0,
+        1270.0
       ],
       "world_xyz_cm": [
-        115.972,
-        -743.358,
-        6455.0
+        270.0,
+        -630.0,
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -832,13 +832,13 @@
         104
       ],
       "local_xy_cm": [
-        1156.641854357109,
-        1055.9724441542703
+        1270.0,
+        1210.0
       ],
       "world_xyz_cm": [
-        55.972,
-        -1043.358,
-        6455.0
+        210.0,
+        -930.0,
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -862,13 +862,13 @@
         175
       ],
       "local_xy_cm": [
-        1516.641854357109,
-        1055.9724441542703
+        1630.0,
+        1210.0
       ],
       "world_xyz_cm": [
-        55.972,
-        -683.358,
-        6455.0
+        210.0,
+        -570.0,
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
