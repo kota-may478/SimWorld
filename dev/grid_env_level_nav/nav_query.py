@@ -63,10 +63,10 @@ def parse_nav_json(raw_response: object) -> dict:
     return {}
 
 
-def _vbp_nav(ucv, actor: str, method: str, *args: float) -> dict:
+def _vbp_nav(ucv, actor: str, method: str, *args: object) -> dict:
     parts = " ".join(str(a) for a in args)
     cmd = f"vbp {actor} {method} {parts}".strip()
-    raw = geh._ue_request(ucv, cmd, timeout_s=15.0)
+    raw = geh._ue_request(ucv, cmd, timeout_s=30.0)
     if raw is None:
         return {"error": "ue_request_failed"}
     try:
@@ -75,19 +75,83 @@ def _vbp_nav(ucv, actor: str, method: str, *args: float) -> dict:
         return parse_nav_json(raw)
 
 
-def nav_project_point(ucv, actor: str, x_cm: float, y_cm: float, z_cm: float) -> dict:
-    return _vbp_nav(ucv, actor, "NavProjectPoint", x_cm, y_cm, z_cm)
-
-
 def nav_find_path(
     ucv,
     actor: str,
     start_xyz: WorldXYZ,
     end_xyz: WorldXYZ,
+    *,
+    agent_radius_cm: Optional[float] = None,
 ) -> dict:
     sx, sy, sz = start_xyz
     ex, ey, ez = end_xyz
+    if agent_radius_cm is not None:
+        return _vbp_nav(
+            ucv,
+            actor,
+            "NavFindPathWithRadius",
+            sx,
+            sy,
+            sz,
+            ex,
+            ey,
+            ez,
+            agent_radius_cm,
+        )
     return _vbp_nav(ucv, actor, "NavFindPath", sx, sy, sz, ex, ey, ez)
+
+
+def get_actor_bounds(ucv, actor: str, target_actor: str) -> dict:
+    """Return {ok, cx, cy, cz, half_x, half_y, half_z} for target_actor."""
+    return _vbp_nav(ucv, actor, "GetActorBoundsJson", target_actor)
+
+
+def nav_register_box_obstacle(
+    ucv,
+    actor: str,
+    obstacle_id: str,
+    center_xyz: WorldXYZ,
+    half_extents_xyz: WorldXYZ,
+) -> dict:
+    cx, cy, cz = center_xyz
+    hx, hy, hz = half_extents_xyz
+    return _vbp_nav(
+        ucv,
+        actor,
+        "NavRegisterBoxObstacle",
+        obstacle_id,
+        cx,
+        cy,
+        cz,
+        hx,
+        hy,
+        hz,
+    )
+
+
+def nav_clear_box_obstacles(ucv, actor: str) -> dict:
+    return _vbp_nav(ucv, actor, "NavClearBoxObstacles")
+
+
+def nav_rebuild(ucv, actor: str) -> dict:
+    return _vbp_nav(ucv, actor, "NavRebuild")
+
+
+def nav_runtime_api_available(ucv, actor: str) -> bool:
+    """True when extended NavQueryService API (GetActorBoundsJson) is compiled in."""
+    raw = get_actor_bounds(ucv, actor, "__nav_api_probe__")
+    if raw.get("ok"):
+        return True
+    err = str(raw.get("error", "")).lower()
+    if "actor_not_found" in err:
+        return True
+    if "not found" in err or "unknown" in err or "argument invalid" in err:
+        return False
+    return False
+
+
+def nav_project_point(ucv, actor: str, x_cm: float, y_cm: float, z_cm: float) -> dict:
+    return _vbp_nav(ucv, actor, "NavProjectPoint", x_cm, y_cm, z_cm)
 
 
 def nav_is_reachable(
