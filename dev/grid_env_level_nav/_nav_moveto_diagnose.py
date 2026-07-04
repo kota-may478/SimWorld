@@ -40,10 +40,10 @@ def _tail_spotdog_log() -> list[str]:
 
 
 def _test_rotate_vbp(ucv, robot: str) -> tuple[bool, float]:
-    """Return (yaw_changed, delta_deg) for a short Rotate_Angle probe."""
+    """Return (yaw_changed, delta_deg) for NavExecRotate (matches C++ controller path)."""
     yaw0 = get_yaw(ucv, robot)
-    geh._ue_request(ucv, f"vbp {robot} Rotate_Angle 1.0 30 -1", timeout_s=10.0)
-    time.sleep(1.2)
+    geh._ue_request(ucv, f"vbp {robot} NavExecRotate 1.0 30 -1", timeout_s=10.0)
+    time.sleep(1.5)
     yaw1 = get_yaw(ucv, robot)
     return abs(yaw1 - yaw0) >= 3.0, yaw1 - yaw0
 
@@ -65,17 +65,19 @@ def main() -> int:
 
     rotate_ok, rotate_delta = _test_rotate_vbp(ucv, ROBOT)
     print(
-        f"Rotate_Angle vbp probe: {'OK' if rotate_ok else 'BROKEN'} "
+        f"NavExecRotate vbp probe: {'OK' if rotate_ok else 'BROKEN'} "
         f"(delta={rotate_delta:.1f}°)"
     )
     if not rotate_ok:
         print(
-            "  → Rotate_Angle BP fails (Output Log: Divide by zero / SetTimer zero). "
-            "Rebuild with latest SpotDogNavController (bUseDirectYawRotation)."
+            "  → NavExecRotate BP fails. Check Step 1-1-C in NAVMESH_PHASE5_VISUAL_STAGE1.md."
         )
 
     nm.nav_stop_move(ucv, ROBOT)
-    time.sleep(0.2)
+    time.sleep(0.5)
+    loc0 = ucv.get_location(ROBOT)
+    yaw0 = get_yaw(ucv, ROBOT)
+    print(f"after stop+reset loc=({loc0[0]:.0f},{loc0[1]:.0f}) yaw={yaw0:.1f}")
     _, nav_actor = nq.ensure_nav_query_service(
         ucv, probe_xyz=(0.0, 0.0, lc.NAV_PROJECT_PROBE_Z_CM)
     )
