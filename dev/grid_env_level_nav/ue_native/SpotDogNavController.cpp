@@ -8,6 +8,7 @@
 #include "NavigationSystem.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
+#include "Misc/OutputDeviceNull.h"
 #include "UObject/UnrealType.h"
 
 ASpotDogNavController::ASpotDogNavController()
@@ -34,21 +35,9 @@ void ASpotDogNavController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 
 void ASpotDogNavController::StartFollowTimer()
 {
-	UWorld* World = GetWorld();
-	if (!World)
-	{
-		return;
-	}
-	if (FollowTimerHandle.IsValid())
-	{
-		return;
-	}
-	World->GetTimerManager().SetTimer(
-		FollowTimerHandle,
-		this,
-		&ASpotDogNavController::TickFollowPath,
-		0.05f,
-		true);
+	// Follow loop is driven by AAIController::Tick only. Do not register a second
+	// timer callback — duplicate TickFollowPath calls interrupt BP Move_Speed timers.
+	SetActorTickEnabled(true);
 }
 
 void ASpotDogNavController::StopFollowTimer()
@@ -114,35 +103,20 @@ bool ASpotDogNavController::InvokePawnFloatFloatInt(
 	{
 		return false;
 	}
-	UFunction* Func = InPawn->FindFunction(FunctionName);
-	if (!Func)
+	if (!InPawn->FindFunction(FunctionName))
 	{
 		return false;
 	}
-	uint8* Params = static_cast<uint8*>(FMemory_Alloca(Func->ParmsSize));
-	FMemory::Memzero(Params, Func->ParmsSize);
-	int32 FloatIdx = 0;
-	for (TFieldIterator<FProperty> It(Func); It; ++It)
-	{
-		FProperty* Prop = *It;
-		if (!Prop->HasAnyPropertyFlags(CPF_Parm) || Prop->HasAnyPropertyFlags(CPF_ReturnParm))
-		{
-			continue;
-		}
-		if (FFloatProperty* FloatProp = CastField<FFloatProperty>(Prop))
-		{
-			const float Value = (FloatIdx == 0) ? FirstFloat : SecondFloat;
-			FloatProp->SetPropertyValue_InContainer(Params, Value);
-			FloatIdx++;
-			continue;
-		}
-		if (FIntProperty* IntProp = CastField<FIntProperty>(Prop))
-		{
-			IntProp->SetPropertyValue_InContainer(Params, IntArg);
-		}
-	}
-	InPawn->ProcessEvent(Func, Params);
-	return true;
+
+	// Match UnrealCV vbp: CallFunctionByNameWithArguments parses args in BP pin order.
+	const FString Cmd = FString::Printf(
+		TEXT("%s %f %f %d"),
+		*FunctionName.ToString(),
+		FirstFloat,
+		SecondFloat,
+		IntArg);
+	FOutputDeviceNull NullAr;
+	return InPawn->CallFunctionByNameWithArguments(*Cmd, NullAr, nullptr, true);
 }
 
 bool ASpotDogNavController::ApplyDirectYawDelta(APawn* InPawn, float SignedAngleDeg) const
@@ -182,8 +156,13 @@ bool ASpotDogNavController::SnapPawnToNavMesh(APawn* InPawn) const
 		}
 	}
 
+	const FVector Current = InPawn->GetActorLocation();
+	const FVector Snapped(
+		NavLoc.Location.X,
+		NavLoc.Location.Y,
+		Current.Z);
 	InPawn->SetActorLocation(
-		NavLoc.Location,
+		Snapped,
 		false,
 		nullptr,
 		ETeleportType::TeleportPhysics);
@@ -331,6 +310,89 @@ void ASpotDogNavController::MarkFailed(const FString& Reason)
 	UE_LOG(LogTemp, Warning, TEXT("SpotDogNavController failed: %s"), *Reason);
 }
 
+float ASpotDogNavController::ComputeCommandWaitSec(
+	ECommandKind Kind,
+	float Duration) const
+{
+	float WaitSec = Duration;
+	if (Kind == ECommandKind::Rotate && !bUseDirectYawRotation)
+	{
+		WaitSec += BpMotionGraceSec;
+	}
+	else if (Kind == ECommandKind::Move && !bUseDirectTranslation)
+	{
+		WaitSec += BpMotionGraceSec;
+	}
+	return WaitSec;
+}
+
+bool ASpotDogNavController::ShouldSkipStuckCheckForCommand(ECommandKind Kind) const
+{
+	if (!bSkipStuckCheckForBpMotion)
+	{
+		return false;
+	}
+	return Kind == ECommandKind::Move && !bUseDirectTranslation;
+}
+
+bool ASpotDogNavController::ShouldWaitForBpProgress(ECommandKind Kind) const
+{
+	if (Kind == ECommandKind::Rotate)
+	{
+		return !bUseDirectYawRotation;
+	}
+	if (Kind == ECommandKind::Move)
+	{
+		return !bUseDirectTranslation;
+	}
+	return false;
+}
+
+bool ASpotDogNavController::HasBpCommandProgress(
+	const APawn* InPawn,
+	ECommandKind Kind) const
+{
+	if (!IsValid(InPawn))
+	{
+		return false;
+	}
+
+	if (Kind == ECommandKind::Rotate)
+	{
+		const float YawDelta = FMath::Abs(
+			NormalizeAngleDeg(InPawn->GetActorRotation().Yaw - CommandStartYawDeg));
+		return YawDelta >= 2.0f;
+	}
+
+	if (Kind == ECommandKind::Move)
+	{
+		return Dist2D(InPawn->GetActorLocation(), CommandStartLocation)
+			>= StuckMoveThresholdCm;
+	}
+
+	return false;
+}
+
+void ASpotDogNavController::BeginActiveCommand(ECommandKind Kind, float Duration)
+{
+	APawn* ControlledPawn = GetPawn();
+	const UWorld* World = GetWorld();
+	const float Now = World ? World->GetTimeSeconds() : 0.0f;
+
+	UnchangedCommandCycles = 0;
+	bHasLastProgressLocation = false;
+	ActiveCommand = Kind;
+	CommandIssueWorldTime = Now;
+	CommandEndWorldTime = Now + ComputeCommandWaitSec(Kind, Duration);
+	CommandMaxWaitSec = Duration + BpMotionGraceSec + BpCommandMaxWaitSec;
+
+	if (IsValid(ControlledPawn))
+	{
+		CommandStartLocation = ControlledPawn->GetActorLocation();
+		CommandStartYawDeg = ControlledPawn->GetActorRotation().Yaw;
+	}
+}
+
 bool ASpotDogNavController::ParsePathJson(
 	const FString& PathJson,
 	TArray<FVector>& OutPoints) const
@@ -437,8 +499,11 @@ void ASpotDogNavController::BeginFollowPath(int32 RequestId)
 	MoveStatus = ESpotDogNavMoveStatus::Moving;
 	ActiveCommand = ECommandKind::None;
 	CommandEndWorldTime = 0.0f;
+	CommandIssueWorldTime = 0.0f;
+	CommandMaxWaitSec = 0.0f;
 	UnchangedCommandCycles = 0;
 	bHasLastProgressLocation = false;
+	bTickFollowPathRunning = false;
 	if (APawn* ControlledPawn = GetPawn())
 	{
 		SnapPawnToNavMesh(ControlledPawn);
@@ -557,14 +622,15 @@ void ASpotDogNavController::IssueNextMotionCommand()
 	{
 		const float TurnDeg = FMath::Min(FMath::Abs(AngleDiff), MaxTurnDegPerStep);
 		const float SignedTurnDeg = FMath::Sign(AngleDiff) * TurnDeg;
-		const float Duration = FMath::Max(0.12f, TurnDeg / SafeSpeed);
+		const float Duration = bUseDirectYawRotation
+			? FMath::Max(0.12f, TurnDeg / SafeSpeed)
+			: FMath::Max(BpRotateMinDurationSec, TurnDeg / 30.0f);
 		if (!CallPawnRotate(Duration, SignedTurnDeg))
 		{
 			MarkFailed(TEXT("rotate_vbp_missing"));
 			return;
 		}
-		ActiveCommand = ECommandKind::Rotate;
-		CommandEndWorldTime = GetWorld()->GetTimeSeconds() + Duration;
+		BeginActiveCommand(ECommandKind::Rotate, Duration);
 		return;
 	}
 
@@ -575,12 +641,24 @@ void ASpotDogNavController::IssueNextMotionCommand()
 		MarkFailed(TEXT("move_vbp_missing"));
 		return;
 	}
-	ActiveCommand = ECommandKind::Move;
-	CommandEndWorldTime = GetWorld()->GetTimeSeconds() + Duration;
+	BeginActiveCommand(ECommandKind::Move, Duration);
 }
 
 void ASpotDogNavController::TickFollowPath()
 {
+	if (bTickFollowPathRunning)
+	{
+		return;
+	}
+
+	struct FTickFollowScope
+	{
+		bool& Flag;
+		explicit FTickFollowScope(bool& InFlag) : Flag(InFlag) { Flag = true; }
+		~FTickFollowScope() { Flag = false; }
+	};
+	FTickFollowScope ReentryScope(bTickFollowPathRunning);
+
 	APawn* ControlledPawn = GetPawn();
 	if (!IsValid(ControlledPawn))
 	{
@@ -596,9 +674,26 @@ void ASpotDogNavController::TickFollowPath()
 	}
 
 	const float Now = World->GetTimeSeconds();
-	if (ActiveCommand != ECommandKind::None && Now < CommandEndWorldTime)
+	if (ActiveCommand != ECommandKind::None)
 	{
-		return;
+		if (Now < CommandEndWorldTime)
+		{
+			return;
+		}
+
+		if (ShouldWaitForBpProgress(ActiveCommand)
+			&& !HasBpCommandProgress(ControlledPawn, ActiveCommand))
+		{
+			if (Now < CommandIssueWorldTime + CommandMaxWaitSec)
+			{
+				return;
+			}
+			MarkFailed(
+				ActiveCommand == ECommandKind::Rotate
+					? TEXT("rotate_stuck")
+					: TEXT("stuck"));
+			return;
+		}
 	}
 
 	if (ActiveCommand != ECommandKind::None)
@@ -606,23 +701,30 @@ void ASpotDogNavController::TickFollowPath()
 		if (ActiveCommand == ECommandKind::Move)
 		{
 			SnapPawnToNavMesh(ControlledPawn);
-			const FVector SnappedLoc = ControlledPawn->GetActorLocation();
-			if (bHasLastProgressLocation
-				&& Dist2D(SnappedLoc, LastProgressLocation) < StuckMoveThresholdCm)
+			if (!ShouldSkipStuckCheckForCommand(ECommandKind::Move))
 			{
-				UnchangedCommandCycles++;
-				if (UnchangedCommandCycles >= StuckUnchangedCycles)
+				const FVector SnappedLoc = ControlledPawn->GetActorLocation();
+				if (bHasLastProgressLocation
+					&& Dist2D(SnappedLoc, LastProgressLocation) < StuckMoveThresholdCm)
 				{
-					MarkFailed(TEXT("stuck"));
-					return;
+					UnchangedCommandCycles++;
+					if (UnchangedCommandCycles >= StuckUnchangedCycles)
+					{
+						MarkFailed(TEXT("stuck"));
+						return;
+					}
 				}
+				else
+				{
+					UnchangedCommandCycles = 0;
+				}
+				LastProgressLocation = SnappedLoc;
+				bHasLastProgressLocation = true;
 			}
 			else
 			{
 				UnchangedCommandCycles = 0;
 			}
-			LastProgressLocation = SnappedLoc;
-			bHasLastProgressLocation = true;
 		}
 		ActiveCommand = ECommandKind::None;
 	}

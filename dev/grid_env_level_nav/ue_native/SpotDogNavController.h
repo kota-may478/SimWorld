@@ -88,6 +88,22 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "NavMove")
 	float NavProjectRetryExtentCm = 120.0f;
 
+	/** Extra wait [s] after BP Move_Speed / NavExecRotate timer commands. */
+	UPROPERTY(EditAnywhere, Category = "NavMove")
+	float BpMotionGraceSec = 0.15f;
+
+	/** Minimum Duration [s] passed to NavExecRotate when bUseDirectYawRotation is false. */
+	UPROPERTY(EditAnywhere, Category = "NavMove")
+	float BpRotateMinDurationSec = 0.5f;
+
+	/** When true, skip stuck detection while using BP async move (not direct translation). */
+	UPROPERTY(EditAnywhere, Category = "NavMove")
+	bool bSkipStuckCheckForBpMotion = true;
+
+	/** Max extra wait [s] after min BP command time before failing with stuck/rotate_stuck. */
+	UPROPERTY(EditAnywhere, Category = "NavMove")
+	float BpCommandMaxWaitSec = 2.0f;
+
 private:
 	enum class ECommandKind : uint8
 	{
@@ -104,9 +120,14 @@ private:
 	ESpotDogNavMoveStatus MoveStatus = ESpotDogNavMoveStatus::Idle;
 	ECommandKind ActiveCommand = ECommandKind::None;
 	float CommandEndWorldTime = 0.0f;
+	float CommandIssueWorldTime = 0.0f;
+	float CommandMaxWaitSec = 0.0f;
+	float CommandStartYawDeg = 0.0f;
+	FVector CommandStartLocation = FVector::ZeroVector;
 	FVector LastProgressLocation = FVector::ZeroVector;
 	int32 UnchangedCommandCycles = 0;
 	bool bHasLastProgressLocation = false;
+	bool bTickFollowPathRunning = false;
 	FTimerHandle FollowTimerHandle;
 
 	bool ParsePathJson(const FString& PathJson, TArray<FVector>& OutPoints) const;
@@ -136,4 +157,9 @@ private:
 	float NormalizeAngleDeg(float Angle) const;
 	FString StatusJson() const;
 	void MarkFailed(const FString& Reason);
+	void BeginActiveCommand(ECommandKind Kind, float Duration);
+	float ComputeCommandWaitSec(ECommandKind Kind, float Duration) const;
+	bool ShouldSkipStuckCheckForCommand(ECommandKind Kind) const;
+	bool ShouldWaitForBpProgress(ECommandKind Kind) const;
+	bool HasBpCommandProgress(const APawn* InPawn, ECommandKind Kind) const;
 };
