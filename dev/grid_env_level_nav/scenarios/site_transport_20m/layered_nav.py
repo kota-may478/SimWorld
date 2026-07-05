@@ -1241,7 +1241,8 @@ def _dog_rotate_chunked(
 ) -> None:
     """Split large rotations — single large dog_rotate crashes UE on Level PIE."""
     remaining = float(turn_deg)
-    while remaining > 1.0:
+    min_step_deg = 1.0
+    while remaining > min_step_deg:
         step_deg = min(remaining, MAX_TURN_DEG_PER_STEP)
         if diag:
             print(
@@ -1253,6 +1254,17 @@ def _dog_rotate_chunked(
         if on_after_motion is not None:
             on_after_motion()
         remaining -= step_deg
+    if remaining > 1e-3:
+        step_deg = remaining
+        if diag:
+            print(
+                f"  [SiteNav] UE-RISK dog_rotate {step_deg:.1f}° "
+                f"cw={clockwise} (remainder of {turn_deg:.1f}°)"
+            )
+        turn_duration_s = max(0.25, ROBOT_TURN_DUR_S * step_deg / 90.0)
+        _site_dog_rotate(ucv, robot_name, turn_duration_s, step_deg, clockwise)
+        if on_after_motion is not None:
+            on_after_motion()
 
 
 def _prime_first_motion(ucv: UnrealCV, robot_name: str) -> None:
@@ -1274,7 +1286,7 @@ def _execute_segment_command(
 ) -> None:
     """Site-tuned open-loop move (slower speed; uses actual robot_name)."""
     did_motion = False
-    if command.turn_deg > SITE_ROTATE_THR_DEG:
+    if command.turn_deg > 1.0:
         rot_t0 = time.perf_counter()
         _dog_rotate_chunked(
             ucv,
