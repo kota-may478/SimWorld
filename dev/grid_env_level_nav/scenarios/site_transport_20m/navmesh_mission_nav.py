@@ -17,20 +17,27 @@ from metrics import NavTimingAccumulator
 from nav_pose_query import PoseCache, invalidate_robot_pose
 from navmesh_config import (
     HUMANOID_REPLAN_DELTA_CM,
+    NAVMESH_CHORD_SAMPLE_SPACING_CM,
+    NAVMESH_COLLINEAR_PRUNE_MAX_TURN_DEG,
     NAVMESH_GOAL_TOLERANCE_CM,
     NAVMESH_MAX_OPEN_LOOP_MOVE_CM,
     NAVMESH_MAX_TURN_DEG_PER_STEP,
+    NAVMESH_MIN_COMMAND_DURATION_S,
     NAVMESH_REPLAN_STUCK_STEPS,
     NAVMESH_ROTATE_THRESHOLD_DEG,
     NAVMESH_STUCK_MOVE_THRESHOLD_CM,
     NAVMESH_STUCK_UNCHANGED_STEPS,
     NAVMESH_WAYPOINT_SPACING_CM,
     NAVMESH_WP_REACH_TOLERANCE_CM,
-    PROXIMITY_CENTER_FROM_SURFACE_CM,
+    NAV_PLANNING_AGENT_RADIUS_CM,
 )
 from navmesh_obstacles import _timed_rebuild, update_humanoid_obstacle
 from pie_safety import tick_settle
 from site_transport_config import NavProfile
+from surface_distance import (
+    SurfaceObstacle,
+    densify_waypoints_for_chord_clearance,
+)
 from viz import NavTrace
 
 WorldXY = Tuple[float, float]
@@ -139,13 +146,37 @@ def _densify_waypoints(
     return dense
 
 
+def prune_collinear_waypoints(
+    points: Sequence[WorldXY],
+    *,
+    max_turn_deg: float = NAVMESH_COLLINEAR_PRUNE_MAX_TURN_DEG,
+) -> List[WorldXY]:
+    """Drop intermediate WPs that lie on nearly straight segments."""
+    if len(points) <= 2:
+        return list(points)
+
+    pruned: List[WorldXY] = [points[0]]
+    for idx in range(1, len(points) - 1):
+        prev = pruned[-1]
+        current = points[idx]
+        nxt = points[idx + 1]
+        prev_yaw = _yaw_to_target(prev, current)
+        next_yaw = _yaw_to_target(current, nxt)
+        turn_deg = abs(_normalize_angle_deg(next_yaw - prev_yaw))
+        if turn_deg >= max_turn_deg:
+            pruned.append(current)
+    pruned.append(points[-1])
+    return pruned
+
+
 def plan_navmesh_waypoints(
     ucv,
     nav_actor: str,
     start_xyz: WorldXYZ,
     goal_xyz: WorldXYZ,
     *,
-    agent_radius_cm: float = PROXIMITY_CENTER_FROM_SURFACE_CM,
+    agent_radius_cm: float = NAV_PLANNING_AGENT_RADIUS_CM,
+    path_obstacles: Optional[Sequence[SurfaceObstacle]] = None,
     nav_timing: Optional[NavTimingAccumulator] = None,
 ) -> List[WorldXY]:
     t_find = time.perf_counter()
@@ -164,6 +195,26 @@ def plan_navmesh_waypoints(
         print(f"[NavMeshNav] plan failed: {raw.get('error', raw)}")
         return []
     dense = _densify_waypoints(points, nav_timing=nav_timing)
+    if path_obstacles:
+        before = len(dense)
+        dense = densify_waypoints_for_chord_clearance(
+            dense,
+            path_obstacles,
+            min_clearance_cm=agent_radius_cm,
+            sample_spacing_cm=NAVMESH_CHORD_SAMPLE_SPACING_CM,
+        )
+        if len(dense) != before:
+            print(
+                f"[NavMeshNav] chord clearance densify {before} → {len(dense)} WP "
+                f"(min={agent_radius_cm:.0f}cm)"
+            )
+    before_prune = len(dense)
+    dense = prune_collinear_waypoints(dense)
+    if len(dense) != before_prune:
+        print(
+            f"[NavMeshNav] pruned collinear {before_prune} → {len(dense)} WP "
+            f"(max_turn={NAVMESH_COLLINEAR_PRUNE_MAX_TURN_DEG:.0f}°)"
+        )
     if len(dense) != len(points):
         print(
             f"[NavMeshNav] densified path {len(points)} → {len(dense)} WP "
@@ -264,6 +315,7 @@ def _navigate_navmesh_leg_moveto(
     humanoid_actor_name: Optional[str] = None,
     dynamic_humanoid: bool = False,
     last_humanoid_xy: Optional[WorldXY] = None,
+    path_obstacles: Optional[Sequence[SurfaceObstacle]] = None,
 ) -> Tuple[bool, Optional[WorldXY]]:
     """Follow NavFindPath polyline via UE SpotDogNavController (Phase 5)."""
     if not nm.moveto_use_ue_controller():
@@ -290,6 +342,7 @@ def _navigate_navmesh_leg_moveto(
             humanoid_actor_name=humanoid_actor_name,
             dynamic_humanoid=dynamic_humanoid,
             last_humanoid_xy=last_humanoid_xy,
+            path_obstacles=path_obstacles,
         )
     poll_s = 0.25
     leg_timeout_s = max(120.0, max_total_steps * 2.0)
@@ -311,7 +364,12 @@ def _navigate_navmesh_leg_moveto(
         )
         return False, last_humanoid_xy
     waypoints = plan_navmesh_waypoints(
-        ucv, nav_actor, start_xyz, goal_xyz, nav_timing=nav_timing
+        ucv,
+        nav_actor,
+        start_xyz,
+        goal_xyz,
+        nav_timing=nav_timing,
+        path_obstacles=path_obstacles,
     )
     if not waypoints:
         return False, last_humanoid_xy
@@ -374,7 +432,12 @@ def _navigate_navmesh_leg_moveto(
                     if cur_xyz is None:
                         return False, new_hxy
                     waypoints = plan_navmesh_waypoints(
-                        ucv, nav_actor, cur_xyz, goal_xyz, nav_timing=nav_timing
+                        ucv,
+                        nav_actor,
+                        cur_xyz,
+                        goal_xyz,
+                        nav_timing=nav_timing,
+                        path_obstacles=path_obstacles,
                     )
                     path_xyz = _waypoints_to_path_xyz(
                         ucv, nav_actor, waypoints, nav_timing=nav_timing
@@ -433,7 +496,12 @@ def _navigate_navmesh_leg_moveto(
             if cur_xyz is None:
                 return False, human_xy
             waypoints = plan_navmesh_waypoints(
-                ucv, nav_actor, cur_xyz, goal_xyz, nav_timing=nav_timing
+                ucv,
+                nav_actor,
+                cur_xyz,
+                goal_xyz,
+                nav_timing=nav_timing,
+                path_obstacles=path_obstacles,
             )
             if not waypoints:
                 return False, human_xy
@@ -483,6 +551,7 @@ def _navigate_navmesh_leg_vbp(
     dynamic_humanoid: bool = False,
     last_humanoid_xy: Optional[WorldXY] = None,
     post_motion_settle_s: Optional[float] = None,
+    path_obstacles: Optional[Sequence[SurfaceObstacle]] = None,
 ) -> Tuple[bool, Optional[WorldXY]]:
     """Follow NavFindPath polyline with open-loop VBP. Returns (reached, last_humanoid_xy)."""
     settle_s = (
@@ -510,7 +579,12 @@ def _navigate_navmesh_leg_vbp(
         )
         return False, last_humanoid_xy
     waypoints = plan_navmesh_waypoints(
-        ucv, nav_actor, start_xyz, goal_xyz, nav_timing=nav_timing
+        ucv,
+        nav_actor,
+        start_xyz,
+        goal_xyz,
+        nav_timing=nav_timing,
+        path_obstacles=path_obstacles,
     )
     if not waypoints:
         return False, last_humanoid_xy
@@ -597,7 +671,12 @@ def _navigate_navmesh_leg_vbp(
                     if cur_xyz is None:
                         continue
                     waypoints = plan_navmesh_waypoints(
-                        ucv, nav_actor, cur_xyz, goal_xyz, nav_timing=nav_timing
+                        ucv,
+                        nav_actor,
+                        cur_xyz,
+                        goal_xyz,
+                        nav_timing=nav_timing,
+                        path_obstacles=path_obstacles,
                     )
                     wp_index = 0
                     steps_on_wp = 0
@@ -640,14 +719,20 @@ def _navigate_navmesh_leg_vbp(
         did_motion = False
         t_move = time.perf_counter()
         if turn_deg > NAVMESH_ROTATE_THRESHOLD_DEG:
-            turn_duration_s = max(0.12, turn_deg / max(robot_speed, 1.0))
+            turn_duration_s = max(
+                NAVMESH_MIN_COMMAND_DURATION_S,
+                turn_deg / max(robot_speed, 1.0),
+            )
             _site_dog_rotate(ucv, robot_name, turn_duration_s, turn_deg, clockwise)
             if nav_timing is not None:
                 nav_timing.rotate_ms += (time.perf_counter() - t_move) * 1000.0
             did_motion = True
         if move_cm > 1e-3:
             move_t0 = time.perf_counter()
-            move_duration_s = max(0.12, move_cm / max(robot_speed, 1.0))
+            move_duration_s = max(
+                NAVMESH_MIN_COMMAND_DURATION_S,
+                move_cm / max(robot_speed, 1.0),
+            )
             _site_dog_move(ucv, robot_name, robot_speed, move_duration_s, 0)
             if nav_timing is not None:
                 nav_timing.translate_ms += (time.perf_counter() - move_t0) * 1000.0
@@ -721,7 +806,12 @@ def _navigate_navmesh_leg_vbp(
                 _close_loop_overhead(nav_timing, loop_t0, accounted_at_start)
                 return False, human_xy
             waypoints = plan_navmesh_waypoints(
-                ucv, nav_actor, cur_xyz, goal_xyz, nav_timing=nav_timing
+                ucv,
+                nav_actor,
+                cur_xyz,
+                goal_xyz,
+                nav_timing=nav_timing,
+                path_obstacles=path_obstacles,
             )
             wp_index = 0
             steps_on_wp = 0
@@ -759,6 +849,7 @@ def navigate_navmesh_leg(
     last_humanoid_xy: Optional[WorldXY] = None,
     post_motion_settle_s: Optional[float] = None,
     nav_exec: str = "vbp",
+    path_obstacles: Optional[Sequence[SurfaceObstacle]] = None,
 ) -> Tuple[bool, Optional[WorldXY]]:
     """Follow NavFindPath polyline (vbp open-loop or UE moveto)."""
     if nav_exec == "moveto":
@@ -780,6 +871,7 @@ def navigate_navmesh_leg(
             humanoid_actor_name=humanoid_actor_name,
             dynamic_humanoid=dynamic_humanoid,
             last_humanoid_xy=last_humanoid_xy,
+            path_obstacles=path_obstacles,
         )
     return _navigate_navmesh_leg_vbp(
         ucv,
@@ -802,6 +894,7 @@ def navigate_navmesh_leg(
         dynamic_humanoid=dynamic_humanoid,
         last_humanoid_xy=last_humanoid_xy,
         post_motion_settle_s=post_motion_settle_s,
+        path_obstacles=path_obstacles,
     )
 
 
@@ -824,6 +917,7 @@ def navigate_to_slot_navmesh(
     nav_timing: Optional[NavTimingAccumulator] = None,
     pose_cache: Optional[PoseCache] = None,
     nav_exec: str = "vbp",
+    path_obstacles: Optional[Sequence[SurfaceObstacle]] = None,
 ) -> bool:
     from carry import pickup_standoff_xy
 
@@ -860,6 +954,7 @@ def navigate_to_slot_navmesh(
         nav_timing=nav_timing,
         pose_cache=pose_cache,
         nav_exec=nav_exec,
+        path_obstacles=path_obstacles,
     )
     return reached
 
@@ -885,6 +980,7 @@ def deliver_to_navmesh(
     nav_timing: Optional[NavTimingAccumulator] = None,
     pose_cache: Optional[PoseCache] = None,
     nav_exec: str = "vbp",
+    path_obstacles: Optional[Sequence[SurfaceObstacle]] = None,
 ) -> bool:
     goal_local = (
         object_registry.goal_local(slot_id)
@@ -918,5 +1014,6 @@ def deliver_to_navmesh(
         humanoid_actor_name=humanoid_actor_name,
         dynamic_humanoid=True,
         nav_exec=nav_exec,
+        path_obstacles=path_obstacles,
     )
     return reached

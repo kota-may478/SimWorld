@@ -1169,6 +1169,7 @@ def main() -> int:
                     nav_timing=leg1_timing,
                     pose_cache=nav_pose_cache,
                     nav_exec=nav_exec,
+                    path_obstacles=surface_obstacles,
                 )
             else:
                 leg1_ok = navigate_to_slot(
@@ -1264,6 +1265,7 @@ def main() -> int:
                     nav_timing=leg2_timing,
                     pose_cache=nav_pose_cache,
                     nav_exec=nav_exec,
+                    path_obstacles=surface_obstacles,
                 )
             else:
                 leg2_ok = deliver_to(

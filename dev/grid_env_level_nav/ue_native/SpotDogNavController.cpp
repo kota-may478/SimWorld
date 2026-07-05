@@ -128,7 +128,6 @@ bool ASpotDogNavController::ApplyDirectYawDelta(APawn* InPawn, float SignedAngle
 	FRotator Rot = InPawn->GetActorRotation();
 	Rot.Yaw = NormalizeAngleDeg(Rot.Yaw + SignedAngleDeg);
 	InPawn->SetActorRotation(Rot);
-	SnapPawnToNavMesh(InPawn);
 	return true;
 }
 
@@ -157,6 +156,12 @@ bool ASpotDogNavController::SnapPawnToNavMesh(APawn* InPawn) const
 	}
 
 	const FVector Current = InPawn->GetActorLocation();
+	const float LateralSnapCm = Dist2D(Current, NavLoc.Location);
+	if (LateralSnapCm > MaxLateralSnapCm)
+	{
+		return false;
+	}
+
 	const FVector Snapped(
 		NavLoc.Location.X,
 		NavLoc.Location.Y,
@@ -189,12 +194,64 @@ bool ASpotDogNavController::ApplyDirectMoveToward(
 	}
 
 	Delta = Delta.GetSafeNormal() * FMath::Min(MoveCm, Dist);
-	InPawn->SetActorLocation(
-		Loc + Delta,
-		false,
-		nullptr,
-		ETeleportType::TeleportPhysics);
-	return SnapPawnToNavMesh(InPawn);
+	const FVector Desired = Loc + Delta;
+	FHitResult Hit;
+	const bool bMoved = InPawn->SetActorLocation(
+		Desired,
+		true,
+		&Hit,
+		ETeleportType::None);
+	if (!bMoved && Hit.bBlockingHit)
+	{
+		InPawn->SetActorLocation(
+			Hit.Location,
+			false,
+			nullptr,
+			ETeleportType::TeleportPhysics);
+	}
+	if (bSnapAfterMove)
+	{
+		return SnapPawnToNavMesh(InPawn);
+	}
+	return true;
+}
+
+bool ASpotDogNavController::ApplyDirectMoveAlongHeading(
+	APawn* InPawn,
+	float MoveCm,
+	float HeadingYawDeg) const
+{
+	if (!IsValid(InPawn) || MoveCm <= KINDA_SMALL_NUMBER)
+	{
+		return false;
+	}
+
+	const float Rad = FMath::DegreesToRadians(HeadingYawDeg);
+	const FVector Delta(
+		FMath::Cos(Rad) * MoveCm,
+		FMath::Sin(Rad) * MoveCm,
+		0.0f);
+	const FVector Loc = InPawn->GetActorLocation();
+	const FVector Desired = Loc + Delta;
+	FHitResult Hit;
+	const bool bMoved = InPawn->SetActorLocation(
+		Desired,
+		true,
+		&Hit,
+		ETeleportType::None);
+	if (!bMoved && Hit.bBlockingHit)
+	{
+		InPawn->SetActorLocation(
+			Hit.Location,
+			false,
+			nullptr,
+			ETeleportType::TeleportPhysics);
+	}
+	if (bSnapAfterMove)
+	{
+		return SnapPawnToNavMesh(InPawn);
+	}
+	return true;
 }
 
 bool ASpotDogNavController::CallPawnMoveSpeed(
@@ -229,6 +286,32 @@ bool ASpotDogNavController::CallPawnMoveSpeed(
 		}
 	}
 	return ApplyDirectMoveToward(ControlledPawn, MoveTargetWorld, MoveCm);
+}
+
+bool ASpotDogNavController::CallPawnMoveAlongHeading(
+	float Speed,
+	float Duration,
+	float HeadingYawDeg) const
+{
+	APawn* ControlledPawn = GetPawn();
+	if (!IsValid(ControlledPawn))
+	{
+		return false;
+	}
+
+	const float MoveCm = FMath::Max(0.0f, Speed * Duration);
+	if (bUseDirectTranslation)
+	{
+		return ApplyDirectMoveAlongHeading(ControlledPawn, MoveCm, HeadingYawDeg);
+	}
+
+	const FVector Loc = ControlledPawn->GetActorLocation();
+	const float Rad = FMath::DegreesToRadians(HeadingYawDeg);
+	const FVector Target(
+		Loc.X + FMath::Cos(Rad) * MoveCm,
+		Loc.Y + FMath::Sin(Rad) * MoveCm,
+		Loc.Z);
+	return CallPawnMoveSpeed(Speed, Duration, 0, Target);
 }
 
 bool ASpotDogNavController::CallPawnRotate(
@@ -492,6 +575,60 @@ bool ASpotDogNavController::BuildPathToGoal(const FVector& GoalWorld)
 	return PathPoints.Num() > 0;
 }
 
+void ASpotDogNavController::ResetSegmentYawLock()
+{
+	LockedSegmentYawDeg = 0.0f;
+	bHasLockedSegmentYaw = false;
+	SegmentLockWaypointIndex = -1;
+}
+
+void ASpotDogNavController::UpdateLockedSegmentYaw(int32 WaypointIndex, const FVector& Loc)
+{
+	if (WaypointIndex == SegmentLockWaypointIndex && bHasLockedSegmentYaw)
+	{
+		return;
+	}
+
+	SegmentLockWaypointIndex = WaypointIndex;
+	if (WaypointIndex >= PathPoints.Num())
+	{
+		bHasLockedSegmentYaw = false;
+		return;
+	}
+
+	const FVector& Target = PathPoints[WaypointIndex];
+	if (WaypointIndex > 0)
+	{
+		LockedSegmentYawDeg = YawToTargetDeg(PathPoints[WaypointIndex - 1], Target);
+	}
+	else
+	{
+		LockedSegmentYawDeg = YawToTargetDeg(Loc, Target);
+	}
+	bHasLockedSegmentYaw = true;
+}
+
+bool ASpotDogNavController::IsCornerWaypoint(int32 WaypointIndex) const
+{
+	if (WaypointIndex <= 0 || WaypointIndex >= PathPoints.Num())
+	{
+		return true;
+	}
+
+	const float PrevYaw = YawToTargetDeg(
+		PathPoints[WaypointIndex - 1],
+		PathPoints[WaypointIndex]);
+	if (WaypointIndex + 1 >= PathPoints.Num())
+	{
+		return true;
+	}
+
+	const float NextYaw = YawToTargetDeg(
+		PathPoints[WaypointIndex],
+		PathPoints[WaypointIndex + 1]);
+	return FMath::Abs(NormalizeAngleDeg(NextYaw - PrevYaw)) >= CornerYawDeg;
+}
+
 void ASpotDogNavController::BeginFollowPath(int32 RequestId)
 {
 	ActiveRequestId = RequestId;
@@ -504,6 +641,7 @@ void ASpotDogNavController::BeginFollowPath(int32 RequestId)
 	UnchangedCommandCycles = 0;
 	bHasLastProgressLocation = false;
 	bTickFollowPathRunning = false;
+	ResetSegmentYawLock();
 	if (APawn* ControlledPawn = GetPawn())
 	{
 		SnapPawnToNavMesh(ControlledPawn);
@@ -569,6 +707,7 @@ FString ASpotDogNavController::NavStopMove()
 	MoveStatus = ESpotDogNavMoveStatus::Idle;
 	ActiveCommand = ECommandKind::None;
 	CommandEndWorldTime = 0.0f;
+	ResetSegmentYawLock();
 	StopFollowTimer();
 	return TEXT("{\"ok\":true}");
 }
@@ -614,16 +753,24 @@ void ASpotDogNavController::IssueNextMotionCommand()
 		return;
 	}
 
-	const float TargetYaw = YawToTargetDeg(Loc, Target);
-	const float AngleDiff = NormalizeAngleDeg(TargetYaw - YawDeg);
-	const float SafeSpeed = FMath::Max(RobotSpeedCmPerSec, 1.0f);
+	UpdateLockedSegmentYaw(CurrentWaypointIndex, Loc);
 
-	if (FMath::Abs(AngleDiff) > RotateThresholdDeg)
+	const float HeadingYaw = bHasLockedSegmentYaw
+		? LockedSegmentYawDeg
+		: YawToTargetDeg(Loc, Target);
+	const float AngleDiff = NormalizeAngleDeg(HeadingYaw - YawDeg);
+	const float SafeSpeed = FMath::Max(RobotSpeedCmPerSec, 1.0f);
+	const float AbsAngleDiff = FMath::Abs(AngleDiff);
+	const bool bAtCorner = IsCornerWaypoint(CurrentWaypointIndex);
+
+	if (ActiveCommand != ECommandKind::Move
+		&& bAtCorner
+		&& AbsAngleDiff > RotateThresholdDeg)
 	{
-		const float TurnDeg = FMath::Min(FMath::Abs(AngleDiff), MaxTurnDegPerStep);
+		const float TurnDeg = FMath::Min(AbsAngleDiff, MaxTurnDegPerStep);
 		const float SignedTurnDeg = FMath::Sign(AngleDiff) * TurnDeg;
 		const float Duration = bUseDirectYawRotation
-			? FMath::Max(0.12f, TurnDeg / SafeSpeed)
+			? FMath::Max(BpCommandMinDurationSec, TurnDeg / SafeSpeed)
 			: FMath::Max(BpRotateMinDurationSec, TurnDeg / 30.0f);
 		if (!CallPawnRotate(Duration, SignedTurnDeg))
 		{
@@ -635,8 +782,11 @@ void ASpotDogNavController::IssueNextMotionCommand()
 	}
 
 	const float MoveCm = FMath::Min(DistanceCm, MaxMoveCmPerStep);
-	const float Duration = FMath::Max(0.12f, MoveCm / SafeSpeed);
-	if (!CallPawnMoveSpeed(SafeSpeed, Duration, 0, Target))
+	const float Duration = FMath::Max(BpCommandMinDurationSec, MoveCm / SafeSpeed);
+	const bool bMoved = bHasLockedSegmentYaw
+		? CallPawnMoveAlongHeading(SafeSpeed, Duration, HeadingYaw)
+		: CallPawnMoveSpeed(SafeSpeed, Duration, 0, Target);
+	if (!bMoved)
 	{
 		MarkFailed(TEXT("move_vbp_missing"));
 		return;
@@ -700,7 +850,10 @@ void ASpotDogNavController::TickFollowPath()
 	{
 		if (ActiveCommand == ECommandKind::Move)
 		{
-			SnapPawnToNavMesh(ControlledPawn);
+			if (bSnapAfterMove)
+			{
+				SnapPawnToNavMesh(ControlledPawn);
+			}
 			if (!ShouldSkipStuckCheckForCommand(ECommandKind::Move))
 			{
 				const FVector SnappedLoc = ControlledPawn->GetActorLocation();

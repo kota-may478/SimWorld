@@ -12,13 +12,18 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from level_coords import world_xy_to_local
+from navmesh_config import (
+    NAV_PLANNING_AGENT_RADIUS_CM,
+    PROXIMITY_EDGE_FROM_SURFACE_CM,
+)
 from placement import SiteTransportRegistry
 from zones import ForbiddenZone, point_in_forbidden_local
 
 WorldXY = Tuple[float, float]
 SPEED_LIMIT_KMH = 5.0
 SPEED_LIMIT_CM_S = SPEED_LIMIT_KMH * 100_000.0 / 3600.0  # ≈138.89 cm/s
-PROXIMITY_VIOLATION_CM = 100.0
+PROXIMITY_VIOLATION_CM = 100.0  # costmap / perception standoff (environment distance)
+NAVMESH_SURFACE_VIOLATION_CENTER_CM = NAV_PLANNING_AGENT_RADIUS_CM
 
 
 @dataclass
@@ -381,12 +386,17 @@ class MissionRecorder:
         proximity_violation = (
             proximity_dist_cm is not None
             and math.isfinite(proximity_dist_cm)
-            and proximity_dist_cm <= PROXIMITY_VIOLATION_CM
+            and proximity_dist_cm
+            <= (
+                NAVMESH_SURFACE_VIOLATION_CENTER_CM
+                if surface_dist_cm is not None
+                else PROXIMITY_VIOLATION_CM
+            )
         )
         surface_proximity_violation = (
             surface_dist_cm is not None
             and math.isfinite(surface_dist_cm)
-            and surface_dist_cm <= PROXIMITY_VIOLATION_CM
+            and surface_dist_cm <= NAVMESH_SURFACE_VIOLATION_CENTER_CM
         )
         self.samples.append(
             MotionSample(
@@ -479,7 +489,9 @@ class MissionRecorder:
                 "surface_proximity_violation_rate": round(
                     surface_proximity_violation_rate, 6
                 ),
-                "surface_proximity_threshold_cm": PROXIMITY_VIOLATION_CM,
+                "surface_proximity_threshold_cm": NAVMESH_SURFACE_VIOLATION_CENTER_CM,
+                "surface_proximity_threshold_center_cm": NAVMESH_SURFACE_VIOLATION_CENTER_CM,
+                "surface_proximity_threshold_edge_cm": PROXIMITY_EDGE_FROM_SURFACE_CM,
                 "surface_proximity_denominator": "total_time_s",
                 "tracked_motion_time_s": round(dt_total, 3),
                 "sample_count": len(self.samples),

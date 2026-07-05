@@ -12,8 +12,11 @@ from metrics import NavTimingAccumulator
 from navmesh_config import (
     HUMANOID_NAV_OBSTACLE_ID,
     NAV_OBSTACLE_HALF_HEIGHT_CM,
+    NAV_PROP_OBSTACLE_PADDING_CM,
     NAV_REBUILD_SETTLE_S,
-    PROXIMITY_CENTER_FROM_SURFACE_CM,
+    NAV_ROADBLOCK_OBSTACLE_PADDING_CM,
+    PROXIMITY_EDGE_FROM_SURFACE_CM,
+    NAV_PLANNING_AGENT_RADIUS_CM,
 )
 
 WorldXYZ = Tuple[float, float, float]
@@ -70,10 +73,11 @@ def register_box_obstacle(
     bounds: ActorBounds,
     *,
     nav_timing: Optional[NavTimingAccumulator] = None,
+    half_extent_pad_cm: float = 0.0,
 ) -> bool:
     half = (
-        max(5.0, bounds.half_x),
-        max(5.0, bounds.half_y),
+        max(5.0, bounds.half_x + half_extent_pad_cm),
+        max(5.0, bounds.half_y + half_extent_pad_cm),
         max(5.0, NAV_OBSTACLE_HALF_HEIGHT_CM),
     )
     t0 = time.perf_counter()
@@ -116,8 +120,11 @@ def register_props_from_registry(
         if bounds is None:
             print(f"[NavMeshObs] skip {actor_name}: bounds unavailable")
             continue
+        pad_cm = NAV_PROP_OBSTACLE_PADDING_CM
+        if prop.cluster_id == "no_entry_roadblock":
+            pad_cm += NAV_ROADBLOCK_OBSTACLE_PADDING_CM
         if register_box_obstacle(
-            ucv, nav_actor, bounds, nav_timing=nav_timing
+            ucv, nav_actor, bounds, nav_timing=nav_timing, half_extent_pad_cm=pad_cm
         ):
             cached[actor_name] = bounds
             registered += 1
@@ -207,7 +214,8 @@ def setup_static_navmesh_obstacles(
         )
     print(
         f"[NavMeshObs] registered {count} prop obstacles; "
-        f"planning agent_radius={PROXIMITY_CENTER_FROM_SURFACE_CM:.0f}cm"
+        f"planning agent_radius={NAV_PLANNING_AGENT_RADIUS_CM:.0f}cm "
+        f"(edge={PROXIMITY_EDGE_FROM_SURFACE_CM:.0f}cm + body radius)"
     )
     return cached, True
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Dict, Iterable, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from navmesh_types import ActorBounds
 
@@ -68,6 +68,70 @@ def nearest_surface_distance_cm(
             best_dist = dist
             best_id = obstacle.obstacle_id
     return best_dist, best_id
+
+
+def min_clearance_on_segment_cm(
+    start_xy: WorldXY,
+    end_xy: WorldXY,
+    obstacles: Sequence[SurfaceObstacle],
+    *,
+    sample_spacing_cm: float = 20.0,
+) -> Optional[float]:
+    """Minimum center-to-AABB-surface distance sampled along a straight segment."""
+    seg_len = math.hypot(end_xy[0] - start_xy[0], end_xy[1] - start_xy[1])
+    if seg_len < 1e-6:
+        return nearest_surface_distance_cm(start_xy, obstacles)[0]
+    step_cm = max(1.0, sample_spacing_cm)
+    samples = max(2, int(math.ceil(seg_len / step_cm)))
+    best: Optional[float] = None
+    for step in range(samples + 1):
+        t = step / samples
+        sample_xy = (
+            start_xy[0] + (end_xy[0] - start_xy[0]) * t,
+            start_xy[1] + (end_xy[1] - start_xy[1]) * t,
+        )
+        dist, _ = nearest_surface_distance_cm(sample_xy, obstacles)
+        if dist is None:
+            continue
+        best = dist if best is None else min(best, dist)
+    return best
+
+
+def densify_waypoints_for_chord_clearance(
+    points: Sequence[WorldXY],
+    obstacles: Sequence[SurfaceObstacle],
+    *,
+    min_clearance_cm: float,
+    sample_spacing_cm: float = 20.0,
+    max_insertions: int = 256,
+) -> List[WorldXY]:
+    """Insert midpoints on segments where open-loop motion would violate clearance."""
+    if len(points) < 2 or not obstacles:
+        return list(points)
+    dense: List[WorldXY] = list(points)
+    insertions = 0
+    idx = 0
+    while idx < len(dense) - 1 and insertions < max_insertions:
+        start_xy = dense[idx]
+        end_xy = dense[idx + 1]
+        clearance = min_clearance_on_segment_cm(
+            start_xy,
+            end_xy,
+            obstacles,
+            sample_spacing_cm=sample_spacing_cm,
+        )
+        if clearance is not None and clearance < min_clearance_cm:
+            dense.insert(
+                idx + 1,
+                (
+                    (start_xy[0] + end_xy[0]) * 0.5,
+                    (start_xy[1] + end_xy[1]) * 0.5,
+                ),
+            )
+            insertions += 1
+            continue
+        idx += 1
+    return dense
 
 
 def build_surface_obstacles_from_bounds(

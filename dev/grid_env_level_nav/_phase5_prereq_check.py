@@ -21,6 +21,11 @@ import grid_env_hri_simulation as geh  # noqa: E402
 import level_coords as lc  # noqa: E402
 import nav_query as nq  # noqa: E402
 
+_SITE20 = THIS_DIR / "scenarios" / "site_transport_20m"
+if str(_SITE20) not in sys.path:
+    sys.path.insert(0, str(_SITE20))
+from navmesh_config import NAV_PLANNING_AGENT_RADIUS_CM  # noqa: E402
+
 ROBOT = geh.ROBOT_ACTOR_NAME
 PROBE_VBPS = (
     "Move_Speed",
@@ -111,7 +116,7 @@ def main() -> int:
                 nav_actor,
                 start_xyz,
                 goal_xyz,
-                agent_radius_cm=100.0,
+                agent_radius_cm=NAV_PLANNING_AGENT_RADIUS_CM,
             )
             if path.get("ok"):
                 n_pts = len(path.get("points", []))

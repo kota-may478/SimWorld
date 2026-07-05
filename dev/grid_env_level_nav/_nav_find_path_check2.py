@@ -17,9 +17,14 @@ import grid_env_hri_simulation as geh  # noqa: E402
 import level_coords as lc  # noqa: E402
 import nav_query as nq  # noqa: E402
 
+_SITE20 = THIS_DIR / "scenarios" / "site_transport_20m"
+if str(_SITE20) not in sys.path:
+    sys.path.insert(0, str(_SITE20))
+from navmesh_config import NAV_PLANNING_AGENT_RADIUS_CM  # noqa: E402
+
 START_LOCAL = (500.0, 500.0)
 GOAL_LOCAL = (5000.0, 6000.0)
-AGENT_RADIUS_CM = 100.0
+AGENT_RADIUS_CM = NAV_PLANNING_AGENT_RADIUS_CM
 
 
 def _proj(ucv, nav_actor: str, xyz):

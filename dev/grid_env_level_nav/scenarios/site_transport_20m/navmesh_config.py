@@ -2,23 +2,32 @@
 """Dynamic NavMesh hybrid navigation constants for site_transport_20m.
 
 Planning constraint (user-specified):
-    distance(obstacle_surface, agent_center) >= PROXIMITY_CENTER_FROM_SURFACE_CM
+    distance(obstacle_surface, SpotDog body outer edge) >= PROXIMITY_EDGE_FROM_SURFACE_CM
 
 Achieved by:
     1. Nav obstacle boundary at actor AABB surface (GetActorBounds, no extra inflation)
-    2. NavFindPath AgentRadius = PROXIMITY_CENTER_FROM_SURFACE_CM
+    2. NavFindPath AgentRadius = NAV_PLANNING_AGENT_RADIUS_CM
+       (= PROXIMITY_EDGE_FROM_SURFACE_CM + SPOTDOG_BODY_RADIUS_CM)
 
-Violation metrics (Phase 3) use true 2D surface distance (bounds-based), not center distance.
+Violation metrics (navmesh): center-to-AABB-surface distance with the same center threshold.
 """
 
 from __future__ import annotations
 
 # --- Planning (NavFindPath) -------------------------------------------------
-# Center-to-obstacle-surface clearance enforced by UE agent radius on nav boundaries.
-PROXIMITY_CENTER_FROM_SURFACE_CM = 100.0
+# Desired clearance from SpotDog body outer edge to obstacle AABB surface [cm].
+PROXIMITY_EDGE_FROM_SURFACE_CM = 100.0
 
-# SpotDog approximate body radius (L2 self-exclude / metrics). Refine via GetActorBounds.
-SPOTDOG_BODY_RADIUS_CM = 70.0
+# SpotDog body radius from pawn center (conservative for legs/mesh beyond capsule).
+SPOTDOG_BODY_RADIUS_CM = 80.0
+
+# NavFindPath agent radius: center must stay this far from obstacle surfaces.
+NAV_PLANNING_AGENT_RADIUS_CM = (
+    PROXIMITY_EDGE_FROM_SURFACE_CM + SPOTDOG_BODY_RADIUS_CM
+)
+
+# Alias used by path planning / chord-clearance densify call sites.
+PROXIMITY_CENTER_FROM_SURFACE_CM = NAV_PLANNING_AGENT_RADIUS_CM
 
 # Humanoid horizontal radius fallback until bounds are cached at spawn.
 HUMANOID_BODY_RADIUS_CM = 45.0
@@ -31,13 +40,22 @@ NAVMESH_REPLAN_STUCK_STEPS = 10
 
 # Path following (VBP execution until Phase 5 MoveTo).
 NAVMESH_GOAL_TOLERANCE_CM = 130.0
-NAVMESH_WP_REACH_TOLERANCE_CM = 80.0
-NAVMESH_WAYPOINT_SPACING_CM = 80.0
-NAVMESH_MAX_OPEN_LOOP_MOVE_CM = 180.0
+NAVMESH_WP_REACH_TOLERANCE_CM = 12.0
+NAVMESH_WAYPOINT_SPACING_CM = 20.0
+NAVMESH_MAX_OPEN_LOOP_MOVE_CM = 25.0
+NAVMESH_MIN_COMMAND_DURATION_S = 0.06
 NAVMESH_STUCK_MOVE_THRESHOLD_CM = 8.0
 NAVMESH_STUCK_UNCHANGED_STEPS = 3
 NAVMESH_MAX_TURN_DEG_PER_STEP = 22.0
-NAVMESH_ROTATE_THRESHOLD_DEG = 6.0
+NAVMESH_ROTATE_THRESHOLD_DEG = 45.0
+NAVMESH_COLLINEAR_PRUNE_MAX_TURN_DEG = 8.0
+
+# Nav obstacle half-extent padding (mesh/collision hull > AABB).
+NAV_PROP_OBSTACLE_PADDING_CM = 15.0
+NAV_ROADBLOCK_OBSTACLE_PADDING_CM = 35.0
+
+# Open-loop chord clearance: sample segments and insert midpoints when below planning radius.
+NAVMESH_CHORD_SAMPLE_SPACING_CM = 8.0
 
 # Phase 4: faster navmesh profile (no L2 depth cycles).
 NAVMESH_PERCEPTION_INTERVAL_S = 5.0

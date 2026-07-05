@@ -50,7 +50,7 @@ public:
 		float EndY,
 		float EndZ);
 
-	/** Axis-aligned actor bounds [cm]. Returns JSON {ok, cx, cy, cz, half_x, half_y, half_z}. */
+	/** Axis-aligned actor bounds [cm]. Returns JSON with colliding half_* (primary) and half_*_all (debug). */
 	UFUNCTION(BlueprintCallable, Category = "NavQuery")
 	FString GetActorBoundsJson(const FString& ActorName);
 
@@ -78,9 +78,9 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "NavQuery")
 	float ProjectExtentCm = 30.0f;
 
-	/** Default agent radius [cm] for NavFindPath (center-to-surface planning clearance). */
+	/** Default agent radius [cm]: 100 cm body-edge clearance + 80 cm body radius. */
 	UPROPERTY(EditAnywhere, Category = "NavQuery")
-	float DefaultAgentRadiusCm = 100.0f;
+	float DefaultAgentRadiusCm = 180.0f;
 
 private:
 	UPROPERTY()
