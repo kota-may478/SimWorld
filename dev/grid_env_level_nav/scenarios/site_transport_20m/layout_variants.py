@@ -27,6 +27,7 @@ from zones import (  # noqa: E402
 )
 
 from placement import (  # noqa: E402
+    CARDINAL_YAW_DEG,
     DEFAULT_SEED,
     LayoutEntry,
     TRANSPORT_LOCAL_CM,
@@ -339,7 +340,7 @@ def generate_random_layout_entries(
             xy = _sample_yard_xy(rng, placed, pit_inner=pit_inner, yard_index=yard_slot)
             yard_slot += 1
         placed.append(xy)
-        yaw = rng.uniform(-40.0, 40.0)
+        yaw = rng.choice(CARDINAL_YAW_DEG)
         entries.append((bp_name, cluster, role, xy, yaw, False))
 
     transport_pool = list(pools["transport"])
@@ -351,7 +352,7 @@ def generate_random_layout_entries(
             "material_yard",
             "shipping_crate",
             TRANSPORT_LOCAL_CM,
-            rng.uniform(-25.0, 25.0),
+            rng.choice(CARDINAL_YAW_DEG),
             True,
         )
     )

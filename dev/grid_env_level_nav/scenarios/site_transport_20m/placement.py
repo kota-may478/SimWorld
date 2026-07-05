@@ -43,6 +43,36 @@ TRANSPORT_LOCAL_CM = (1850.0, 1850.0)
 
 LayoutEntry = Tuple[str, str, str, Tuple[float, float], float, bool]
 
+# Prop yaw must stay on cardinals so GetActorBounds AABB matches the visual footprint.
+CARDINAL_YAW_DEG: Tuple[float, ...] = (0.0, 90.0, 180.0, -90.0)
+
+
+def quantize_prop_yaw_deg(yaw_deg: float) -> float:
+    """Snap prop yaw to 0/±90/180° for axis-aligned NavMesh obstacle bounds."""
+    normalized = ((float(yaw_deg) + 180.0) % 360.0) - 180.0
+    bucket = round(normalized / 90.0) * 90.0
+    if bucket in (-180.0, 180.0):
+        return 180.0
+    if bucket == -270.0:
+        return 90.0
+    if bucket == 270.0:
+        return -90.0
+    return bucket
+
+
+def roadblock_yaw_deg_for_role(role: str) -> float:
+    """Yaw each BP_Roadblock_03b so its long axis tiles the forbidden-rect perimeter."""
+    by_role = {
+        "roadblock_south": 0.0,
+        "roadblock_north": 180.0,
+        "roadblock_west": 90.0,
+        "roadblock_east": -90.0,
+    }
+    if role not in by_role:
+        raise ValueError(f"unknown roadblock role: {role}")
+    return by_role[role]
+
+
 # (bp_name, cluster, role, local_xy_cm, yaw_deg, is_transport_target)
 _SITE_PROPS_LAYOUT: List[LayoutEntry] = [
     # SW facilities / equipment
@@ -136,7 +166,11 @@ class SitePropSlot:
             cluster_id=str(raw.get("cluster_id", "")),
             role=str(raw.get("role", "")),
             local_xy_cm=(float(raw["local_xy_cm"][0]), float(raw["local_xy_cm"][1])),
-            yaw_deg=float(raw.get("yaw_deg", 0.0)),
+            yaw_deg=(
+                roadblock_yaw_deg_for_role(str(raw.get("role", "")))
+                if str(raw.get("cluster_id", "")) == "no_entry_roadblock"
+                else quantize_prop_yaw_deg(float(raw.get("yaw_deg", 0.0)))
+            ),
             is_transport_target=bool(raw.get("is_transport_target", False)),
             world_xyz_cm=(
                 (float(world[0]), float(world[1]), float(world[2])) if world is not None else None
@@ -246,6 +280,10 @@ def build_registry_from_layout(
         if bp_name not in catalog:
             raise RuntimeError(f"missing catalog entry: {bp_name}")
         entry = catalog[bp_name]
+        if cluster == "no_entry_roadblock":
+            yaw_out = roadblock_yaw_deg_for_role(role)
+        else:
+            yaw_out = quantize_prop_yaw_deg(yaw_deg)
         props.append(
             SitePropSlot(
                 slot_id=f"{PROP_ACTOR_PREFIX}_{idx:03d}",
@@ -256,7 +294,7 @@ def build_registry_from_layout(
                 cluster_id=cluster,
                 role=role,
                 local_xy_cm=local_xy,
-                yaw_deg=yaw_deg,
+                yaw_deg=yaw_out,
                 is_transport_target=is_target,
             )
         )

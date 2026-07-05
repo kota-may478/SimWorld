@@ -22,7 +22,12 @@ from layout_variants import (  # noqa: E402
     generate_random_layout_entries,
     layout_id_for_index,
 )
-from placement import TRANSPORT_LOCAL_CM, build_registry_from_layout  # noqa: E402
+from placement import (  # noqa: E402
+    TRANSPORT_LOCAL_CM,
+    build_registry_from_layout,
+    quantize_prop_yaw_deg,
+    roadblock_yaw_deg_for_role,
+)
 from zones import forbidden_zones_for_layout, sw_cluster_rect_from_points  # noqa: E402
 
 
@@ -55,12 +60,45 @@ def test_generate_ten_distinct_variants() -> None:
 
 def test_random_entries_respect_pickup_exclusion() -> None:
     entries, _, zones = generate_random_layout_entries(3)
-    for bp, cluster, _role, xy, _yaw, is_target in entries:
+    for bp, cluster, _role, xy, yaw, is_target in entries:
         if is_target:
             assert xy == TRANSPORT_LOCAL_CM
+            assert yaw in {0.0, 90.0, 180.0, -90.0}
         else:
             assert cluster != "no_entry_roadblock" or bp == "BP_Roadblock_03b"
+            if cluster != "no_entry_roadblock":
+                assert yaw in {0.0, 90.0, 180.0, -90.0}
     assert len(zones) == 2
+
+
+def test_quantize_prop_yaw_snaps_to_cardinals() -> None:
+    assert quantize_prop_yaw_deg(20.0) == 0.0
+    assert quantize_prop_yaw_deg(45.0) == 90.0
+    assert quantize_prop_yaw_deg(-95.0) == -90.0
+    assert quantize_prop_yaw_deg(170.0) == 180.0
+    assert quantize_prop_yaw_deg(180.0) == 180.0
+    assert quantize_prop_yaw_deg(-180.0) == 180.0
+
+
+def test_roadblock_perimeter_yaws_form_square() -> None:
+    entries = __import__("placement", fromlist=["_roadblock_perimeter_layout"])._roadblock_perimeter_layout(
+        (1270.0, 910.0, 1630.0, 1270.0)
+    )
+    by_role: dict[str, float] = {}
+    for _bp, _cluster, role, _xy, yaw, _target in entries:
+        by_role[role] = yaw
+    assert by_role["roadblock_south"] == 0.0
+    assert by_role["roadblock_north"] == 180.0
+    assert by_role["roadblock_west"] == 90.0
+    assert by_role["roadblock_east"] == -90.0
+    reg = build_registry_from_layout(
+        entries,
+        seed=1,
+        layout_id="layout_test",
+        forbidden_zones=[],
+    )
+    for prop in reg.props:
+        assert prop.yaw_deg == roadblock_yaw_deg_for_role(prop.role)
 
 
 def test_sw_cluster_rect_from_points() -> None:
