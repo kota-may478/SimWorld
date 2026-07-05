@@ -136,12 +136,40 @@ def update_l2_depth(
     clearance_m = close_range_clearance_cm / 100.0
     min_fwd_m = min_forward_depth_m(depth_m, fov_deg=cfg.fov_deg)
     near_frac = _depth_near_fraction(depth_m, clearance_m)
-    if near_frac > KEEPOUT_NEAR_FRACTION_SKIP and (
-        min_fwd_m is None or min_fwd_m >= clearance_m
+    if (
+        near_frac > KEEPOUT_NEAR_FRACTION_SKIP
+        and min_fwd_m is not None
+        and min_fwd_m >= clearance_m
     ):
         keepout = []
     elif len(keepout) > MAX_KEEPOUT_CELLS_PER_FRAME:
         keepout = keepout[:MAX_KEEPOUT_CELLS_PER_FRAME]
+
+    if (
+        not keepout
+        and min_fwd_m is not None
+        and min_fwd_m < clearance_m
+        and near_frac <= KEEPOUT_NEAR_FRACTION_SKIP
+    ):
+        import math
+
+        from work_region import world_xy_to_cell  # noqa: WPS433
+
+        yaw_rad = math.radians(robot_yaw_deg)
+        fwd_cm = min_fwd_m * 100.0
+        cam_x = robot_xy[0] + cfg.camera_offset_forward_cm * math.cos(yaw_rad)
+        cam_y = robot_xy[1] + cfg.camera_offset_forward_cm * math.sin(yaw_rad)
+        wx = cam_x + fwd_cm * math.cos(yaw_rad)
+        wy = cam_y + fwd_cm * math.sin(yaw_rad)
+        center = world_xy_to_cell(wx, wy, layers.resolution_cm, clamp=True)
+        if center is not None:
+            from perception_layer import _dilate_cells  # noqa: WPS433
+
+            radius_cells = max(
+                1, int(math.ceil(close_range_keepout_cm / layers.resolution_cm))
+            )
+            keepout = _dilate_cells([center], layers, radius_cells=radius_cells)
+
     keepout_added = (
         apply_l2_obstacle_cells(layers, keepout, config=cfg, latch_static=False)
         if keepout

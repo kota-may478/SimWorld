@@ -325,8 +325,9 @@ def close_range_keepout_cells_from_depth(
     cy_center = (h - 1) / 2.0
     cam_x = robot_xy[0] + cfg.camera_offset_forward_cm * math.cos(yaw_rad)
     cam_y = robot_xy[1] + cfg.camera_offset_forward_cm * math.sin(yaw_rad)
-    cam_z = floor_z_cm + cfg.camera_height_cm
-    for v in range(0, h, max(1, cfg.stride_px)):
+    # Skip bottom band — floor dominates depth there and causes false keepout.
+    max_v = max(1, int(h * 0.82))
+    for v in range(0, max_v, max(1, cfg.stride_px)):
         for u in range(0, w, max(1, cfg.stride_px)):
             d_m = float(depth_m[v, u])
             if not math.isfinite(d_m) or d_m <= 0.05:
@@ -338,10 +339,6 @@ def close_range_keepout_cells_from_depth(
             y_cam = d_cm
             z_cam = -(v - cy_center) * d_cm / fx
             y_fwd = y_cam * cos_pitch - z_cam * sin_pitch
-            z_up = y_cam * sin_pitch + z_cam * cos_pitch
-            wz = cam_z + z_up
-            if wz - floor_z_cm < cfg.min_obstacle_height_cm:
-                continue
             wx = cam_x + y_fwd * math.cos(yaw_rad) - x_cam * math.sin(yaw_rad)
             wy = cam_y + y_fwd * math.sin(yaw_rad) + x_cam * math.cos(yaw_rad)
             cell = world_xy_to_cell(wx, wy, layers.resolution_cm, clamp=True)
@@ -434,7 +431,8 @@ def min_forward_depth_m(
     u0 = max(0, int(cx - half_width_px))
     u1 = min(w, int(cx + half_width_px) + 1)
     v0 = h // 3
-    roi = depth_m[v0:h, u0:u1]
+    v1 = max(v0 + 1, int(h * 0.82))
+    roi = depth_m[v0:v1, u0:u1]
     valid = roi[np.isfinite(roi) & (roi > 0.05) & (roi < 80.0)]
     if valid.size == 0:
         return None

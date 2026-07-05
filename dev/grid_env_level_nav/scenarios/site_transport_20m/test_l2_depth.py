@@ -159,7 +159,8 @@ class L2DepthTest(unittest.TestCase):
 
     def test_keepout_skipped_when_near_fraction_high(self) -> None:
         layers = _tiny_layers()
-        depth = np.full((64, 64), 0.25, dtype=np.float32)
+        depth = np.full((64, 64), 2.0, dtype=np.float32)
+        depth[int(64 * 0.82) :, :] = 0.25
         cfg = EgocentricPerceptionConfig(
             min_obstacle_height_cm=10.0,
             stride_px=16,
@@ -175,6 +176,27 @@ class L2DepthTest(unittest.TestCase):
             close_range_clearance_cm=125.0,
         )
         self.assertEqual(result.keepout_cells, 0)
+
+    def test_keepout_applied_for_close_forward_wall(self) -> None:
+        layers = _tiny_layers()
+        depth = np.full((64, 64), 2.5, dtype=np.float32)
+        depth[18:34, 26:38] = 0.75
+        cfg = EgocentricPerceptionConfig(
+            min_obstacle_height_cm=10.0,
+            stride_px=8,
+            use_log_odds=True,
+            latch_static=True,
+        )
+        result = update_l2_depth(
+            depth,
+            layers,
+            robot_xy=(-500.0, -1700.0),
+            robot_yaw_deg=0.0,
+            config=cfg,
+            close_range_clearance_cm=100.0,
+            close_range_keepout_cm=100.0,
+        )
+        self.assertGreater(result.keepout_cells, 0)
 
     def test_update_l2_from_depth_image_offline(self) -> None:
         layers = _tiny_layers()
