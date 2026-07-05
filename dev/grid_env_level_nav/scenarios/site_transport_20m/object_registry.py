@@ -370,12 +370,13 @@ def _target_world_xy(
     *,
     humanoid_actor_name: str,
 ) -> Optional[WorldXY]:
+    del placement_reg  # registry XY is not used — live UE pose only
     live = _actor_world_xy(ucv, target.actor_name)
     if live is not None:
         return live
     if target.actor_name == humanoid_actor_name or target.slot_id == humanoid_actor_name:
         return _actor_world_xy(ucv, humanoid_actor_name)
-    return _placement_xy_for_slot(placement_reg, target.slot_id)
+    return None
 
 
 def detection_from_world_pose(
@@ -447,6 +448,10 @@ def update_object_registry_from_sight(
     raw_targets = fetch_ue_sight_targets(ucv, robot_name)
     if raw_targets is None:
         backend = "geom_fallback"
+        print(
+            "[Site20] WARNING: UE sight unavailable — geom_fallback "
+            "(registry FOV, not AI Perception)"
+        )
         raw_targets = _fallback_visible_targets(
             ucv,
             robot_name,
