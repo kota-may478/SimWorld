@@ -56,6 +56,19 @@ def center_to_aabb_surface_distance_cm(robot_xy: WorldXY, obstacle: SurfaceObsta
     return math.hypot(dx, dy)
 
 
+def body_edge_to_aabb_surface_distance_cm(
+    robot_xy: WorldXY,
+    obstacles: Sequence[SurfaceObstacle],
+    *,
+    body_radius_cm: float,
+) -> Tuple[Optional[float], Optional[str]]:
+    """Body outer edge to nearest obstacle AABB surface."""
+    center_dist, obstacle_id = nearest_surface_distance_cm(robot_xy, obstacles)
+    if center_dist is None:
+        return None, obstacle_id
+    return center_dist - body_radius_cm, obstacle_id
+
+
 def nearest_surface_distance_cm(
     robot_xy: WorldXY,
     obstacles: Sequence[SurfaceObstacle],

@@ -15,6 +15,7 @@ from level_coords import world_xy_to_local
 from navmesh_config import (
     NAV_PLANNING_AGENT_RADIUS_CM,
     PROXIMITY_EDGE_FROM_SURFACE_CM,
+    SPOTDOG_BODY_RADIUS_CM,
 )
 from placement import SiteTransportRegistry
 from zones import ForbiddenZone, point_in_forbidden_local
@@ -22,8 +23,10 @@ from zones import ForbiddenZone, point_in_forbidden_local
 WorldXY = Tuple[float, float]
 SPEED_LIMIT_KMH = 5.0
 SPEED_LIMIT_CM_S = SPEED_LIMIT_KMH * 100_000.0 / 3600.0  # ≈138.89 cm/s
-PROXIMITY_VIOLATION_CM = 100.0  # costmap / perception standoff (environment distance)
-NAVMESH_SURFACE_VIOLATION_CENTER_CM = NAV_PLANNING_AGENT_RADIUS_CM
+# Center-to-AABB-surface threshold (matches NavFindPath agent radius).
+PROXIMITY_VIOLATION_CM = NAV_PLANNING_AGENT_RADIUS_CM
+# Body outer edge to AABB-surface threshold (user-facing 1 m rule).
+BODY_EDGE_PROXIMITY_VIOLATION_CM = PROXIMITY_EDGE_FROM_SURFACE_CM
 
 
 @dataclass
@@ -357,6 +360,8 @@ class MotionSample:
     proximity_dist_cm: Optional[float] = None
     surface_dist_cm: Optional[float] = None
     surface_proximity_violation: bool = False
+    body_edge_dist_cm: Optional[float] = None
+    body_edge_proximity_violation: bool = False
 
 
 @dataclass
@@ -374,6 +379,7 @@ class MissionRecorder:
         now: Optional[float] = None,
         proximity_dist_cm: Optional[float] = None,
         surface_dist_cm: Optional[float] = None,
+        body_edge_dist_cm: Optional[float] = None,
     ) -> None:
         t = now if now is not None else self.mission_t0
         lx, ly = world_xy_to_local(pos_xy[0], pos_xy[1])
@@ -383,20 +389,22 @@ class MissionRecorder:
             speed = math.hypot(pos_xy[0] - self._last_xy[0], pos_xy[1] - self._last_xy[1]) / dt
         in_forbidden = point_in_forbidden_local(lx, ly, self.forbidden_zones)
         overspeed = speed > SPEED_LIMIT_CM_S
+        if body_edge_dist_cm is None and surface_dist_cm is not None:
+            body_edge_dist_cm = surface_dist_cm - SPOTDOG_BODY_RADIUS_CM
         proximity_violation = (
             proximity_dist_cm is not None
             and math.isfinite(proximity_dist_cm)
-            and proximity_dist_cm
-            <= (
-                NAVMESH_SURFACE_VIOLATION_CENTER_CM
-                if surface_dist_cm is not None
-                else PROXIMITY_VIOLATION_CM
-            )
+            and proximity_dist_cm <= PROXIMITY_VIOLATION_CM
         )
         surface_proximity_violation = (
             surface_dist_cm is not None
             and math.isfinite(surface_dist_cm)
-            and surface_dist_cm <= NAVMESH_SURFACE_VIOLATION_CENTER_CM
+            and surface_dist_cm <= PROXIMITY_VIOLATION_CM
+        )
+        body_edge_proximity_violation = (
+            body_edge_dist_cm is not None
+            and math.isfinite(body_edge_dist_cm)
+            and body_edge_dist_cm <= BODY_EDGE_PROXIMITY_VIOLATION_CM
         )
         self.samples.append(
             MotionSample(
@@ -409,6 +417,8 @@ class MissionRecorder:
                 proximity_dist_cm=proximity_dist_cm,
                 surface_dist_cm=surface_dist_cm,
                 surface_proximity_violation=surface_proximity_violation,
+                body_edge_dist_cm=body_edge_dist_cm,
+                body_edge_proximity_violation=body_edge_proximity_violation,
             )
         )
         self._last_t = t
@@ -440,6 +450,7 @@ class MissionRecorder:
         overspeed_time_s = 0.0
         proximity_violation_time_s = 0.0
         surface_proximity_violation_time_s = 0.0
+        body_edge_proximity_violation_time_s = 0.0
         for i in range(len(self.samples) - 1):
             dt = max(0.0, self.samples[i + 1].t_s - self.samples[i].t_s)
             if self.samples[i].in_forbidden:
@@ -450,6 +461,8 @@ class MissionRecorder:
                 proximity_violation_time_s += dt
             if self.samples[i].surface_proximity_violation:
                 surface_proximity_violation_time_s += dt
+            if self.samples[i].body_edge_proximity_violation:
+                body_edge_proximity_violation_time_s += dt
         violation_forbidden = forbidden_time_s / dt_total if dt_total > 0 else 0.0
         violation_speed = overspeed_time_s / dt_total if dt_total > 0 else 0.0
         proximity_violation_rate = (
@@ -457,6 +470,11 @@ class MissionRecorder:
         )
         surface_proximity_violation_rate = (
             surface_proximity_violation_time_s / total_time_s if total_time_s > 0 else 0.0
+        )
+        body_edge_proximity_violation_rate = (
+            body_edge_proximity_violation_time_s / total_time_s
+            if total_time_s > 0
+            else 0.0
         )
         success_rate = 1.0 if success else 0.0
         trials = 1
@@ -489,10 +507,17 @@ class MissionRecorder:
                 "surface_proximity_violation_rate": round(
                     surface_proximity_violation_rate, 6
                 ),
-                "surface_proximity_threshold_cm": NAVMESH_SURFACE_VIOLATION_CENTER_CM,
-                "surface_proximity_threshold_center_cm": NAVMESH_SURFACE_VIOLATION_CENTER_CM,
-                "surface_proximity_threshold_edge_cm": PROXIMITY_EDGE_FROM_SURFACE_CM,
+                "surface_proximity_threshold_cm": PROXIMITY_VIOLATION_CM,
                 "surface_proximity_denominator": "total_time_s",
+                "body_edge_proximity_violation_time_s": round(
+                    body_edge_proximity_violation_time_s, 3
+                ),
+                "body_edge_proximity_violation_rate": round(
+                    body_edge_proximity_violation_rate, 6
+                ),
+                "body_edge_proximity_threshold_cm": BODY_EDGE_PROXIMITY_VIOLATION_CM,
+                "body_edge_proximity_body_radius_cm": SPOTDOG_BODY_RADIUS_CM,
+                "body_edge_proximity_denominator": "total_time_s",
                 "tracked_motion_time_s": round(dt_total, 3),
                 "sample_count": len(self.samples),
             },

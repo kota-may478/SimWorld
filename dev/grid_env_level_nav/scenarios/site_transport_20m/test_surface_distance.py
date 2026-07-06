@@ -46,22 +46,28 @@ class TestSurfaceDistance(unittest.TestCase):
         self.assertEqual(obstacle_id, "a")
         self.assertAlmostEqual(dist, 80.0)
 
-    def test_chord_clearance_inserts_midpoint(self) -> None:
+    def test_chord_densify_inserts_midpoint(self) -> None:
         obstacles = (
-            SurfaceObstacle("box", 0.0, 100.0, 50.0, 50.0),
+            SurfaceObstacle("wall", 100.0, 0.0, 10.0, 200.0),
         )
-        start = (-200.0, 0.0)
-        end = (200.0, 0.0)
-        clearance = min_clearance_on_segment_cm(start, end, obstacles)
-        self.assertIsNotNone(clearance)
-        assert clearance is not None
-        self.assertLess(clearance, 100.0)
+        points = ((0.0, 0.0), (200.0, 0.0))
         dense = densify_waypoints_for_chord_clearance(
-            [start, end],
+            points,
             obstacles,
-            min_clearance_cm=100.0,
+            min_clearance_cm=120.0,
+            sample_spacing_cm=20.0,
+            max_insertions=8,
         )
-        self.assertGreater(len(dense), 2)
+        self.assertGreater(len(dense), len(points))
+        clearance = min_clearance_on_segment_cm(
+            dense[0],
+            dense[1],
+            obstacles,
+            sample_spacing_cm=10.0,
+        )
+        self.assertIsNotNone(clearance)
+        if clearance is not None:
+            self.assertGreater(clearance, 50.0)
 
 
 if __name__ == "__main__":
