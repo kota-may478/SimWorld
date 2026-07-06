@@ -442,6 +442,35 @@ def verify_spotdog_at_start(
     return True
 
 
+def ensure_robot_in_work_region(
+    ucv: UnrealCV,
+    robot_name: str,
+    reset_local_xy: LocalXY,
+    *,
+    nav_actor: Optional[str] = None,
+    region_size_cm: float = 2000.0,
+    margin_cm: float = 80.0,
+) -> Tuple[bool, str]:
+    """Soft-reset SpotDog when it has drifted outside the declared work bounds."""
+    loc = geh.try_get_location_cm(ucv, robot_name)
+    if loc is None:
+        ok, name = soft_reset_level_spotdog(
+            ucv, reset_local_xy, nav_actor=nav_actor
+        )
+        return ok, name
+    lx, ly = world_xy_to_local(float(loc[0]), float(loc[1]))
+    lo = margin_cm
+    hi = region_size_cm - margin_cm
+    if lo <= lx <= hi and lo <= ly <= hi:
+        return True, robot_name
+    print(
+        f"[LevelRobot] robot outside work region @ local=({lx:.1f}, {ly:.1f}) "
+        f"— soft-reset to {reset_local_xy}"
+    )
+    ok, name = soft_reset_level_spotdog(ucv, reset_local_xy, nav_actor=nav_actor)
+    return ok, name
+
+
 def prepare_spotdog_mission_start(
     ucv: UnrealCV,
     start_local_xy: LocalXY,
