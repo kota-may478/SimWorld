@@ -44,12 +44,12 @@ protected:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void Tick(float DeltaSeconds) override;
 
-	/** Default forward speed [cm/s]. 5 km/h — matches metrics.py SPEED_LIMIT_CM_S. */
+	/** Default forward speed [cm/s] (site_transport navmesh profile). */
 	UPROPERTY(EditAnywhere, Category = "NavMove")
-	float RobotSpeedCmPerSec = 500000.0f / 3600.0f;
+	float RobotSpeedCmPerSec = 180.0f;
 
 	UPROPERTY(EditAnywhere, Category = "NavMove")
-	float MaxMoveCmPerStep = 25.0f;
+	float MaxMoveCmPerStep = 90.0f;
 
 	UPROPERTY(EditAnywhere, Category = "NavMove")
 	float MaxTurnDegPerStep = 22.0f;
@@ -58,9 +58,13 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "NavMove")
 	float RotateThresholdDeg = 45.0f;
 
-	/** Move without pre-rotate when heading error is at or below this [deg]. */
+	/** Move without pre-rotate when heading error is at or below this [deg] (direct translation). */
 	UPROPERTY(EditAnywhere, Category = "NavMove")
 	float MoveHeadingToleranceDeg = 45.0f;
+
+	/** When !bUseDirectTranslation, rotate via BP until error is at or below this [deg]. */
+	UPROPERTY(EditAnywhere, Category = "NavMove")
+	float BpWalkHeadingToleranceDeg = 12.0f;
 
 	/** Prefer polyline segment bearing when robot→WP bearing differs by less than this [deg]. */
 	UPROPERTY(EditAnywhere, Category = "NavMove")
@@ -71,13 +75,13 @@ protected:
 	float CornerYawDeg = 15.0f;
 
 	UPROPERTY(EditAnywhere, Category = "NavMove")
-	float WaypointReachToleranceCm = 12.0f;
+	float WaypointReachToleranceCm = 40.0f;
 
 	UPROPERTY(EditAnywhere, Category = "NavMove")
 	float NavProjectExtentCm = 15.0f;
 
 	UPROPERTY(EditAnywhere, Category = "NavMove")
-	float DefaultAgentRadiusCm = 180.0f;
+	float DefaultAgentRadiusCm = 170.0f;
 
 	UPROPERTY(EditAnywhere, Category = "NavMove")
 	float StuckMoveThresholdCm = 8.0f;
@@ -194,5 +198,6 @@ private:
 	float ComputeCommandWaitSec(ECommandKind Kind, float Duration) const;
 	bool ShouldSkipStuckCheckForCommand(ECommandKind Kind) const;
 	bool ShouldWaitForBpProgress(ECommandKind Kind) const;
+	bool ShouldRotateBeforeMove(bool bAtCorner, float AbsAngleDiffDeg) const;
 	bool HasBpCommandProgress(const APawn* InPawn, ECommandKind Kind) const;
 };

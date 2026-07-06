@@ -415,7 +415,27 @@ bool ASpotDogNavController::ShouldSkipStuckCheckForCommand(ECommandKind Kind) co
 	{
 		return false;
 	}
-	return Kind == ECommandKind::Move && !bUseDirectTranslation;
+	if (Kind == ECommandKind::Move && !bUseDirectTranslation)
+	{
+		return true;
+	}
+	if (Kind == ECommandKind::Rotate && !bUseDirectYawRotation)
+	{
+		return true;
+	}
+	return false;
+}
+
+bool ASpotDogNavController::ShouldRotateBeforeMove(
+	bool bAtCorner,
+	float AbsAngleDiffDeg) const
+{
+	if (bUseDirectTranslation)
+	{
+		return bAtCorner && AbsAngleDiffDeg > RotateThresholdDeg;
+	}
+	// BP Move_Speed walks along pawn forward — align via NavExecRotate before each step.
+	return AbsAngleDiffDeg > BpWalkHeadingToleranceDeg;
 }
 
 bool ASpotDogNavController::ShouldWaitForBpProgress(ECommandKind Kind) const
@@ -644,7 +664,8 @@ void ASpotDogNavController::BeginFollowPath(int32 RequestId)
 	ResetSegmentYawLock();
 	if (APawn* ControlledPawn = GetPawn())
 	{
-		SnapPawnToNavMesh(ControlledPawn);
+		// Do not snap at path start — projection can pull the pawn off the planned
+		// polyline when multiple NavMesh islands exist on the Level map.
 	}
 	StartFollowTimer();
 }
@@ -755,17 +776,14 @@ void ASpotDogNavController::IssueNextMotionCommand()
 
 	UpdateLockedSegmentYaw(CurrentWaypointIndex, Loc);
 
-	const float HeadingYaw = bHasLockedSegmentYaw
-		? LockedSegmentYawDeg
-		: YawToTargetDeg(Loc, Target);
-	const float AngleDiff = NormalizeAngleDeg(HeadingYaw - YawDeg);
+	const float TargetYaw = YawToTargetDeg(Loc, Target);
+	const float AngleDiff = NormalizeAngleDeg(TargetYaw - YawDeg);
 	const float SafeSpeed = FMath::Max(RobotSpeedCmPerSec, 1.0f);
 	const float AbsAngleDiff = FMath::Abs(AngleDiff);
 	const bool bAtCorner = IsCornerWaypoint(CurrentWaypointIndex);
 
-	if (ActiveCommand != ECommandKind::Move
-		&& bAtCorner
-		&& AbsAngleDiff > RotateThresholdDeg)
+	if (ActiveCommand == ECommandKind::None
+		&& ShouldRotateBeforeMove(bAtCorner, AbsAngleDiff))
 	{
 		const float TurnDeg = FMath::Min(AbsAngleDiff, MaxTurnDegPerStep);
 		const float SignedTurnDeg = FMath::Sign(AngleDiff) * TurnDeg;
@@ -783,10 +801,8 @@ void ASpotDogNavController::IssueNextMotionCommand()
 
 	const float MoveCm = FMath::Min(DistanceCm, MaxMoveCmPerStep);
 	const float Duration = FMath::Max(BpCommandMinDurationSec, MoveCm / SafeSpeed);
-	const bool bMoved = bHasLockedSegmentYaw
-		? CallPawnMoveAlongHeading(SafeSpeed, Duration, HeadingYaw)
-		: CallPawnMoveSpeed(SafeSpeed, Duration, 0, Target);
-	if (!bMoved)
+	// Direct translation: move toward WP (cross-track). BP walk: pawn faces WP, then Move_Speed.
+	if (!CallPawnMoveSpeed(SafeSpeed, Duration, 0, Target))
 	{
 		MarkFailed(TEXT("move_vbp_missing"));
 		return;
