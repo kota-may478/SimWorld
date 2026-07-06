@@ -11,6 +11,7 @@ import nav_query as nq
 import nav_move as nm
 from carry import is_carry_ue_attached, sync_carry_pose
 from grid_env_10k_pie_patrol import dist2d
+import level_nav_robot as lnr
 from level_coords import NAV_PROJECT_PROBE_Z_CM, local_xy_to_world, world_xy_to_local
 from layered_nav import _fetch_nav_pose, _site_dog_move, _site_dog_rotate
 from metrics import NavTimingAccumulator
@@ -18,7 +19,6 @@ from nav_pose_query import PoseCache, invalidate_robot_pose
 from navmesh_config import (
     HUMANOID_REPLAN_DELTA_CM,
     NAVMESH_CHORD_SAMPLE_SPACING_CM,
-    NAVMESH_COLLINEAR_PRUNE_MAX_TURN_DEG,
     NAVMESH_GOAL_TOLERANCE_CM,
     NAVMESH_MAX_OPEN_LOOP_MOVE_CM,
     NAVMESH_MAX_TURN_DEG_PER_STEP,
@@ -29,7 +29,8 @@ from navmesh_config import (
     NAVMESH_STUCK_UNCHANGED_STEPS,
     NAVMESH_WAYPOINT_SPACING_CM,
     NAVMESH_WP_REACH_TOLERANCE_CM,
-    NAV_PLANNING_AGENT_RADIUS_CM,
+    NAV_FINDPATH_AGENT_RADIUS_CM,
+    NAV_PLANNING_CENTER_CLEARANCE_CM,
 )
 from navmesh_obstacles import _timed_rebuild, update_humanoid_obstacle
 from pie_safety import tick_settle
@@ -38,12 +39,31 @@ from surface_distance import (
     SurfaceObstacle,
     densify_waypoints_for_chord_clearance,
 )
+from region import REGION_SIZE_CM, ROBOT_START_LOCAL_CM
 from viz import NavTrace
 
 WorldXY = Tuple[float, float]
 WorldXYZ = Tuple[float, float, float]
 PoseSampleFn = Callable[[WorldXY, float], None]
 PerceiveFn = Callable[[], object]
+
+
+def _recover_robot_in_work_region(
+    ucv,
+    robot_name: str,
+    *,
+    nav_actor: str,
+    reset_local_xy: Tuple[float, float] = ROBOT_START_LOCAL_CM,
+) -> Tuple[bool, str]:
+    nm.nav_stop_move(ucv, robot_name)
+    ok, name = lnr.ensure_robot_in_work_region(
+        ucv,
+        robot_name,
+        reset_local_xy,
+        nav_actor=nav_actor,
+        region_size_cm=REGION_SIZE_CM,
+    )
+    return ok, name
 
 
 def _normalize_angle_deg(angle: float) -> float:
@@ -146,36 +166,14 @@ def _densify_waypoints(
     return dense
 
 
-def prune_collinear_waypoints(
-    points: Sequence[WorldXY],
-    *,
-    max_turn_deg: float = NAVMESH_COLLINEAR_PRUNE_MAX_TURN_DEG,
-) -> List[WorldXY]:
-    """Drop intermediate WPs that lie on nearly straight segments."""
-    if len(points) <= 2:
-        return list(points)
-
-    pruned: List[WorldXY] = [points[0]]
-    for idx in range(1, len(points) - 1):
-        prev = pruned[-1]
-        current = points[idx]
-        nxt = points[idx + 1]
-        prev_yaw = _yaw_to_target(prev, current)
-        next_yaw = _yaw_to_target(current, nxt)
-        turn_deg = abs(_normalize_angle_deg(next_yaw - prev_yaw))
-        if turn_deg >= max_turn_deg:
-            pruned.append(current)
-    pruned.append(points[-1])
-    return pruned
-
-
 def plan_navmesh_waypoints(
     ucv,
     nav_actor: str,
     start_xyz: WorldXYZ,
     goal_xyz: WorldXYZ,
     *,
-    agent_radius_cm: float = NAV_PLANNING_AGENT_RADIUS_CM,
+    findpath_agent_radius_cm: float = NAV_FINDPATH_AGENT_RADIUS_CM,
+    center_clearance_cm: float = NAV_PLANNING_CENTER_CLEARANCE_CM,
     path_obstacles: Optional[Sequence[SurfaceObstacle]] = None,
     nav_timing: Optional[NavTimingAccumulator] = None,
 ) -> List[WorldXY]:
@@ -185,7 +183,7 @@ def plan_navmesh_waypoints(
         nav_actor,
         start_xyz,
         goal_xyz,
-        agent_radius_cm=agent_radius_cm,
+        agent_radius_cm=findpath_agent_radius_cm,
     )
     if nav_timing is not None:
         nav_timing.record_elapsed("nav_find_path_ms", t_find)
@@ -200,21 +198,14 @@ def plan_navmesh_waypoints(
         dense = densify_waypoints_for_chord_clearance(
             dense,
             path_obstacles,
-            min_clearance_cm=agent_radius_cm,
+            min_clearance_cm=center_clearance_cm,
             sample_spacing_cm=NAVMESH_CHORD_SAMPLE_SPACING_CM,
         )
         if len(dense) != before:
             print(
                 f"[NavMeshNav] chord clearance densify {before} → {len(dense)} WP "
-                f"(min={agent_radius_cm:.0f}cm)"
+                f"(min={center_clearance_cm:.0f}cm)"
             )
-    before_prune = len(dense)
-    dense = prune_collinear_waypoints(dense)
-    if len(dense) != before_prune:
-        print(
-            f"[NavMeshNav] pruned collinear {before_prune} → {len(dense)} WP "
-            f"(max_turn={NAVMESH_COLLINEAR_PRUNE_MAX_TURN_DEG:.0f}°)"
-        )
     if len(dense) != len(points):
         print(
             f"[NavMeshNav] densified path {len(points)} → {len(dense)} WP "
@@ -346,6 +337,11 @@ def _navigate_navmesh_leg_moveto(
         )
     poll_s = 0.25
     leg_timeout_s = max(120.0, max_total_steps * 2.0)
+    ok_region, robot_name = _recover_robot_in_work_region(
+        ucv, robot_name, nav_actor=nav_actor
+    )
+    if not ok_region:
+        return False, last_humanoid_xy
     goal_xyz = _nav_plan_xyz(ucv, nav_actor, goal_xy, nav_timing=nav_timing)
     if goal_xyz is None:
         print(
@@ -364,15 +360,33 @@ def _navigate_navmesh_leg_moveto(
         )
         return False, last_humanoid_xy
     waypoints = plan_navmesh_waypoints(
-        ucv,
-        nav_actor,
-        start_xyz,
-        goal_xyz,
-        nav_timing=nav_timing,
+        ucv, nav_actor, start_xyz, goal_xyz,
         path_obstacles=path_obstacles,
+        nav_timing=nav_timing,
     )
     if not waypoints:
         return False, last_humanoid_xy
+
+    pos_xy, _, ucv = _fetch_nav_pose(ucv, robot_name, nav_timing, pose_cache, force=True)
+    if dist2d(pos_xy, waypoints[0]) > NAVMESH_WP_REACH_TOLERANCE_CM * 4:
+        print(
+            f"[NavMeshNav/moveto] first WP far from robot "
+            f"({dist2d(pos_xy, waypoints[0]):.0f}cm) — replan from pose"
+        )
+        cur_xyz = _start_xyz_for_robot(
+            ucv, nav_actor, pos_xy, robot_name, nav_timing=nav_timing
+        )
+        if cur_xyz is not None:
+            waypoints = plan_navmesh_waypoints(
+                ucv,
+                nav_actor,
+                cur_xyz,
+                goal_xyz,
+                path_obstacles=path_obstacles,
+                nav_timing=nav_timing,
+            )
+            if not waypoints:
+                return False, last_humanoid_xy
 
     if trace is not None:
         trace.record_plan(waypoints, reason=label or "initial")
@@ -432,12 +446,9 @@ def _navigate_navmesh_leg_moveto(
                     if cur_xyz is None:
                         return False, new_hxy
                     waypoints = plan_navmesh_waypoints(
-                        ucv,
-                        nav_actor,
-                        cur_xyz,
-                        goal_xyz,
-                        nav_timing=nav_timing,
+                        ucv, nav_actor, cur_xyz, goal_xyz,
                         path_obstacles=path_obstacles,
+                        nav_timing=nav_timing,
                     )
                     path_xyz = _waypoints_to_path_xyz(
                         ucv, nav_actor, waypoints, nav_timing=nav_timing
@@ -461,6 +472,19 @@ def _navigate_navmesh_leg_moveto(
                 ucv, robot_name, nav_timing, pose_cache, force=True
             )
             last_pose_t = now
+            lx, ly = world_xy_to_local(pos_xy[0], pos_xy[1])
+            if lx < -50.0 or ly < -50.0 or lx > REGION_SIZE_CM + 50.0 or ly > REGION_SIZE_CM + 50.0:
+                print(
+                    f"[NavMeshNav/moveto] left work region @ local=({lx:.0f},{ly:.0f}) "
+                    "— stop + soft-reset"
+                )
+                nm.nav_stop_move(ucv, robot_name)
+                ok_region, robot_name = _recover_robot_in_work_region(
+                    ucv, robot_name, nav_actor=nav_actor
+                )
+                if not ok_region:
+                    return False, human_xy
+                return False, human_xy
             if trace is not None:
                 trace.record_position(world_xy_to_local(*pos_xy))
             if on_pose_sample is not None:
@@ -496,12 +520,9 @@ def _navigate_navmesh_leg_moveto(
             if cur_xyz is None:
                 return False, human_xy
             waypoints = plan_navmesh_waypoints(
-                ucv,
-                nav_actor,
-                cur_xyz,
-                goal_xyz,
-                nav_timing=nav_timing,
+                ucv, nav_actor, cur_xyz, goal_xyz,
                 path_obstacles=path_obstacles,
+                nav_timing=nav_timing,
             )
             if not waypoints:
                 return False, human_xy
@@ -579,12 +600,9 @@ def _navigate_navmesh_leg_vbp(
         )
         return False, last_humanoid_xy
     waypoints = plan_navmesh_waypoints(
-        ucv,
-        nav_actor,
-        start_xyz,
-        goal_xyz,
-        nav_timing=nav_timing,
+        ucv, nav_actor, start_xyz, goal_xyz,
         path_obstacles=path_obstacles,
+        nav_timing=nav_timing,
     )
     if not waypoints:
         return False, last_humanoid_xy
@@ -671,12 +689,9 @@ def _navigate_navmesh_leg_vbp(
                     if cur_xyz is None:
                         continue
                     waypoints = plan_navmesh_waypoints(
-                        ucv,
-                        nav_actor,
-                        cur_xyz,
-                        goal_xyz,
-                        nav_timing=nav_timing,
+                        ucv, nav_actor, cur_xyz, goal_xyz,
                         path_obstacles=path_obstacles,
+                        nav_timing=nav_timing,
                     )
                     wp_index = 0
                     steps_on_wp = 0
@@ -719,10 +734,7 @@ def _navigate_navmesh_leg_vbp(
         did_motion = False
         t_move = time.perf_counter()
         if turn_deg > NAVMESH_ROTATE_THRESHOLD_DEG:
-            turn_duration_s = max(
-                NAVMESH_MIN_COMMAND_DURATION_S,
-                turn_deg / max(robot_speed, 1.0),
-            )
+            turn_duration_s = max(0.12, turn_deg / max(robot_speed, 1.0))
             _site_dog_rotate(ucv, robot_name, turn_duration_s, turn_deg, clockwise)
             if nav_timing is not None:
                 nav_timing.rotate_ms += (time.perf_counter() - t_move) * 1000.0
@@ -806,12 +818,9 @@ def _navigate_navmesh_leg_vbp(
                 _close_loop_overhead(nav_timing, loop_t0, accounted_at_start)
                 return False, human_xy
             waypoints = plan_navmesh_waypoints(
-                ucv,
-                nav_actor,
-                cur_xyz,
-                goal_xyz,
-                nav_timing=nav_timing,
+                ucv, nav_actor, cur_xyz, goal_xyz,
                 path_obstacles=path_obstacles,
+                nav_timing=nav_timing,
             )
             wp_index = 0
             steps_on_wp = 0

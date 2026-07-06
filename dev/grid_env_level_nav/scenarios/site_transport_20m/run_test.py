@@ -91,6 +91,7 @@ from pie_spawn_safety import ensure_live_or_reconnect  # noqa: E402
 from runtime_sight_sources import ensure_runtime_site20_sight_sources  # noqa: E402
 from spawn_pie import spawn_site_transport_scene  # noqa: E402
 from navmesh_mission_nav import deliver_to_navmesh, navigate_to_slot_navmesh
+from navmesh_config import SPOTDOG_BODY_RADIUS_CM
 from navmesh_obstacles import fetch_actor_bounds, setup_static_navmesh_obstacles
 from surface_distance import build_surface_obstacles_from_bounds, nearest_surface_distance_cm
 from viz import DEFAULT_ARTIFACT_DIR, NavTrace, save_site_transport_artifacts  # noqa: E402
@@ -1051,11 +1052,17 @@ def main() -> int:
                 surface_dist_cm, _ = nearest_surface_distance_cm(
                     pos_xy, surface_obstacles
                 )
+                body_edge_dist_cm = (
+                    surface_dist_cm - SPOTDOG_BODY_RADIUS_CM
+                    if surface_dist_cm is not None
+                    else None
+                )
                 recorder.record_pose(
                     pos_xy,
                     now=now_t,
                     surface_dist_cm=surface_dist_cm,
                     proximity_dist_cm=surface_dist_cm,
+                    body_edge_dist_cm=body_edge_dist_cm,
                 )
                 return
             from perception_standoff import nearest_environment_distance_cm  # noqa: WPS433

@@ -120,15 +120,10 @@ def _is_barrier_prop(prop: SitePropSlot) -> bool:
     return prop.cluster_id in {"no_entry_fence", "no_entry_roadblock"}
 
 
-def _enable_physics_collision_barrier(prop: SitePropSlot) -> bool:
-    """Roadblocks use NavModifier only — physics hull snags moveto near the perimeter."""
-    return prop.cluster_id == "no_entry_fence"
-
-
 def _enable_barrier_collisions(ucv, registry: SiteTransportRegistry) -> None:
     """Enable fence collision after spawn settle (avoids UE physics spike on spawn)."""
     for prop in registry.props:
-        if not _enable_physics_collision_barrier(prop):
+        if not _is_barrier_prop(prop):
             continue
         actor_name = _actor_name_for_slot(registry, prop)
         if geh.actor_exists(ucv, actor_name):

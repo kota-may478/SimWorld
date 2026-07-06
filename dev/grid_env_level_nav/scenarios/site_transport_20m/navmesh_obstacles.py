@@ -11,12 +11,14 @@ import nav_query as nq
 from metrics import NavTimingAccumulator
 from navmesh_config import (
     HUMANOID_NAV_OBSTACLE_ID,
+    NAV_FINDPATH_AGENT_RADIUS_CM,
+    NAV_MESH_HULL_PADDING_CM,
     NAV_OBSTACLE_HALF_HEIGHT_CM,
+    NAV_OBSTACLE_STANDOFF_CM,
     NAV_PROP_OBSTACLE_PADDING_CM,
     NAV_REBUILD_SETTLE_S,
-    NAV_ROADBLOCK_OBSTACLE_PADDING_CM,
+    NAV_ROADBLOCK_OBSTACLE_EXTRA_PADDING_CM,
     PROXIMITY_EDGE_FROM_SURFACE_CM,
-    NAV_PLANNING_AGENT_RADIUS_CM,
 )
 
 WorldXYZ = Tuple[float, float, float]
@@ -107,7 +109,7 @@ def register_props_from_registry(
     skip_transport_target: bool = True,
     nav_timing: Optional[NavTimingAccumulator] = None,
 ) -> Tuple[Dict[str, ActorBounds], int]:
-    """Register static prop AABB obstacles (surface boundary, no extra inflation)."""
+    """Register static prop AABB obstacles with 1 m standoff carved into NavMesh."""
     cached: Dict[str, ActorBounds] = {}
     registered = 0
     for prop in registry.props:
@@ -122,7 +124,7 @@ def register_props_from_registry(
             continue
         pad_cm = NAV_PROP_OBSTACLE_PADDING_CM
         if prop.cluster_id == "no_entry_roadblock":
-            pad_cm += NAV_ROADBLOCK_OBSTACLE_PADDING_CM
+            pad_cm += NAV_ROADBLOCK_OBSTACLE_EXTRA_PADDING_CM
         if register_box_obstacle(
             ucv, nav_actor, bounds, nav_timing=nav_timing, half_extent_pad_cm=pad_cm
         ):
@@ -152,9 +154,10 @@ def update_humanoid_obstacle(
         half_y=bounds.half_y,
         half_z=bounds.half_z,
     )
+    standoff_pad_cm = NAV_OBSTACLE_STANDOFF_CM + NAV_MESH_HULL_PADDING_CM
     half = (
-        max(5.0, human_bounds.half_x),
-        max(5.0, human_bounds.half_y),
+        max(5.0, human_bounds.half_x + standoff_pad_cm),
+        max(5.0, human_bounds.half_y + standoff_pad_cm),
         max(5.0, NAV_OBSTACLE_HALF_HEIGHT_CM),
     )
     t0 = time.perf_counter()
@@ -214,7 +217,8 @@ def setup_static_navmesh_obstacles(
         )
     print(
         f"[NavMeshObs] registered {count} prop obstacles; "
-        f"planning agent_radius={NAV_PLANNING_AGENT_RADIUS_CM:.0f}cm "
+        f"standoff_pad={NAV_PROP_OBSTACLE_PADDING_CM:.0f}cm "
+        f"findpath_agent_radius={NAV_FINDPATH_AGENT_RADIUS_CM:.0f}cm "
         f"(edge={PROXIMITY_EDGE_FROM_SURFACE_CM:.0f}cm + body radius)"
     )
     return cached, True
