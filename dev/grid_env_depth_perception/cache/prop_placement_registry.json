@@ -28,7 +28,7 @@
       "world_xyz_cm": [
         -550.0,
         -1800.0,
-        6455.0
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -58,7 +58,7 @@
       "world_xyz_cm": [
         -400.0,
         -1650.0,
-        6455.0
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -88,7 +88,7 @@
       "world_xyz_cm": [
         -600.0,
         -1550.0,
-        6455.0
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -118,7 +118,7 @@
       "world_xyz_cm": [
         -250.0,
         -1850.0,
-        6455.0
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -148,7 +148,7 @@
       "world_xyz_cm": [
         -150.0,
         -1700.0,
-        6455.0
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -178,7 +178,7 @@
       "world_xyz_cm": [
         -300.0,
         -1300.0,
-        6455.0
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -238,7 +238,7 @@
       "world_xyz_cm": [
         100.0,
         -1450.0,
-        6455.0
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -268,7 +268,7 @@
       "world_xyz_cm": [
         200.0,
         -1350.0,
-        6455.0
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -298,7 +298,7 @@
       "world_xyz_cm": [
         -700.0,
         -1000.0,
-        6455.0
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -328,7 +328,7 @@
       "world_xyz_cm": [
         -50.0,
         -1200.0,
-        6455.0
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -358,7 +358,7 @@
       "world_xyz_cm": [
         780.0,
         -480.0,
-        6455.0
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -388,7 +388,7 @@
       "world_xyz_cm": [
         920.0,
         -420.0,
-        6455.0
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -418,7 +418,7 @@
       "world_xyz_cm": [
         720.0,
         -280.0,
-        6455.0
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -478,7 +478,7 @@
       "world_xyz_cm": [
         900.0,
         -300.0,
-        6455.0
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -506,9 +506,9 @@
         1850.0
       ],
       "world_xyz_cm": [
-        838.235,
-        -347.059,
-        6457.206
+        840.0,
+        -350.0,
+        6455.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -538,7 +538,7 @@
       "world_xyz_cm": [
         -90.0,
         -870.0,
-        6455.0
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -568,7 +568,7 @@
       "world_xyz_cm": [
         270.0,
         -870.0,
-        6455.0
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -598,7 +598,7 @@
       "world_xyz_cm": [
         -30.0,
         -930.0,
-        6455.0
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -628,7 +628,7 @@
       "world_xyz_cm": [
         -30.0,
         -570.0,
-        6476.591
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -658,7 +658,7 @@
       "world_xyz_cm": [
         -90.0,
         -750.0,
-        6455.0
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -688,7 +688,7 @@
       "world_xyz_cm": [
         270.0,
         -750.0,
-        6455.0
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -718,7 +718,7 @@
       "world_xyz_cm": [
         90.0,
         -930.0,
-        6455.0
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -748,7 +748,7 @@
       "world_xyz_cm": [
         90.0,
         -570.0,
-        6455.0
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -778,7 +778,7 @@
       "world_xyz_cm": [
         -90.0,
         -630.0,
-        6459.167
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -808,7 +808,7 @@
       "world_xyz_cm": [
         270.0,
         -630.0,
-        6455.0
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -838,7 +838,7 @@
       "world_xyz_cm": [
         210.0,
         -930.0,
-        6480.0
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -868,7 +868,7 @@
       "world_xyz_cm": [
         210.0,
         -570.0,
-        6455.0
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
