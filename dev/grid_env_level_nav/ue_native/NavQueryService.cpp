@@ -2,10 +2,8 @@
 #include "NavQueryService.h"
 
 #include "Components/BrushComponent.h"
-#include "Components/CapsuleComponent.h"
 #include "Components/SceneComponent.h"
 #include "EngineUtils.h"
-#include "GameFramework/Character.h"
 #include "NavAreas/NavArea_Obstacle.h"
 #include "AI/Navigation/NavigationTypes.h"
 #include "NavigationPath.h"
@@ -236,46 +234,20 @@ FString ANavQueryService::GetActorBoundsJson(const FString& ActorName)
 			*ActorName);
 	}
 
-	FVector OriginAll = FVector::ZeroVector;
-	FVector ExtentAll = FVector::ZeroVector;
-	FVector OriginColl = FVector::ZeroVector;
-	FVector ExtentColl = FVector::ZeroVector;
-	Actor->GetActorBounds(false, OriginAll, ExtentAll, false);
-	Actor->GetActorBounds(true, OriginColl, ExtentColl, false);
-
-	float CapsuleRadiusCm = -1.0f;
-	float CapsuleHalfHeightCm = -1.0f;
-	if (const ACharacter* Character = Cast<ACharacter>(Actor))
-	{
-		if (const UCapsuleComponent* Capsule = Character->GetCapsuleComponent())
-		{
-			CapsuleRadiusCm = Capsule->GetScaledCapsuleRadius();
-			CapsuleHalfHeightCm = Capsule->GetScaledCapsuleHalfHeight();
-		}
-	}
+	FVector Origin = FVector::ZeroVector;
+	FVector Extent = FVector::ZeroVector;
+	Actor->GetActorBounds(false, Origin, Extent, false);
 
 	return FString::Printf(
-		TEXT("{\"ok\":true,\"actor\":\"%s\","
-			 "\"cx\":%.3f,\"cy\":%.3f,\"cz\":%.3f,"
-			 "\"half_x\":%.3f,\"half_y\":%.3f,\"half_z\":%.3f,"
-			 "\"cx_all\":%.3f,\"cy_all\":%.3f,\"cz_all\":%.3f,"
-			 "\"half_x_all\":%.3f,\"half_y_all\":%.3f,\"half_z_all\":%.3f,"
-			 "\"capsule_radius_cm\":%.3f,\"capsule_half_height_cm\":%.3f}"),
+		TEXT("{\"ok\":true,\"actor\":\"%s\",\"cx\":%.3f,\"cy\":%.3f,\"cz\":%.3f,"
+			 "\"half_x\":%.3f,\"half_y\":%.3f,\"half_z\":%.3f}"),
 		*ActorName,
-		OriginColl.X,
-		OriginColl.Y,
-		OriginColl.Z,
-		ExtentColl.X,
-		ExtentColl.Y,
-		ExtentColl.Z,
-		OriginAll.X,
-		OriginAll.Y,
-		OriginAll.Z,
-		ExtentAll.X,
-		ExtentAll.Y,
-		ExtentAll.Z,
-		CapsuleRadiusCm,
-		CapsuleHalfHeightCm);
+		Origin.X,
+		Origin.Y,
+		Origin.Z,
+		Extent.X,
+		Extent.Y,
+		Extent.Z);
 }
 
 ANavModifierVolume* ANavQueryService::GetOrCreateBoxObstacle(const FString& ObstacleId)
