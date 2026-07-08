@@ -208,7 +208,7 @@
       "world_xyz_cm": [
         -450.0,
         -1100.0,
-        6455.0
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -298,7 +298,7 @@
       "world_xyz_cm": [
         -700.0,
         -1000.0,
-        6490.0
+        6478.913
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
@@ -506,9 +506,9 @@
         1850.0
       ],
       "world_xyz_cm": [
-        840.0,
+        850.0,
         -350.0,
-        6455.0
+        6490.0
       ],
       "visit_order": null,
       "mask_color_set_rgb": null,
