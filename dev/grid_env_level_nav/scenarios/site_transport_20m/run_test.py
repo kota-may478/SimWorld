@@ -92,8 +92,13 @@ from runtime_sight_sources import ensure_runtime_site20_sight_sources  # noqa: E
 from spawn_pie import spawn_site_transport_scene  # noqa: E402
 from navmesh_mission_nav import deliver_to_navmesh, navigate_to_slot_navmesh
 from navmesh_config import SPOTDOG_BODY_RADIUS_CM
+from dynamic_nav_obstacles import (
+    mission_dynamic_obstacle_trackers,
+    prime_dynamic_obstacle_trackers,
+)
 from navmesh_obstacles import fetch_actor_bounds, setup_static_navmesh_obstacles
-from surface_distance import build_surface_obstacles_from_bounds, nearest_surface_distance_cm
+from surface_distance import build_path_clearance_obstacles, nearest_surface_distance_cm
+from navmesh_obstacles import planning_clearance_exempt_actor_names
 from viz import DEFAULT_ARTIFACT_DIR, NavTrace, save_site_transport_artifacts  # noqa: E402
 from zones import apply_forbidden_zones_l1  # noqa: E402
 
@@ -196,8 +201,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--nav-exec",
         choices=("vbp", "moveto"),
-        default="vbp",
-        help="navmesh only: vbp=open-loop Move_Speed (default); moveto=UE SpotDogNavController",
+        default="moveto",
+        help="navmesh only: moveto=UE SpotDogNavController (default); vbp=legacy open-loop",
     )
     p.add_argument(
         "--artifact-suffix",
@@ -387,6 +392,9 @@ def main() -> int:
 
         bounds_cache: Dict[str, Any] = {}
         surface_obstacles = ()
+        prop_path_obstacles = ()
+        clearance_exempt_actors = ()
+        dynamic_obstacle_trackers: list = []
         if nav_mode == "navmesh":
             bounds_cache, navmesh_ready = setup_static_navmesh_obstacles(
                 ucv, nav_actor, registry, nav_timing=navmesh_setup_timing
@@ -411,7 +419,28 @@ def main() -> int:
             )
             if human_bounds is not None:
                 bounds_cache[registry.humanoid_actor_name] = human_bounds
-            surface_obstacles = build_surface_obstacles_from_bounds(bounds_cache)
+            prop_bounds_cache = {
+                key: value
+                for key, value in bounds_cache.items()
+                if key != registry.humanoid_actor_name
+            }
+            clearance_exempt_actors = planning_clearance_exempt_actor_names(registry)
+            prop_path_obstacles = build_path_clearance_obstacles(
+                prop_bounds_cache,
+                exempt_actor_names=clearance_exempt_actors,
+            )
+            surface_obstacles = build_path_clearance_obstacles(
+                bounds_cache,
+                exempt_actor_names=clearance_exempt_actors,
+            )
+            dynamic_obstacle_trackers[:] = list(
+                prime_dynamic_obstacle_trackers(
+                    ucv,
+                    nav_actor,
+                    mission_dynamic_obstacle_trackers(registry),
+                    nav_timing=navmesh_setup_timing,
+                )
+            )
 
         if l2_mode == "off":
             print("[Site20] L2 perception disabled (--l2-mode off)")
@@ -1114,6 +1143,7 @@ def main() -> int:
                 print(
                     "[Site20] navmesh_timing_ms "
                     f"rebuild={totals.get('nav_rebuild_ms', 0):.0f} "
+                    f"local_rebuild={totals.get('nav_local_rebuild_ms', 0):.0f} "
                     f"find_path={totals.get('nav_find_path_ms', 0):.0f} "
                     f"project={totals.get('nav_project_ms', 0):.0f} "
                     f"bounds={totals.get('nav_bounds_ms', 0):.0f} "
@@ -1128,10 +1158,12 @@ def main() -> int:
                 print(
                     "[Site20] navmesh_timing_counts "
                     f"rebuild={totals.get('nav_rebuild_count', 0)} "
+                    f"local_rebuild={totals.get('nav_local_rebuild_count', 0)} "
                     f"find_path={totals.get('nav_find_path_count', 0)} "
                     f"project={totals.get('nav_project_count', 0)} "
                     f"stuck_replan={totals.get('stuck_replan_count', 0)} "
                     f"humanoid_replan={totals.get('humanoid_replan_count', 0)} "
+                    f"dynamic_replan={totals.get('dynamic_obstacle_replan_count', 0)} "
                     f"loop_iter={totals.get('nav_loop_iterations', 0)} "
                     f"pose_cache_hits={totals.get('pose_cache_hits', 0)}"
                 )
@@ -1176,7 +1208,10 @@ def main() -> int:
                     nav_timing=leg1_timing,
                     pose_cache=nav_pose_cache,
                     nav_exec=nav_exec,
-                    path_obstacles=surface_obstacles,
+                    path_obstacles=prop_path_obstacles,
+                    prop_bounds_cache=prop_bounds_cache,
+                    registry=registry,
+                    dynamic_obstacle_trackers=dynamic_obstacle_trackers,
                 )
             else:
                 leg1_ok = navigate_to_slot(
@@ -1272,7 +1307,10 @@ def main() -> int:
                     nav_timing=leg2_timing,
                     pose_cache=nav_pose_cache,
                     nav_exec=nav_exec,
-                    path_obstacles=surface_obstacles,
+                    path_obstacles=prop_path_obstacles,
+                    prop_bounds_cache=prop_bounds_cache,
+                    registry=registry,
+                    dynamic_obstacle_trackers=dynamic_obstacle_trackers,
                 )
             else:
                 leg2_ok = deliver_to(

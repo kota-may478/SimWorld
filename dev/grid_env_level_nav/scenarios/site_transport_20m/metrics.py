@@ -74,6 +74,7 @@ class NavTimingAccumulator:
     prefetch_hits: int = 0
     # NavMesh UE RPC buckets (navmesh mode)
     nav_rebuild_ms: float = 0.0
+    nav_local_rebuild_ms: float = 0.0
     nav_find_path_ms: float = 0.0
     nav_project_ms: float = 0.0
     nav_bounds_ms: float = 0.0
@@ -83,12 +84,14 @@ class NavTimingAccumulator:
     nav_densify_ms: float = 0.0
     # Counters (navmesh mode)
     nav_rebuild_count: int = 0
+    nav_local_rebuild_count: int = 0
     nav_find_path_count: int = 0
     nav_project_count: int = 0
     nav_bounds_count: int = 0
     nav_register_count: int = 0
     stuck_replan_count: int = 0
     humanoid_replan_count: int = 0
+    dynamic_obstacle_replan_count: int = 0
     wp_timeout_replan_count: int = 0
     nav_loop_iterations: int = 0
     nav_moveto_poll_ms: float = 0.0
@@ -136,6 +139,7 @@ class NavTimingAccumulator:
         self.prefetch_hit_ms += other.prefetch_hit_ms
         self.prefetch_hits += other.prefetch_hits
         self.nav_rebuild_ms += other.nav_rebuild_ms
+        self.nav_local_rebuild_ms += other.nav_local_rebuild_ms
         self.nav_find_path_ms += other.nav_find_path_ms
         self.nav_project_ms += other.nav_project_ms
         self.nav_bounds_ms += other.nav_bounds_ms
@@ -144,12 +148,14 @@ class NavTimingAccumulator:
         self.carry_sync_ms += other.carry_sync_ms
         self.nav_densify_ms += other.nav_densify_ms
         self.nav_rebuild_count += other.nav_rebuild_count
+        self.nav_local_rebuild_count += other.nav_local_rebuild_count
         self.nav_find_path_count += other.nav_find_path_count
         self.nav_project_count += other.nav_project_count
         self.nav_bounds_count += other.nav_bounds_count
         self.nav_register_count += other.nav_register_count
         self.stuck_replan_count += other.stuck_replan_count
         self.humanoid_replan_count += other.humanoid_replan_count
+        self.dynamic_obstacle_replan_count += other.dynamic_obstacle_replan_count
         self.wp_timeout_replan_count += other.wp_timeout_replan_count
         self.nav_loop_iterations += other.nav_loop_iterations
         self.nav_moveto_poll_ms += other.nav_moveto_poll_ms
@@ -179,6 +185,7 @@ class NavTimingAccumulator:
             + self.move_gate_spin_ms
             + self.loop_overhead_ms
             + self.nav_rebuild_ms
+            + self.nav_local_rebuild_ms
             + self.nav_find_path_ms
             + self.nav_project_ms
             + self.nav_bounds_ms
@@ -244,6 +251,7 @@ class NavTimingAccumulator:
             "prefetch_hit_ms": round(self.prefetch_hit_ms, 2),
             "prefetch_hits": self.prefetch_hits,
             "nav_rebuild_ms": round(self.nav_rebuild_ms, 2),
+            "nav_local_rebuild_ms": round(self.nav_local_rebuild_ms, 2),
             "nav_find_path_ms": round(self.nav_find_path_ms, 2),
             "nav_project_ms": round(self.nav_project_ms, 2),
             "nav_bounds_ms": round(self.nav_bounds_ms, 2),
@@ -252,12 +260,14 @@ class NavTimingAccumulator:
             "carry_sync_ms": round(self.carry_sync_ms, 2),
             "nav_densify_ms": round(self.nav_densify_ms, 2),
             "nav_rebuild_count": self.nav_rebuild_count,
+            "nav_local_rebuild_count": self.nav_local_rebuild_count,
             "nav_find_path_count": self.nav_find_path_count,
             "nav_project_count": self.nav_project_count,
             "nav_bounds_count": self.nav_bounds_count,
             "nav_register_count": self.nav_register_count,
             "stuck_replan_count": self.stuck_replan_count,
             "humanoid_replan_count": self.humanoid_replan_count,
+            "dynamic_obstacle_replan_count": self.dynamic_obstacle_replan_count,
             "wp_timeout_replan_count": self.wp_timeout_replan_count,
             "nav_loop_iterations": self.nav_loop_iterations,
             "nav_moveto_poll_ms": round(self.nav_moveto_poll_ms, 2),

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import math
 import time
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import nav_query as nq
 import nav_move as nm
@@ -17,7 +17,8 @@ from layered_nav import _fetch_nav_pose, _site_dog_move, _site_dog_rotate
 from metrics import NavTimingAccumulator
 from nav_pose_query import PoseCache, invalidate_robot_pose
 from navmesh_config import (
-    HUMANOID_REPLAN_DELTA_CM,
+    DYNAMIC_OBSTACLE_REPLAN_DELTA_CM,
+    NAVMESH_CHORD_MAX_INSERTIONS,
     NAVMESH_CHORD_SAMPLE_SPACING_CM,
     NAVMESH_GOAL_TOLERANCE_CM,
     NAVMESH_MAX_OPEN_LOOP_MOVE_CM,
@@ -29,15 +30,33 @@ from navmesh_config import (
     NAVMESH_STUCK_UNCHANGED_STEPS,
     NAVMESH_WAYPOINT_SPACING_CM,
     NAVMESH_WP_REACH_TOLERANCE_CM,
+    NAV_DYNAMIC_OBSTACLE_MODIFIER_ENABLED,
     NAV_FINDPATH_AGENT_RADIUS_CM,
+    NAV_PATH_RESAMPLE_SPACING_CM,
     NAV_PLANNING_CENTER_CLEARANCE_CM,
+    NAV_PLANNING_GOAL_PUSH_MARGIN_CM,
+    NAV_REBUILD_LOCAL_DIRTY_MARGIN_CM,
+    NAV_REGISTER_HUMANOID_NAV_MODIFIER,
+    PROXIMITY_EDGE_FROM_SURFACE_CM,
+    SPOTDOG_BODY_RADIUS_CM,
+    planning_center_clearance_required_cm,
+    planning_goal_center_clearance_required_cm,
+    planning_goal_position_center_clearance_cm,
 )
-from navmesh_obstacles import _timed_rebuild, update_humanoid_obstacle
+from dynamic_nav_obstacles import (
+    DynamicNavObstacleTracker,
+    poll_dynamic_obstacles_for_replan,
+)
+from navmesh_obstacles import _timed_rebuild
+from navmesh_types import ActorBounds
 from pie_safety import tick_settle
 from site_transport_config import NavProfile
 from surface_distance import (
     SurfaceObstacle,
+    adjust_xy_for_planning_clearance,
     densify_waypoints_for_chord_clearance,
+    validate_path_center_clearance,
+    validate_path_corridor_clearance,
 )
 from region import REGION_SIZE_CM, ROBOT_START_LOCAL_CM
 from viz import NavTrace
@@ -135,6 +154,33 @@ def _start_xyz_for_robot(
     )
 
 
+def _goal_xyz_for_planning(
+    ucv,
+    nav_actor: str,
+    goal_xy: WorldXY,
+    path_obstacles: Optional[Sequence[SurfaceObstacle]],
+    *,
+    nav_timing: Optional[NavTimingAccumulator] = None,
+) -> Optional[WorldXYZ]:
+    """Project goal onto NavMesh; nudge XY so SpotDog center meets prop clearance."""
+    xy = goal_xy
+    if path_obstacles:
+        adjusted, ok = adjust_xy_for_planning_clearance(
+            xy,
+            path_obstacles,
+            min_center_clearance_cm=planning_goal_position_center_clearance_cm(),
+        )
+        if not ok:
+            return None
+        if dist2d(adjusted, xy) > 1.0:
+            print(
+                f"[NavMeshNav] goal shifted for prop clearance "
+                f"({xy[0]:.0f},{xy[1]:.0f}) → ({adjusted[0]:.0f},{adjusted[1]:.0f})"
+            )
+        xy = adjusted
+    return _nav_plan_xyz(ucv, nav_actor, xy, nav_timing=nav_timing)
+
+
 def _densify_waypoints(
     points: Sequence[WorldXY],
     *,
@@ -166,6 +212,262 @@ def _densify_waypoints(
     return dense
 
 
+def _log_plan_failure(raw: dict) -> None:
+    err = raw.get("error", raw)
+    if err == "clearance_violation":
+        print(
+            "[NavMeshNav] plan rejected: clearance_violation "
+            f"min={raw.get('min_center_clearance_cm')}cm "
+            f"required={raw.get('required_center_clearance_cm')}cm "
+            f"worst={raw.get('worst_obstacle_id')}"
+        )
+    else:
+        print(f"[NavMeshNav] plan failed: {err}")
+
+
+def _replan_waypoints_at_robot(
+    ucv,
+    nav_actor: str,
+    robot_name: str,
+    goal_xyz: WorldXYZ,
+    *,
+    path_obstacles: Optional[Sequence[SurfaceObstacle]],
+    prop_bounds_cache: Optional[Dict[str, ActorBounds]],
+    registry: Any,
+    nav_timing: Optional[NavTimingAccumulator],
+    pose_cache: Optional[PoseCache],
+) -> Optional[List[WorldXY]]:
+    invalidate_robot_pose(pose_cache, reason="dynamic_obstacle_replan")
+    robot_xy, _, ucv = _fetch_nav_pose(
+        ucv, robot_name, nav_timing, pose_cache, force=True
+    )
+    cur_xyz = _start_xyz_for_robot(
+        ucv, nav_actor, robot_xy, robot_name, nav_timing=nav_timing
+    )
+    if cur_xyz is None:
+        return None
+    return plan_navmesh_waypoints(
+        ucv,
+        nav_actor,
+        cur_xyz,
+        goal_xyz,
+        **_nav_plan_call_kwargs(
+            path_obstacles=path_obstacles,
+            prop_bounds_cache=prop_bounds_cache,
+            registry=registry,
+            nav_timing=nav_timing,
+        ),
+    )
+
+
+def _maybe_replan_for_dynamic_obstacles(
+    ucv,
+    nav_actor: str,
+    goal_xyz: WorldXYZ,
+    waypoints: List[WorldXY],
+    *,
+    robot_name: str,
+    dynamic_obstacle_trackers: Optional[List[DynamicNavObstacleTracker]],
+    path_obstacles: Optional[Sequence[SurfaceObstacle]],
+    prop_bounds_cache: Optional[Dict[str, ActorBounds]],
+    registry: Any,
+    nav_timing: Optional[NavTimingAccumulator],
+    pose_cache: Optional[PoseCache],
+    on_before_replan: Optional[Callable[[], None]] = None,
+) -> Tuple[List[WorldXY], bool]:
+    if not dynamic_obstacle_trackers:
+        return waypoints, False
+    updated, moved = poll_dynamic_obstacles_for_replan(
+        ucv,
+        nav_actor,
+        dynamic_obstacle_trackers,
+        replan_delta_cm=DYNAMIC_OBSTACLE_REPLAN_DELTA_CM,
+        modifier_enabled=NAV_DYNAMIC_OBSTACLE_MODIFIER_ENABLED,
+        local_dirty_margin_cm=NAV_REBUILD_LOCAL_DIRTY_MARGIN_CM,
+        nav_timing=nav_timing,
+    )
+    dynamic_obstacle_trackers[:] = list(updated)
+    if not moved:
+        return waypoints, False
+    if on_before_replan is not None:
+        on_before_replan()
+    new_wp = _replan_waypoints_at_robot(
+        ucv,
+        nav_actor,
+        robot_name,
+        goal_xyz,
+        path_obstacles=path_obstacles,
+        prop_bounds_cache=prop_bounds_cache,
+        registry=registry,
+        nav_timing=nav_timing,
+        pose_cache=pose_cache,
+    )
+    if not new_wp:
+        return waypoints, False
+    if nav_timing is not None:
+        nav_timing.dynamic_obstacle_replan_count += 1
+        nav_timing.humanoid_replan_count += 1
+    actor_names = ",".join(t.actor_name for t in dynamic_obstacle_trackers)
+    print(
+        f"[NavMeshNav] dynamic obstacle replan ({actor_names}) "
+        f"→ {len(new_wp)} WP"
+    )
+    return new_wp, True
+
+
+def _fetch_validated_path(
+    ucv,
+    nav_actor: str,
+    start_xyz: WorldXYZ,
+    goal_xyz: WorldXYZ,
+    *,
+    findpath_agent_radius_cm: float,
+    center_clearance_cm: float,
+    resample_spacing_cm: float,
+    nav_timing: Optional[NavTimingAccumulator] = None,
+) -> Tuple[dict, bool]:
+    t_find = time.perf_counter()
+    use_validated = nq.nav_validated_api_available(ucv, nav_actor)
+    if use_validated:
+        raw = nq.nav_find_path_validated(
+            ucv,
+            nav_actor,
+            start_xyz,
+            goal_xyz,
+            agent_radius_cm=findpath_agent_radius_cm,
+            min_center_clearance_cm=center_clearance_cm,
+            resample_spacing_cm=resample_spacing_cm,
+        )
+        if not raw.get("ok") and raw.get("error") == "clearance_violation":
+            raw = nq.nav_find_path_validated(
+                ucv,
+                nav_actor,
+                start_xyz,
+                goal_xyz,
+                agent_radius_cm=findpath_agent_radius_cm,
+                min_center_clearance_cm=center_clearance_cm,
+                resample_spacing_cm=0.0,
+            )
+    else:
+        raw = nq.nav_find_path(
+            ucv,
+            nav_actor,
+            start_xyz,
+            goal_xyz,
+            agent_radius_cm=findpath_agent_radius_cm,
+        )
+    if nav_timing is not None:
+        nav_timing.record_elapsed("nav_find_path_ms", t_find)
+        nav_timing.nav_find_path_count += 1
+    return raw, use_validated
+
+
+def _postprocess_nav_path(
+    raw: dict,
+    *,
+    use_validated: bool,
+    path_obstacles: Optional[Sequence[SurfaceObstacle]],
+    center_clearance_cm: float,
+    resample_spacing_cm: float,
+    findpath_agent_radius_cm: float,
+    nav_timing: Optional[NavTimingAccumulator] = None,
+) -> List[WorldXY]:
+    points = nq.path_points_xy(raw)
+    if not points:
+        return []
+
+    if use_validated:
+        dense = list(points)
+        spacing = float(raw.get("resample_spacing_cm", 0.0))
+        if spacing > 0.0:
+            print(
+                f"[NavMeshNav] validated path {raw.get('corner_point_count', '?')} corners "
+                f"→ {len(dense)} resampled WP "
+                f"(spacing={resample_spacing_cm:.0f}cm, agent={findpath_agent_radius_cm:.0f}cm)"
+            )
+        else:
+            print(
+                f"[NavMeshNav] validated path {raw.get('corner_point_count', '?')} corners "
+                f"→ {len(dense)} WP (corner-only; agent={findpath_agent_radius_cm:.0f}cm)"
+            )
+    else:
+        dense = list(points)
+        print(
+            f"[NavMeshNav] fallback path {len(dense)} corner WP "
+            f"(agent={findpath_agent_radius_cm:.0f}cm)"
+        )
+
+    if path_obstacles:
+        corridor = validate_path_corridor_clearance(
+            dense,
+            path_obstacles,
+            min_center_clearance_cm=center_clearance_cm,
+            body_radius_cm=SPOTDOG_BODY_RADIUS_CM,
+            sample_spacing_cm=NAVMESH_CHORD_SAMPLE_SPACING_CM,
+        )
+        if not corridor.ok:
+            min_center_s = (
+                f"{corridor.min_center_clearance_cm:.1f}"
+                if corridor.min_center_clearance_cm is not None
+                else "n/a"
+            )
+            min_edge_s = (
+                f"{corridor.min_body_edge_clearance_cm:.1f}"
+                if corridor.min_body_edge_clearance_cm is not None
+                else "n/a"
+            )
+            print(
+                "[NavMeshNav] plan rejected: corridor waypoint clearance (excl. goal) "
+                f"min_center={min_center_s}cm "
+                f"min_body_edge={min_edge_s}cm "
+                f"worst={corridor.worst_obstacle_id} "
+                f"wp_viol={corridor.violating_wp_count} "
+                f"seg_viol={corridor.violating_segment_count} "
+                f"(edge>={PROXIMITY_EDGE_FROM_SURFACE_CM:.0f}cm)"
+            )
+            return []
+    return dense
+
+
+def _attempt_navmesh_plan(
+    ucv,
+    nav_actor: str,
+    start_xyz: WorldXYZ,
+    goal_xyz: WorldXYZ,
+    *,
+    findpath_agent_radius_cm: float,
+    center_clearance_cm: float,
+    resample_spacing_cm: float,
+    path_obstacles: Optional[Sequence[SurfaceObstacle]],
+    nav_timing: Optional[NavTimingAccumulator] = None,
+) -> Tuple[List[WorldXY], dict]:
+    raw, use_validated = _fetch_validated_path(
+        ucv,
+        nav_actor,
+        start_xyz,
+        goal_xyz,
+        findpath_agent_radius_cm=findpath_agent_radius_cm,
+        center_clearance_cm=center_clearance_cm,
+        resample_spacing_cm=resample_spacing_cm,
+        nav_timing=nav_timing,
+    )
+    points = nq.path_points_xy(raw)
+    if not points:
+        return [], raw
+    dense = _postprocess_nav_path(
+        raw,
+        use_validated=use_validated,
+        path_obstacles=path_obstacles,
+        center_clearance_cm=center_clearance_cm,
+        resample_spacing_cm=resample_spacing_cm,
+        findpath_agent_radius_cm=findpath_agent_radius_cm,
+        nav_timing=nav_timing,
+    )
+    if not dense:
+        return [], raw
+    return dense, raw
+
+
 def plan_navmesh_waypoints(
     ucv,
     nav_actor: str,
@@ -174,44 +476,43 @@ def plan_navmesh_waypoints(
     *,
     findpath_agent_radius_cm: float = NAV_FINDPATH_AGENT_RADIUS_CM,
     center_clearance_cm: float = NAV_PLANNING_CENTER_CLEARANCE_CM,
+    resample_spacing_cm: float = NAV_PATH_RESAMPLE_SPACING_CM,
     path_obstacles: Optional[Sequence[SurfaceObstacle]] = None,
+    prop_bounds_cache: Optional[Dict[str, ActorBounds]] = None,
+    registry: Any = None,
     nav_timing: Optional[NavTimingAccumulator] = None,
 ) -> List[WorldXY]:
-    t_find = time.perf_counter()
-    raw = nq.nav_find_path(
+    dense, raw = _attempt_navmesh_plan(
         ucv,
         nav_actor,
         start_xyz,
         goal_xyz,
-        agent_radius_cm=findpath_agent_radius_cm,
+        findpath_agent_radius_cm=findpath_agent_radius_cm,
+        center_clearance_cm=center_clearance_cm,
+        resample_spacing_cm=resample_spacing_cm,
+        path_obstacles=path_obstacles,
+        nav_timing=nav_timing,
     )
-    if nav_timing is not None:
-        nav_timing.record_elapsed("nav_find_path_ms", t_find)
-        nav_timing.nav_find_path_count += 1
-    points = nq.path_points_xy(raw)
-    if not points:
-        print(f"[NavMeshNav] plan failed: {raw.get('error', raw)}")
-        return []
-    dense = _densify_waypoints(points, nav_timing=nav_timing)
-    if path_obstacles:
-        before = len(dense)
-        dense = densify_waypoints_for_chord_clearance(
-            dense,
-            path_obstacles,
-            min_clearance_cm=center_clearance_cm,
-            sample_spacing_cm=NAVMESH_CHORD_SAMPLE_SPACING_CM,
-        )
-        if len(dense) != before:
-            print(
-                f"[NavMeshNav] chord clearance densify {before} → {len(dense)} WP "
-                f"(min={center_clearance_cm:.0f}cm)"
-            )
-    if len(dense) != len(points):
-        print(
-            f"[NavMeshNav] densified path {len(points)} → {len(dense)} WP "
-            f"(spacing={NAVMESH_WAYPOINT_SPACING_CM:.0f}cm)"
-        )
-    return dense
+    if dense:
+        return dense
+
+    _log_plan_failure(raw)
+    return []
+
+
+def _nav_plan_call_kwargs(
+    *,
+    path_obstacles: Optional[Sequence[SurfaceObstacle]] = None,
+    prop_bounds_cache: Optional[Dict[str, ActorBounds]] = None,
+    registry: Any = None,
+    nav_timing: Optional[NavTimingAccumulator] = None,
+) -> dict:
+    return {
+        "path_obstacles": path_obstacles,
+        "prop_bounds_cache": prop_bounds_cache,
+        "registry": registry,
+        "nav_timing": nav_timing,
+    }
 
 
 def _segment_command(
@@ -236,6 +537,11 @@ def _segment_command(
     return (0.0, 1, min(distance_cm, max_move_cm))
 
 
+def _open_loop_move_cap_cm(profile: NavProfile) -> float:
+    """Per-step open-loop translate: min(remaining leg, 1 m cap, profile cap)."""
+    return min(profile.site_max_open_loop_move_cm, NAVMESH_MAX_OPEN_LOOP_MOVE_CM)
+
+
 def _close_loop_overhead(
     nav_timing: Optional[NavTimingAccumulator],
     loop_t0: float,
@@ -257,6 +563,7 @@ def _waypoints_to_path_xyz(
     *,
     nav_timing: Optional[NavTimingAccumulator] = None,
 ) -> List[WorldXYZ]:
+    """Build UE path JSON points; keep planned XY (avoid NavProject island snap)."""
     out: List[WorldXYZ] = []
     fallback_z = NAV_PROJECT_PROBE_Z_CM
     for xy in waypoints:
@@ -265,8 +572,138 @@ def _waypoints_to_path_xyz(
             out.append((float(xy[0]), float(xy[1]), fallback_z))
         else:
             fallback_z = pt[2]
-            out.append(pt)
+            out.append((float(xy[0]), float(xy[1]), pt[2]))
     return out
+
+
+def _append_mission_goal_to_path(
+    ucv,
+    nav_actor: str,
+    path_xyz: Sequence[WorldXYZ],
+    goal_xy: WorldXY,
+    *,
+    nav_timing: Optional[NavTimingAccumulator] = None,
+) -> List[WorldXYZ]:
+    """Append mission goal_xy so moveto matches vbp final creep to approach point."""
+    out = list(path_xyz)
+    goal_pt = _nav_plan_xyz(ucv, nav_actor, goal_xy, nav_timing=nav_timing)
+    if goal_pt is None:
+        return out
+    if not out or dist2d(out[-1][:2], goal_pt[:2]) > NAVMESH_WP_REACH_TOLERANCE_CM:
+        out.append(goal_pt)
+    return out
+
+
+def _log_moveto_plan_preview(
+    waypoints: Sequence[WorldXY],
+    robot_xy: WorldXY,
+    *,
+    max_points: int = 3,
+) -> None:
+    for i, (wx, wy) in enumerate(waypoints[:max_points]):
+        lx, ly = world_xy_to_local(wx, wy)
+        brg = math.degrees(math.atan2(wy - robot_xy[1], wx - robot_xy[0]))
+        print(
+            f"[NavMeshNav/moveto] WP{i} local=({lx:.0f},{ly:.0f}) "
+            f"bearing={brg:.0f}° dist={dist2d(robot_xy, (wx, wy)):.0f}cm"
+        )
+
+
+def _moveto_final_approach(
+    ucv,
+    robot_name: str,
+    nav_actor: str,
+    goal_xy: WorldXY,
+    *,
+    tolerance_cm: float,
+    deadline: float,
+    nav_timing: Optional[NavTimingAccumulator] = None,
+    pose_cache: Optional[PoseCache] = None,
+    poll_s: float = 0.25,
+    max_attempts: int = 6,
+) -> bool:
+    """Creep to goal_xy after polyline follow (mirrors vbp goal_xy tail)."""
+    for _ in range(max_attempts):
+        if time.perf_counter() >= deadline:
+            return False
+        pos_xy, _, ucv = _fetch_nav_pose(
+            ucv, robot_name, nav_timing, pose_cache, force=True
+        )
+        if dist2d(pos_xy, goal_xy) <= tolerance_cm:
+            return True
+        goal_pt = _nav_plan_xyz(ucv, nav_actor, goal_xy, nav_timing=nav_timing)
+        cur_xyz = _start_xyz_for_robot(
+            ucv, nav_actor, pos_xy, robot_name, nav_timing=nav_timing
+        )
+        if goal_pt is None or cur_xyz is None:
+            return False
+        if not _dispatch_ue_path_follow(
+            ucv, robot_name, [cur_xyz, goal_pt], nav_timing=nav_timing
+        ):
+            return False
+        remaining_s = max(1.0, deadline - time.perf_counter())
+        wait_t0 = time.perf_counter()
+        status = nm.wait_nav_move_complete(
+            ucv,
+            robot_name,
+            timeout_s=remaining_s,
+            poll_s=poll_s,
+        )
+        if nav_timing is not None:
+            nav_timing.record_elapsed("nav_moveto_wait_ms", wait_t0)
+        if str(status.get("status", "")).lower() == "failed":
+            return False
+    pos_xy, _, ucv = _fetch_nav_pose(
+        ucv, robot_name, nav_timing, pose_cache, force=True
+    )
+    return dist2d(pos_xy, goal_xy) <= tolerance_cm
+
+
+def _crawl_to_goal_xy_vbp(
+    ucv,
+    goal_xy: WorldXY,
+    *,
+    robot_name: str,
+    robot_speed: float,
+    profile: NavProfile,
+    tolerance_cm: float,
+    deadline: float,
+    nav_timing: Optional[NavTimingAccumulator] = None,
+    pose_cache: Optional[PoseCache] = None,
+    max_steps: int = 80,
+) -> bool:
+    """Open-loop vbp tail to goal_xy (matches vbp leg after corner exhaustion)."""
+    for _ in range(max_steps):
+        if time.perf_counter() >= deadline:
+            break
+        pos_xy, yaw_deg, ucv = _fetch_nav_pose(
+            ucv, robot_name, nav_timing, pose_cache, force=True
+        )
+        if dist2d(pos_xy, goal_xy) <= tolerance_cm:
+            return True
+        cmd = _segment_command(
+            pos_xy,
+            yaw_deg,
+            goal_xy,
+            max_move_cm=_open_loop_move_cap_cm(profile),
+        )
+        if cmd is None:
+            continue
+        turn_deg, clockwise, move_cm = cmd
+        if turn_deg > NAVMESH_ROTATE_THRESHOLD_DEG:
+            turn_duration_s = max(0.12, turn_deg / max(robot_speed, 1.0))
+            _site_dog_rotate(ucv, robot_name, turn_duration_s, turn_deg, clockwise)
+        if move_cm > 1e-3:
+            move_duration_s = max(
+                NAVMESH_MIN_COMMAND_DURATION_S,
+                move_cm / max(robot_speed, 1.0),
+            )
+            _site_dog_move(ucv, robot_name, robot_speed, move_duration_s, 0)
+            invalidate_robot_pose(pose_cache, reason="moveto_vbp_crawl")
+    pos_xy, _, ucv = _fetch_nav_pose(
+        ucv, robot_name, nav_timing, pose_cache, force=True
+    )
+    return dist2d(pos_xy, goal_xy) <= tolerance_cm
 
 
 def _dispatch_ue_path_follow(
@@ -306,13 +743,17 @@ def _navigate_navmesh_leg_moveto(
     humanoid_actor_name: Optional[str] = None,
     dynamic_humanoid: bool = False,
     last_humanoid_xy: Optional[WorldXY] = None,
+    dynamic_obstacle_trackers: Optional[List[DynamicNavObstacleTracker]] = None,
     path_obstacles: Optional[Sequence[SurfaceObstacle]] = None,
+    prop_bounds_cache: Optional[Dict[str, ActorBounds]] = None,
+    registry: Any = None,
+    register_humanoid_nav_modifier: bool = NAV_REGISTER_HUMANOID_NAV_MODIFIER,
 ) -> Tuple[bool, Optional[WorldXY]]:
     """Follow NavFindPath polyline via UE SpotDogNavController (Phase 5)."""
-    if not nm.moveto_use_ue_controller():
+    if not nm.moveto_use_ue_controller(nav_exec="moveto"):
         print(
-            "[NavMeshNav/moveto] NAV_MOVETO_UE unset — using vbp open-loop fallback "
-            "(set NAV_MOVETO_UE=1 after Step 4 UE smoke passes)"
+            "[NavMeshNav/moveto] NAV_MOVETO_UE=0 — using vbp open-loop fallback "
+            "(unset env var or use --nav-exec moveto for UE controller)"
         )
         return _navigate_navmesh_leg_vbp(
             ucv,
@@ -334,15 +775,16 @@ def _navigate_navmesh_leg_moveto(
             dynamic_humanoid=dynamic_humanoid,
             last_humanoid_xy=last_humanoid_xy,
             path_obstacles=path_obstacles,
+            prop_bounds_cache=prop_bounds_cache,
+            registry=registry,
+            register_humanoid_nav_modifier=register_humanoid_nav_modifier,
+            dynamic_obstacle_trackers=dynamic_obstacle_trackers,
         )
     poll_s = 0.25
     leg_timeout_s = max(120.0, max_total_steps * 2.0)
-    ok_region, robot_name = _recover_robot_in_work_region(
-        ucv, robot_name, nav_actor=nav_actor
+    goal_xyz = _goal_xyz_for_planning(
+        ucv, nav_actor, goal_xy, path_obstacles, nav_timing=nav_timing
     )
-    if not ok_region:
-        return False, last_humanoid_xy
-    goal_xyz = _nav_plan_xyz(ucv, nav_actor, goal_xy, nav_timing=nav_timing)
     if goal_xyz is None:
         print(
             f"[NavMeshNav/moveto] goal projection failed @ "
@@ -361,8 +803,12 @@ def _navigate_navmesh_leg_moveto(
         return False, last_humanoid_xy
     waypoints = plan_navmesh_waypoints(
         ucv, nav_actor, start_xyz, goal_xyz,
-        path_obstacles=path_obstacles,
-        nav_timing=nav_timing,
+        **_nav_plan_call_kwargs(
+            path_obstacles=path_obstacles,
+            prop_bounds_cache=prop_bounds_cache,
+            registry=registry,
+            nav_timing=nav_timing,
+        ),
     )
     if not waypoints:
         return False, last_humanoid_xy
@@ -382,8 +828,12 @@ def _navigate_navmesh_leg_moveto(
                 nav_actor,
                 cur_xyz,
                 goal_xyz,
-                path_obstacles=path_obstacles,
-                nav_timing=nav_timing,
+                **_nav_plan_call_kwargs(
+                    path_obstacles=path_obstacles,
+                    prop_bounds_cache=prop_bounds_cache,
+                    registry=registry,
+                    nav_timing=nav_timing,
+                ),
             )
             if not waypoints:
                 return False, last_humanoid_xy
@@ -396,20 +846,24 @@ def _navigate_navmesh_leg_moveto(
     path_xyz = _waypoints_to_path_xyz(
         ucv, nav_actor, waypoints, nav_timing=nav_timing
     )
+    path_xyz = _append_mission_goal_to_path(
+        ucv, nav_actor, path_xyz, goal_xy, nav_timing=nav_timing
+    )
+
+    print(
+        f"[NavMeshNav/moveto] {label}: {len(waypoints)} WP + goal "
+        f"goal=({goal_xy[0]:.0f},{goal_xy[1]:.0f}) path_pts={len(path_xyz)}"
+    )
+    _log_moveto_plan_preview(waypoints, pos_xy)
+
     if not _dispatch_ue_path_follow(
         ucv, robot_name, path_xyz, nav_timing=nav_timing
     ):
         return False, human_xy
 
-    print(
-        f"[NavMeshNav/moveto] {label}: {len(waypoints)} WP "
-        f"goal=({goal_xy[0]:.0f},{goal_xy[1]:.0f})"
-    )
-
     deadline = time.perf_counter() + leg_timeout_s
     last_pose_t = -1e9
     while time.perf_counter() < deadline:
-        loop_t0 = time.perf_counter()
         if nav_timing is not None:
             nav_timing.nav_loop_iterations += 1
 
@@ -421,70 +875,40 @@ def _navigate_navmesh_leg_moveto(
                 nav_timing.record_elapsed("perceive_ms", t_perceive)
             last_perceive_t = now
 
-        if dynamic_humanoid and humanoid_actor_name:
-            try:
-                t_loc = time.perf_counter()
-                hloc = ucv.get_location(humanoid_actor_name)
-                if nav_timing is not None:
-                    nav_timing.record_elapsed("pose_query_ms", t_loc)
-                new_hxy = (float(hloc[0]), float(hloc[1]))
-                if human_xy is None or dist2d(new_hxy, human_xy) >= HUMANOID_REPLAN_DELTA_CM:
-                    nm.nav_stop_move(ucv, robot_name)
-                    update_humanoid_obstacle(
-                        ucv,
-                        nav_actor,
-                        humanoid_actor_name,
-                        nav_timing=nav_timing,
-                    )
-                    _timed_rebuild(ucv, nav_actor, nav_timing)
-                    robot_xy, _, ucv = _fetch_nav_pose(
-                        ucv, robot_name, nav_timing, pose_cache, force=True
-                    )
-                    cur_xyz = _start_xyz_for_robot(
-                        ucv, nav_actor, robot_xy, robot_name, nav_timing=nav_timing
-                    )
-                    if cur_xyz is None:
-                        return False, new_hxy
-                    waypoints = plan_navmesh_waypoints(
-                        ucv, nav_actor, cur_xyz, goal_xyz,
-                        path_obstacles=path_obstacles,
-                        nav_timing=nav_timing,
-                    )
-                    path_xyz = _waypoints_to_path_xyz(
-                        ucv, nav_actor, waypoints, nav_timing=nav_timing
-                    )
-                    if not _dispatch_ue_path_follow(
-                        ucv, robot_name, path_xyz, nav_timing=nav_timing
-                    ):
-                        return False, new_hxy
-                    human_xy = new_hxy
-                    if nav_timing is not None:
-                        nav_timing.humanoid_replan_count += 1
-                    print(
-                        f"[NavMeshNav/moveto] humanoid replan @ "
-                        f"({new_hxy[0]:.0f},{new_hxy[1]:.0f}) → {len(waypoints)} WP"
-                    )
-            except Exception as exc:
-                print(f"[NavMeshNav/moveto] humanoid update skipped: {exc}")
+        replanned_wp, replanned = _maybe_replan_for_dynamic_obstacles(
+            ucv,
+            nav_actor,
+            goal_xyz,
+            waypoints,
+            robot_name=robot_name,
+            dynamic_obstacle_trackers=dynamic_obstacle_trackers,
+            path_obstacles=path_obstacles,
+            prop_bounds_cache=prop_bounds_cache,
+            registry=registry,
+            nav_timing=nav_timing,
+            pose_cache=pose_cache,
+            on_before_replan=lambda: nm.nav_stop_move(ucv, robot_name),
+        )
+        if replanned:
+            waypoints = replanned_wp
+            path_xyz = _waypoints_to_path_xyz(
+                ucv, nav_actor, waypoints, nav_timing=nav_timing
+            )
+            path_xyz = _append_mission_goal_to_path(
+                ucv, nav_actor, path_xyz, goal_xy, nav_timing=nav_timing
+            )
+            if not _dispatch_ue_path_follow(
+                ucv, robot_name, path_xyz, nav_timing=nav_timing
+            ):
+                return False, human_xy
+            if nav_timing is not None:
+                nav_timing.nav_moveto_replan_count += 1
 
-        if now - last_pose_t >= 1.0:
+        if now - last_pose_t >= 2.0:
             pos_xy, _, ucv = _fetch_nav_pose(
                 ucv, robot_name, nav_timing, pose_cache, force=True
             )
             last_pose_t = now
-            lx, ly = world_xy_to_local(pos_xy[0], pos_xy[1])
-            if lx < -50.0 or ly < -50.0 or lx > REGION_SIZE_CM + 50.0 or ly > REGION_SIZE_CM + 50.0:
-                print(
-                    f"[NavMeshNav/moveto] left work region @ local=({lx:.0f},{ly:.0f}) "
-                    "— stop + soft-reset"
-                )
-                nm.nav_stop_move(ucv, robot_name)
-                ok_region, robot_name = _recover_robot_in_work_region(
-                    ucv, robot_name, nav_actor=nav_actor
-                )
-                if not ok_region:
-                    return False, human_xy
-                return False, human_xy
             if trace is not None:
                 trace.record_position(world_xy_to_local(*pos_xy))
             if on_pose_sample is not None:
@@ -499,11 +923,32 @@ def _navigate_navmesh_leg_moveto(
             nav_timing.record_elapsed("nav_moveto_poll_ms", t_poll)
         move_status = str(status.get("status", "")).lower()
         if move_status == "success":
-            pos_xy, _, ucv = _fetch_nav_pose(
-                ucv, robot_name, nav_timing, pose_cache, force=True
-            )
-            if dist2d(pos_xy, goal_xy) <= tolerance_cm:
+            nm.nav_stop_move(ucv, robot_name)
+            if _moveto_final_approach(
+                ucv,
+                robot_name,
+                nav_actor,
+                goal_xy,
+                tolerance_cm=tolerance_cm,
+                deadline=deadline,
+                nav_timing=nav_timing,
+                pose_cache=pose_cache,
+                poll_s=poll_s,
+            ):
                 return True, human_xy
+            if _crawl_to_goal_xy_vbp(
+                ucv,
+                goal_xy,
+                robot_name=robot_name,
+                robot_speed=profile.site_robot_speed,
+                profile=profile,
+                tolerance_cm=tolerance_cm,
+                deadline=deadline,
+                nav_timing=nav_timing,
+                pose_cache=pose_cache,
+            ):
+                return True, human_xy
+            return False, human_xy
         if move_status == "failed":
             if nav_timing is not None:
                 nav_timing.stuck_replan_count += 1
@@ -520,14 +965,24 @@ def _navigate_navmesh_leg_moveto(
             if cur_xyz is None:
                 return False, human_xy
             waypoints = plan_navmesh_waypoints(
-                ucv, nav_actor, cur_xyz, goal_xyz,
-                path_obstacles=path_obstacles,
-                nav_timing=nav_timing,
+                ucv,
+                nav_actor,
+                cur_xyz,
+                goal_xyz,
+                **_nav_plan_call_kwargs(
+                    path_obstacles=path_obstacles,
+                    prop_bounds_cache=prop_bounds_cache,
+                    registry=registry,
+                    nav_timing=nav_timing,
+                ),
             )
             if not waypoints:
                 return False, human_xy
             path_xyz = _waypoints_to_path_xyz(
                 ucv, nav_actor, waypoints, nav_timing=nav_timing
+            )
+            path_xyz = _append_mission_goal_to_path(
+                ucv, nav_actor, path_xyz, goal_xy, nav_timing=nav_timing
             )
             if not _dispatch_ue_path_follow(
                 ucv, robot_name, path_xyz, nav_timing=nav_timing
@@ -542,11 +997,25 @@ def _navigate_navmesh_leg_moveto(
         time.sleep(poll_s)
         if nav_timing is not None:
             nav_timing.record_elapsed("nav_moveto_wait_ms", wait_t0)
-        if nav_timing is not None:
-            gap = (time.perf_counter() - loop_t0) * 1000.0
-            nav_timing.loop_overhead_ms += max(0.0, gap)
 
     nm.nav_stop_move(ucv, robot_name)
+    pos_xy, _, ucv = _fetch_nav_pose(
+        ucv, robot_name, nav_timing, pose_cache, force=True
+    )
+    if dist2d(pos_xy, goal_xy) <= tolerance_cm:
+        return True, human_xy
+    if _crawl_to_goal_xy_vbp(
+        ucv,
+        goal_xy,
+        robot_name=robot_name,
+        robot_speed=profile.site_robot_speed,
+        profile=profile,
+        tolerance_cm=tolerance_cm,
+        deadline=deadline,
+        nav_timing=nav_timing,
+        pose_cache=pose_cache,
+    ):
+        return True, human_xy
     return False, human_xy
 
 
@@ -573,6 +1042,10 @@ def _navigate_navmesh_leg_vbp(
     last_humanoid_xy: Optional[WorldXY] = None,
     post_motion_settle_s: Optional[float] = None,
     path_obstacles: Optional[Sequence[SurfaceObstacle]] = None,
+    prop_bounds_cache: Optional[Dict[str, ActorBounds]] = None,
+    registry: Any = None,
+    register_humanoid_nav_modifier: bool = NAV_REGISTER_HUMANOID_NAV_MODIFIER,
+    dynamic_obstacle_trackers: Optional[List[DynamicNavObstacleTracker]] = None,
 ) -> Tuple[bool, Optional[WorldXY]]:
     """Follow NavFindPath polyline with open-loop VBP. Returns (reached, last_humanoid_xy)."""
     settle_s = (
@@ -580,7 +1053,9 @@ def _navigate_navmesh_leg_vbp(
         if post_motion_settle_s is None
         else post_motion_settle_s
     )
-    goal_xyz = _nav_plan_xyz(ucv, nav_actor, goal_xy, nav_timing=nav_timing)
+    goal_xyz = _goal_xyz_for_planning(
+        ucv, nav_actor, goal_xy, path_obstacles, nav_timing=nav_timing
+    )
     if goal_xyz is None:
         print(
             f"[NavMeshNav] goal projection failed @ "
@@ -601,8 +1076,12 @@ def _navigate_navmesh_leg_vbp(
         return False, last_humanoid_xy
     waypoints = plan_navmesh_waypoints(
         ucv, nav_actor, start_xyz, goal_xyz,
-        path_obstacles=path_obstacles,
-        nav_timing=nav_timing,
+        **_nav_plan_call_kwargs(
+            path_obstacles=path_obstacles,
+            prop_bounds_cache=prop_bounds_cache,
+            registry=registry,
+            nav_timing=nav_timing,
+        ),
     )
     if not waypoints:
         return False, last_humanoid_xy
@@ -656,54 +1135,24 @@ def _navigate_navmesh_leg_vbp(
                 nav_timing.record_elapsed("perceive_ms", t_perceive)
             last_perceive_t = now
 
-        if dynamic_humanoid and humanoid_actor_name:
-            try:
-                t_loc = time.perf_counter()
-                hloc = ucv.get_location(humanoid_actor_name)
-                if nav_timing is not None:
-                    nav_timing.record_elapsed("pose_query_ms", t_loc)
-                new_hxy = (float(hloc[0]), float(hloc[1]))
-                if human_xy is None or dist2d(new_hxy, human_xy) >= HUMANOID_REPLAN_DELTA_CM:
-                    update_humanoid_obstacle(
-                        ucv,
-                        nav_actor,
-                        humanoid_actor_name,
-                        nav_timing=nav_timing,
-                    )
-                    _timed_rebuild(ucv, nav_actor, nav_timing)
-                    invalidate_robot_pose(pose_cache, reason="humanoid_replan")
-                    robot_xy, _, ucv = _fetch_nav_pose(
-                        ucv,
-                        robot_name,
-                        nav_timing,
-                        pose_cache,
-                        force=True,
-                    )
-                    cur_xyz = _start_xyz_for_robot(
-                        ucv,
-                        nav_actor,
-                        robot_xy,
-                        robot_name,
-                        nav_timing=nav_timing,
-                    )
-                    if cur_xyz is None:
-                        continue
-                    waypoints = plan_navmesh_waypoints(
-                        ucv, nav_actor, cur_xyz, goal_xyz,
-                        path_obstacles=path_obstacles,
-                        nav_timing=nav_timing,
-                    )
-                    wp_index = 0
-                    steps_on_wp = 0
-                    human_xy = new_hxy
-                    if nav_timing is not None:
-                        nav_timing.humanoid_replan_count += 1
-                    print(
-                        f"[NavMeshNav] humanoid replan @ ({new_hxy[0]:.0f},{new_hxy[1]:.0f}) "
-                        f"→ {len(waypoints)} WP"
-                    )
-            except Exception as exc:
-                print(f"[NavMeshNav] humanoid update skipped: {exc}")
+        if dynamic_obstacle_trackers:
+            replanned_wp, replanned = _maybe_replan_for_dynamic_obstacles(
+                ucv,
+                nav_actor,
+                goal_xyz,
+                waypoints,
+                robot_name=robot_name,
+                dynamic_obstacle_trackers=dynamic_obstacle_trackers,
+                path_obstacles=path_obstacles,
+                prop_bounds_cache=prop_bounds_cache,
+                registry=registry,
+                nav_timing=nav_timing,
+                pose_cache=pose_cache,
+            )
+            if replanned:
+                waypoints = replanned_wp
+                wp_index = 0
+                steps_on_wp = 0
 
         if wp_index >= len(waypoints):
             waypoint_xy = goal_xy
@@ -719,10 +1168,7 @@ def _navigate_navmesh_leg_vbp(
             pos_xy,
             yaw_deg,
             waypoint_xy,
-            max_move_cm=min(
-                profile.site_max_open_loop_move_cm,
-                NAVMESH_MAX_OPEN_LOOP_MOVE_CM,
-            ),
+            max_move_cm=_open_loop_move_cap_cm(profile),
         )
         if cmd is None:
             wp_index += 1
@@ -732,6 +1178,7 @@ def _navigate_navmesh_leg_vbp(
 
         turn_deg, clockwise, move_cm = cmd
         did_motion = False
+        translated_this_iter = False
         t_move = time.perf_counter()
         if turn_deg > NAVMESH_ROTATE_THRESHOLD_DEG:
             turn_duration_s = max(0.12, turn_deg / max(robot_speed, 1.0))
@@ -759,6 +1206,7 @@ def _navigate_navmesh_leg_vbp(
                 if nav_timing is not None:
                     nav_timing.record_elapsed("carry_sync_ms", t_carry)
             did_motion = True
+            translated_this_iter = True
         if nav_timing is not None:
             nav_timing.move_ms += (time.perf_counter() - t_move) * 1000.0
         if did_motion:
@@ -778,11 +1226,15 @@ def _navigate_navmesh_leg_vbp(
                 pose_cache,
                 force=True,
             )
-        if last_move_xy is not None and dist2d(pos_xy, last_move_xy) < NAVMESH_STUCK_MOVE_THRESHOLD_CM:
-            unchanged_steps += 1
-        else:
-            unchanged_steps = 0
-        last_move_xy = pos_xy
+        if translated_this_iter:
+            if (
+                last_move_xy is not None
+                and dist2d(pos_xy, last_move_xy) < NAVMESH_STUCK_MOVE_THRESHOLD_CM
+            ):
+                unchanged_steps += 1
+            else:
+                unchanged_steps = 0
+            last_move_xy = pos_xy
 
         if trace is not None:
             trace.record_position(world_xy_to_local(*pos_xy))
@@ -819,8 +1271,12 @@ def _navigate_navmesh_leg_vbp(
                 return False, human_xy
             waypoints = plan_navmesh_waypoints(
                 ucv, nav_actor, cur_xyz, goal_xyz,
-                path_obstacles=path_obstacles,
-                nav_timing=nav_timing,
+                **_nav_plan_call_kwargs(
+                    path_obstacles=path_obstacles,
+                    prop_bounds_cache=prop_bounds_cache,
+                    registry=registry,
+                    nav_timing=nav_timing,
+                ),
             )
             wp_index = 0
             steps_on_wp = 0
@@ -857,8 +1313,12 @@ def navigate_navmesh_leg(
     dynamic_humanoid: bool = False,
     last_humanoid_xy: Optional[WorldXY] = None,
     post_motion_settle_s: Optional[float] = None,
-    nav_exec: str = "vbp",
+    nav_exec: str = "moveto",
     path_obstacles: Optional[Sequence[SurfaceObstacle]] = None,
+    prop_bounds_cache: Optional[Dict[str, ActorBounds]] = None,
+    registry: Any = None,
+    register_humanoid_nav_modifier: bool = NAV_REGISTER_HUMANOID_NAV_MODIFIER,
+    dynamic_obstacle_trackers: Optional[List[DynamicNavObstacleTracker]] = None,
 ) -> Tuple[bool, Optional[WorldXY]]:
     """Follow NavFindPath polyline (vbp open-loop or UE moveto)."""
     if nav_exec == "moveto":
@@ -881,6 +1341,10 @@ def navigate_navmesh_leg(
             dynamic_humanoid=dynamic_humanoid,
             last_humanoid_xy=last_humanoid_xy,
             path_obstacles=path_obstacles,
+            prop_bounds_cache=prop_bounds_cache,
+            registry=registry,
+            register_humanoid_nav_modifier=register_humanoid_nav_modifier,
+            dynamic_obstacle_trackers=dynamic_obstacle_trackers,
         )
     return _navigate_navmesh_leg_vbp(
         ucv,
@@ -904,6 +1368,10 @@ def navigate_navmesh_leg(
         last_humanoid_xy=last_humanoid_xy,
         post_motion_settle_s=post_motion_settle_s,
         path_obstacles=path_obstacles,
+        prop_bounds_cache=prop_bounds_cache,
+        registry=registry,
+        register_humanoid_nav_modifier=register_humanoid_nav_modifier,
+        dynamic_obstacle_trackers=dynamic_obstacle_trackers,
     )
 
 
@@ -925,8 +1393,11 @@ def navigate_to_slot_navmesh(
     on_pose_sample: Optional[PoseSampleFn] = None,
     nav_timing: Optional[NavTimingAccumulator] = None,
     pose_cache: Optional[PoseCache] = None,
-    nav_exec: str = "vbp",
+    nav_exec: str = "moveto",
     path_obstacles: Optional[Sequence[SurfaceObstacle]] = None,
+    prop_bounds_cache: Optional[Dict[str, ActorBounds]] = None,
+    registry: Any = None,
+    dynamic_obstacle_trackers: Optional[List[DynamicNavObstacleTracker]] = None,
 ) -> bool:
     from carry import pickup_standoff_xy
 
@@ -964,6 +1435,9 @@ def navigate_to_slot_navmesh(
         pose_cache=pose_cache,
         nav_exec=nav_exec,
         path_obstacles=path_obstacles,
+        prop_bounds_cache=prop_bounds_cache,
+        registry=registry,
+        dynamic_obstacle_trackers=dynamic_obstacle_trackers,
     )
     return reached
 
@@ -988,8 +1462,12 @@ def deliver_to_navmesh(
     on_pose_sample: Optional[PoseSampleFn] = None,
     nav_timing: Optional[NavTimingAccumulator] = None,
     pose_cache: Optional[PoseCache] = None,
-    nav_exec: str = "vbp",
+    nav_exec: str = "moveto",
     path_obstacles: Optional[Sequence[SurfaceObstacle]] = None,
+    prop_bounds_cache: Optional[Dict[str, ActorBounds]] = None,
+    registry: Any = None,
+    register_humanoid_nav_modifier: bool = NAV_REGISTER_HUMANOID_NAV_MODIFIER,
+    dynamic_obstacle_trackers: Optional[List[DynamicNavObstacleTracker]] = None,
 ) -> bool:
     goal_local = (
         object_registry.goal_local(slot_id)
@@ -1024,5 +1502,9 @@ def deliver_to_navmesh(
         dynamic_humanoid=True,
         nav_exec=nav_exec,
         path_obstacles=path_obstacles,
+        prop_bounds_cache=prop_bounds_cache,
+        registry=registry,
+        register_humanoid_nav_modifier=register_humanoid_nav_modifier,
+        dynamic_obstacle_trackers=dynamic_obstacle_trackers,
     )
     return reached

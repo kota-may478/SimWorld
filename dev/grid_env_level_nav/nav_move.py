@@ -21,9 +21,14 @@ import grid_env_hri_simulation as geh  # noqa: E402
 WorldXYZ = Tuple[float, float, float]
 
 
-def moveto_use_ue_controller() -> bool:
-    """True when Python should dispatch NavFollowPathJson (requires working UE tick)."""
-    return os.environ.get("NAV_MOVETO_UE", "").strip().lower() in ("1", "true", "yes")
+def moveto_use_ue_controller(*, nav_exec: str = "moveto") -> bool:
+    """True when Python should dispatch NavFollowPathJson (UE tick loop)."""
+    if nav_exec != "moveto":
+        return False
+    override = os.environ.get("NAV_MOVETO_UE", "").strip().lower()
+    if override in ("0", "false", "no"):
+        return False
+    return True
 
 
 def _unwrap_return_value(payload: dict) -> dict:
