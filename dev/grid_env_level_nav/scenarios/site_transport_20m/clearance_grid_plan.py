@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Grid A* planner with center-to-AABB clearance (fallback when NavFindPath ignores modifiers)."""
+"""Grid A* planner with center-to-AABB clearance and open-corridor preference."""
 
 from __future__ import annotations
 
@@ -13,6 +13,37 @@ from surface_distance import SurfaceObstacle, center_to_aabb_surface_distance_cm
 
 WorldXY = Tuple[float, float]
 GridCell = Tuple[int, int]
+
+
+def min_center_clearance_at(
+    wx: float,
+    wy: float,
+    obstacles: Sequence[SurfaceObstacle],
+) -> float:
+    if not obstacles:
+        return float("inf")
+    return min(
+        center_to_aabb_surface_distance_cm((wx, wy), obstacle)
+        for obstacle in obstacles
+    )
+
+
+def clearance_hug_penalty_cm(
+    clearance_cm: float,
+    *,
+    min_clearance_cm: float,
+    hug_penalty_weight: float,
+    open_margin_cm: float = 250.0,
+) -> float:
+    """Penalty for steps that skim the minimum-clearance band (prop outer perimeter)."""
+    if hug_penalty_weight <= 0.0:
+        return 0.0
+    margin = clearance_cm - min_clearance_cm
+    if margin < 0.0:
+        return float("inf")
+    if margin >= open_margin_cm:
+        return 0.0
+    return hug_penalty_weight * hug_penalty_weight / max(margin, 8.0)
 
 
 def _cell_center_world(col: int, row: int, *, resolution_cm: float) -> WorldXY:
@@ -39,11 +70,10 @@ def _cell_blocked(
     block_margin_cm: float = 0.0,
 ) -> bool:
     wx, wy = _cell_center_world(col, row, resolution_cm=resolution_cm)
-    threshold = center_clearance_cm + block_margin_cm
-    for obstacle in obstacles:
-        if center_to_aabb_surface_distance_cm((wx, wy), obstacle) < threshold:
-            return True
-    return False
+    return (
+        min_center_clearance_at(wx, wy, obstacles)
+        < center_clearance_cm + block_margin_cm
+    )
 
 
 def _neighbors(col: int, row: int, cols: int, rows: int) -> List[GridCell]:
@@ -76,7 +106,9 @@ def _snap_to_free_cell(
     max_radius: int = 50,
 ) -> Optional[GridCell]:
     if not _cell_blocked(
-        cell[0], cell[1], obstacles,
+        cell[0],
+        cell[1],
+        obstacles,
         center_clearance_cm=center_clearance_cm,
         resolution_cm=resolution_cm,
         block_margin_cm=block_margin_cm,
@@ -91,7 +123,9 @@ def _snap_to_free_cell(
                 if not (0 <= nc < cols and 0 <= nr < rows):
                     continue
                 if not _cell_blocked(
-                    nc, nr, obstacles,
+                    nc,
+                    nr,
+                    obstacles,
                     center_clearance_cm=center_clearance_cm,
                     resolution_cm=resolution_cm,
                     block_margin_cm=block_margin_cm,
@@ -108,8 +142,10 @@ def plan_clearance_grid_waypoints(
     center_clearance_cm: float,
     resolution_cm: float = 40.0,
     block_margin_cm: float = 0.0,
+    hug_penalty_weight: float = 0.0,
+    hug_open_margin_cm: float = 250.0,
 ) -> List[WorldXY]:
-    """A* on work-region grid; cells blocked within center_clearance_cm of obstacle AABBs."""
+    """A* on work-region grid; prefers open corridors over prop perimeter skating."""
     if not obstacles:
         return [start_xy, goal_xy]
 
@@ -119,17 +155,21 @@ def plan_clearance_grid_waypoints(
     goal_cell = _world_to_cell(goal_xy[0], goal_xy[1], resolution_cm=resolution_cm)
 
     start_cell = _snap_to_free_cell(
-        start_cell, obstacles,
+        start_cell,
+        obstacles,
         center_clearance_cm=center_clearance_cm,
         resolution_cm=resolution_cm,
-        cols=cols, rows=rows,
+        cols=cols,
+        rows=rows,
         block_margin_cm=block_margin_cm,
     )
     goal_cell = _snap_to_free_cell(
-        goal_cell, obstacles,
+        goal_cell,
+        obstacles,
         center_clearance_cm=center_clearance_cm,
         resolution_cm=resolution_cm,
-        cols=cols, rows=rows,
+        cols=cols,
+        rows=rows,
         block_margin_cm=block_margin_cm,
     )
     if start_cell is None or goal_cell is None:
@@ -182,7 +222,16 @@ def plan_clearance_grid_waypoints(
                 continue
             nx, ny = _cell_center_world(nxt[0], nxt[1], resolution_cm=resolution_cm)
             step = math.hypot(nx - cx, ny - cy)
-            tentative = g_score[current] + step
+            clearance = min_center_clearance_at(nx, ny, obstacles)
+            hug = clearance_hug_penalty_cm(
+                clearance,
+                min_clearance_cm=center_clearance_cm,
+                hug_penalty_weight=hug_penalty_weight,
+                open_margin_cm=hug_open_margin_cm,
+            )
+            if math.isinf(hug):
+                continue
+            tentative = g_score[current] + step + hug
             if tentative >= g_score.get(nxt, float("inf")):
                 continue
             came_from[nxt] = current
@@ -190,3 +239,13 @@ def plan_clearance_grid_waypoints(
             heapq.heappush(open_heap, (tentative + heuristic(nxt), nxt))
 
     return []
+
+
+def mean_path_clearance_cm(
+    path: Sequence[WorldXY],
+    obstacles: Sequence[SurfaceObstacle],
+) -> float:
+    if not path or not obstacles:
+        return float("inf")
+    values = [min_center_clearance_at(wx, wy, obstacles) for wx, wy in path]
+    return sum(values) / len(values)

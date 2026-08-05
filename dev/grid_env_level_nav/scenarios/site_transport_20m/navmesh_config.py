@@ -96,12 +96,19 @@ NAV_REBUILD_DIRTY_MARGIN_CM = 200.0
 # Local dirty-region rebuild for moving obstacles [cm].
 NAV_REBUILD_LOCAL_DIRTY_MARGIN_CM = 50.0
 
+# Prefer 170cm center clearance when possible; otherwise shortest NavFindPath (metrics track violations).
+NAV_PLANNING_STRICT_CLEARANCE = False
+
 # NavFindPathValidated: 0 = corner polyline only (no resample along straights).
 NAV_PATH_RESAMPLE_SPACING_CM = 0.0
 
-# Clearance grid A* (diagnostics / unit tests only — mission nav uses Dynamic NavMesh).
-CLEARANCE_GRID_RESOLUTIONS_CM = (40.0, 25.0, 20.0)
+# Clearance grid A* — mission fallback; penalizes skating along prop outer perimeters.
+CLEARANCE_GRID_RESOLUTION_CM = 40.0
 CLEARANCE_GRID_BLOCK_MARGIN_CM = 2.0
+# Extra A* cost [cm-equivalent] when a step uses the minimum-clearance band near props.
+NAV_CLEARANCE_HUG_PENALTY_WEIGHT = 2000.0
+# Margin above minimum clearance before hug penalty drops to zero.
+NAV_CLEARANCE_OPEN_MARGIN_CM = 250.0
 
 # Open-loop chord clearance fallback (Python) when UE validated API unavailable.
 NAVMESH_CHORD_SAMPLE_SPACING_CM = 16.0

@@ -28,8 +28,7 @@ def _print_layout_brief(registry) -> None:
     print(f"\n=== Layout {summary['layout_id']} ===")
     print(f"  transport: {summary['transport_bp']} @ {summary['transport_xy']}")
     print(f"  pit rect:  {summary['pit_rect']}")
-    print(f"  props: sw={summary['sw_prop_count']} mid={summary['mid_prop_count']} "
-          f"yard={summary['yard_decor_count']} roadblocks={summary['roadblock_count']}")
+    print(f"  props: decor={summary['decor_prop_count']} roadblocks={summary['roadblock_count']}")
     print("  clutter:")
     for item in summary["props"]:
         if item["cluster"] == "no_entry_roadblock":

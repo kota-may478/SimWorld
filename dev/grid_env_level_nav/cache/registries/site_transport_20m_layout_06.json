@@ -1,7 +1,7 @@
 {
   "version": 1,
   "layout_id": "layout_06",
-  "seed": 20260635,
+  "seed": 20260714,
   "region_size_cm": 2000.0,
   "robot_start_local_cm": [
     100.0,
@@ -26,20 +26,20 @@
     {
       "zone_id": "no_entry_pit",
       "rect_local_cm": [
-        1105.8924307213426,
-        745.6119518180271,
-        1465.8924307213426,
-        1105.6119518180271
+        120.0,
+        520.0,
+        480.0,
+        880.0
       ],
       "note": "Excavation / machinery zone enclosed by 12 BP_Roadblock_03b actors"
     },
     {
       "zone_id": "sw_prop_cluster",
       "rect_local_cm": [
-        427.80939915794954,
-        257.2087974128607,
-        891.8870392067436,
-        1020.2633962838944
+        300.0,
+        250.0,
+        800.0,
+        950.0
       ],
       "note": "SW quadrant prop cluster (auto bounds from variant placement)"
     }
@@ -47,397 +47,301 @@
   "props": [
     {
       "slot_id": "site20_prop_000",
-      "bp_name": "BP_Trafficbarrier_01",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Trafficbarrier_01.BP_Trafficbarrier_01",
-      "prop_type_id": "trafficbarrier_01",
+      "bp_name": "BP_Drywall_01b",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Drywall_01b.BP_Drywall_01b",
+      "prop_type_id": "drywall_01b",
       "mask_color_rgb": [
         145,
         165,
         87
       ],
-      "cluster_id": "facilities_sw",
-      "role": "waste_dumpster",
+      "cluster_id": "site_grid",
+      "role": "prop_00",
       "local_xy_cm": [
-        507.80939915794954,
-        940.2633962838944
+        1480.0,
+        1280.0
       ],
-      "yaw_deg": -2.610719691458783,
+      "yaw_deg": 180.0,
       "is_transport_target": false,
       "world_xyz_cm": [
-        -59.737,
-        -1692.191,
+        280.0,
+        -720.0,
         6455.0
       ]
     },
     {
       "slot_id": "site20_prop_001",
-      "bp_name": "BP_LightGenerator_01a",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_LightGenerator_01a.BP_LightGenerator_01a",
-      "prop_type_id": "lightgenerator_01a",
+      "bp_name": "BP_Spool_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Spool_01a.BP_Spool_01a",
+      "prop_type_id": "spool_01a",
       "mask_color_rgb": [
         188,
         36,
         158
       ],
-      "cluster_id": "equipment_sw",
-      "role": "light_tower",
+      "cluster_id": "site_grid",
+      "role": "prop_01",
       "local_xy_cm": [
-        645.0772195259672,
-        417.09548378399074
+        1720.0,
+        1280.0
       ],
-      "yaw_deg": -8.824530409999127,
+      "yaw_deg": -90.0,
       "is_transport_target": false,
       "world_xyz_cm": [
-        -582.905,
-        -1554.923,
+        280.0,
+        -480.0,
         6455.0
       ]
     },
     {
       "slot_id": "site20_prop_002",
-      "bp_name": "BP_Dumpster",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Dumpster.BP_Dumpster",
-      "prop_type_id": "dumpster",
+      "bp_name": "BP_ConcretePipe_01",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_ConcretePipe_01.BP_ConcretePipe_01",
+      "prop_type_id": "concretepipe_01",
       "mask_color_rgb": [
         41,
         97,
         39
       ],
-      "cluster_id": "equipment_sw",
-      "role": "cable_spool",
+      "cluster_id": "site_grid",
+      "role": "prop_02",
       "local_xy_cm": [
-        811.8870392067436,
-        640.2937590308829
+        1480.0,
+        1520.0
       ],
-      "yaw_deg": 31.78568901827829,
+      "yaw_deg": 180.0,
       "is_transport_target": false,
       "world_xyz_cm": [
-        -359.706,
-        -1388.113,
+        520.0,
+        -720.0,
         6455.0
       ]
     },
     {
       "slot_id": "site20_prop_003",
-      "bp_name": "BP_WaterTank_01a",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_WaterTank_01a.BP_WaterTank_01a",
-      "prop_type_id": "watertank_01a",
+      "bp_name": "BP_CinderStack_01b",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_CinderStack_01b.BP_CinderStack_01b",
+      "prop_type_id": "cinderstack_01b",
       "mask_color_rgb": [
         84,
         158,
         110
       ],
-      "cluster_id": "facilities_sw",
-      "role": "portable_toilet",
+      "cluster_id": "site_grid",
+      "role": "prop_03",
       "local_xy_cm": [
-        805.31089469226,
-        337.2087974128607
+        1720.0,
+        1520.0
       ],
-      "yaw_deg": -35.83455133497493,
+      "yaw_deg": 0.0,
       "is_transport_target": false,
       "world_xyz_cm": [
-        -662.791,
-        -1394.689,
+        520.0,
+        -480.0,
         6455.0
       ]
     },
     {
       "slot_id": "site20_prop_004",
-      "bp_name": "BP_Tarp_01",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Tarp_01.BP_Tarp_01",
-      "prop_type_id": "tarp_01",
+      "bp_name": "BP_BrickPaletteStack_01g",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_BrickPaletteStack_01g.BP_BrickPaletteStack_01g",
+      "prop_type_id": "brickpalettestack_01g",
       "mask_color_rgb": [
         127,
         219,
         181
       ],
-      "cluster_id": "facilities_sw",
-      "role": "water_tank",
+      "cluster_id": "site_grid",
+      "role": "prop_04",
       "local_xy_cm": [
-        625.1774501364553,
-        922.6691747960153
+        480.0,
+        1380.0
       ],
-      "yaw_deg": -3.8731982503691285,
+      "yaw_deg": 0.0,
       "is_transport_target": false,
       "world_xyz_cm": [
-        -77.331,
-        -1574.823,
+        380.0,
+        -1720.0,
         6455.0
       ]
     },
     {
       "slot_id": "site20_prop_005",
-      "bp_name": "BP_Drywall_01a",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Drywall_01a.BP_Drywall_01a",
-      "prop_type_id": "drywall_01a",
+      "bp_name": "BP_BrickPaletteStack_01c",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_BrickPaletteStack_01c.BP_BrickPaletteStack_01c",
+      "prop_type_id": "brickpalettestack_01c",
       "mask_color_rgb": [
         170,
         90,
         62
       ],
-      "cluster_id": "mid_site",
-      "role": "barrel",
+      "cluster_id": "site_grid",
+      "role": "prop_05",
       "local_xy_cm": [
-        743.1790763717861,
-        1063.213260519854
+        720.0,
+        1380.0
       ],
-      "yaw_deg": 28.612959060712384,
+      "yaw_deg": -90.0,
       "is_transport_target": false,
       "world_xyz_cm": [
-        63.213,
-        -1456.821,
-        6455.0
+        380.0,
+        -1480.0,
+        6490.0
       ]
     },
     {
       "slot_id": "site20_prop_006",
-      "bp_name": "BP_woodenpalette_01",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_woodenpalette_01.BP_woodenpalette_01",
-      "prop_type_id": "woodenpalette_01",
+      "bp_name": "BP_ConstructionPylons_01f",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_ConstructionPylons_01f.BP_ConstructionPylons_01f",
+      "prop_type_id": "constructionpylons_01f",
       "mask_color_rgb": [
         213,
         151,
         133
       ],
-      "cluster_id": "mid_site",
-      "role": "drywall",
+      "cluster_id": "site_grid",
+      "role": "prop_06",
       "local_xy_cm": [
-        846.5886398602609,
-        1018.9410074321809
+        480.0,
+        1620.0
       ],
-      "yaw_deg": -9.364267670283315,
+      "yaw_deg": 180.0,
       "is_transport_target": false,
       "world_xyz_cm": [
-        18.941,
-        -1353.411,
+        620.0,
+        -1720.0,
         6455.0
       ]
     },
     {
       "slot_id": "site20_prop_007",
-      "bp_name": "BP_CinderStack_02a",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_CinderStack_02a.BP_CinderStack_02a",
-      "prop_type_id": "cinderstack_02a",
+      "bp_name": "BP_Portapotty_03",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Portapotty_03.BP_Portapotty_03",
+      "prop_type_id": "portapotty_03",
       "mask_color_rgb": [
         66,
         212,
         204
       ],
-      "cluster_id": "mid_site",
-      "role": "cinder_blocks",
+      "cluster_id": "site_grid",
+      "role": "prop_07",
       "local_xy_cm": [
-        1090.9291054352873,
-        529.0021745157392
+        720.0,
+        1620.0
       ],
-      "yaw_deg": 12.960833782516104,
+      "yaw_deg": 0.0,
       "is_transport_target": false,
       "world_xyz_cm": [
-        -470.998,
-        -1109.071,
+        620.0,
+        -1480.0,
         6455.0
       ]
     },
     {
       "slot_id": "site20_prop_008",
-      "bp_name": "BP_Spool_01a",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Spool_01a.BP_Spool_01a",
-      "prop_type_id": "spool_01a",
+      "bp_name": "BP_Boxes_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Boxes_01a.BP_Boxes_01a",
+      "prop_type_id": "boxes_01a",
       "mask_color_rgb": [
         109,
         83,
         85
       ],
-      "cluster_id": "mid_site",
-      "role": "cinder_blocks",
+      "cluster_id": "site_grid",
+      "role": "prop_08",
       "local_xy_cm": [
-        904.7120912343909,
-        1167.4647563989463
+        1080.0,
+        180.0
       ],
-      "yaw_deg": -8.83281460492693,
+      "yaw_deg": 0.0,
       "is_transport_target": false,
       "world_xyz_cm": [
-        167.465,
-        -1295.288,
+        -820.0,
+        -1120.0,
         6455.0
       ]
     },
     {
       "slot_id": "site20_prop_009",
-      "bp_name": "BP_Barrel_01",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Barrel_01.BP_Barrel_01",
-      "prop_type_id": "barrel_01",
+      "bp_name": "BP_Rebar_01b",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Rebar_01b.BP_Rebar_01b",
+      "prop_type_id": "rebar_01b",
       "mask_color_rgb": [
         152,
         144,
         156
       ],
-      "cluster_id": "mid_site",
-      "role": "pallet",
+      "cluster_id": "site_grid",
+      "role": "prop_09",
       "local_xy_cm": [
-        1293.6031122241166,
-        390.53169863923404
+        1320.0,
+        180.0
       ],
-      "yaw_deg": -38.02246385494542,
+      "yaw_deg": -90.0,
       "is_transport_target": false,
       "world_xyz_cm": [
-        -609.468,
-        -906.397,
+        -820.0,
+        -880.0,
         6455.0
       ]
     },
     {
       "slot_id": "site20_prop_010",
-      "bp_name": "BP_Drywall_01b",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Drywall_01b.BP_Drywall_01b",
-      "prop_type_id": "drywall_01b",
+      "bp_name": "BP_CinderStack_03a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_CinderStack_03a.BP_CinderStack_03a",
+      "prop_type_id": "cinderstack_03a",
       "mask_color_rgb": [
         195,
         205,
         37
       ],
-      "cluster_id": "mid_site",
-      "role": "safety_pylon",
+      "cluster_id": "site_grid",
+      "role": "prop_10",
       "local_xy_cm": [
-        1429.0852512744414,
-        456.7259385745297
+        1080.0,
+        420.0
       ],
-      "yaw_deg": -33.905946237790175,
+      "yaw_deg": 90.0,
       "is_transport_target": false,
       "world_xyz_cm": [
-        -543.274,
-        -770.915,
+        -580.0,
+        -1120.0,
         6455.0
       ]
     },
     {
       "slot_id": "site20_prop_011",
-      "bp_name": "BP_Rebar_01a",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Rebar_01a.BP_Rebar_01a",
-      "prop_type_id": "rebar_01a",
+      "bp_name": "BP_Portapotty_02",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Portapotty_02.BP_Portapotty_02",
+      "prop_type_id": "portapotty_02",
       "mask_color_rgb": [
         48,
         76,
         108
       ],
-      "cluster_id": "material_yard",
-      "role": "yard_pallet",
+      "cluster_id": "site_grid",
+      "role": "prop_11",
       "local_xy_cm": [
-        1915.6650338302954,
-        1919.9970220518612
+        1320.0,
+        420.0
       ],
-      "yaw_deg": -27.837602514986088,
+      "yaw_deg": 0.0,
       "is_transport_target": false,
       "world_xyz_cm": [
-        919.997,
-        -284.335,
+        -580.0,
+        -880.0,
         6455.0
       ]
     },
     {
       "slot_id": "site20_prop_012",
-      "bp_name": "BP_Boxes_02a",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Boxes_02a.BP_Boxes_02a",
-      "prop_type_id": "boxes_02a",
+      "bp_name": "BP_CinderStack_Pallete_01a",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_CinderStack_Pallete_01a.BP_CinderStack_Pallete_01a",
+      "prop_type_id": "cinderstack_pallete_01a",
       "mask_color_rgb": [
         91,
         137,
         179
-      ],
-      "cluster_id": "material_yard",
-      "role": "cardboard_boxes",
-      "local_xy_cm": [
-        1754.4068871919048,
-        1901.5288130223232
-      ],
-      "yaw_deg": -26.765027292415038,
-      "is_transport_target": false,
-      "world_xyz_cm": [
-        901.529,
-        -445.593,
-        6455.0
-      ]
-    },
-    {
-      "slot_id": "site20_prop_013",
-      "bp_name": "BP_BrickPaletteStack_01a",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_BrickPaletteStack_01a.BP_BrickPaletteStack_01a",
-      "prop_type_id": "brickpalettestack_01a",
-      "mask_color_rgb": [
-        134,
-        198,
-        60
-      ],
-      "cluster_id": "material_yard",
-      "role": "brick_pallet",
-      "local_xy_cm": [
-        1880.0,
-        1880.0
-      ],
-      "yaw_deg": -9.508925804605937,
-      "is_transport_target": false,
-      "world_xyz_cm": [
-        880.0,
-        -320.0,
-        6455.0
-      ]
-    },
-    {
-      "slot_id": "site20_prop_014",
-      "bp_name": "BP_Boxes_02a",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Boxes_02a.BP_Boxes_02a",
-      "prop_type_id": "boxes_02a",
-      "mask_color_rgb": [
-        177,
-        69,
-        131
-      ],
-      "cluster_id": "material_yard",
-      "role": "bagged_concrete",
-      "local_xy_cm": [
-        1880.0,
-        1880.0
-      ],
-      "yaw_deg": -13.855034564090232,
-      "is_transport_target": false,
-      "world_xyz_cm": [
-        880.0,
-        -320.0,
-        6455.0
-      ]
-    },
-    {
-      "slot_id": "site20_prop_015",
-      "bp_name": "BP_BrickPaletteStack_01a",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_BrickPaletteStack_01a.BP_BrickPaletteStack_01a",
-      "prop_type_id": "brickpalettestack_01a",
-      "mask_color_rgb": [
-        220,
-        130,
-        202
-      ],
-      "cluster_id": "material_yard",
-      "role": "rebar_bundle",
-      "local_xy_cm": [
-        1902.8410130912623,
-        1743.9195968774638
-      ],
-      "yaw_deg": 11.876935886911724,
-      "is_transport_target": false,
-      "world_xyz_cm": [
-        743.92,
-        -297.159,
-        6455.0
-      ]
-    },
-    {
-      "slot_id": "site20_prop_016",
-      "bp_name": "BP_Barrel_01",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Barrel_01.BP_Barrel_01",
-      "prop_type_id": "barrel_01",
-      "mask_color_rgb": [
-        73,
-        191,
-        83
       ],
       "cluster_id": "material_yard",
       "role": "shipping_crate",
@@ -445,11 +349,107 @@
         1850.0,
         1850.0
       ],
-      "yaw_deg": 19.902568495039738,
+      "yaw_deg": -90.0,
       "is_transport_target": true,
       "world_xyz_cm": [
         850.0,
         -350.0,
+        6455.0
+      ]
+    },
+    {
+      "slot_id": "site20_prop_013",
+      "bp_name": "BP_Roadblock_03b",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_03b.BP_Roadblock_03b",
+      "prop_type_id": "roadblock_03b",
+      "mask_color_rgb": [
+        134,
+        198,
+        60
+      ],
+      "cluster_id": "no_entry_roadblock",
+      "role": "roadblock_south",
+      "local_xy_cm": [
+        180.0,
+        520.0
+      ],
+      "yaw_deg": 0.0,
+      "is_transport_target": false,
+      "world_xyz_cm": [
+        -480.0,
+        -2020.0,
+        6455.0
+      ]
+    },
+    {
+      "slot_id": "site20_prop_014",
+      "bp_name": "BP_Roadblock_03b",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_03b.BP_Roadblock_03b",
+      "prop_type_id": "roadblock_03b",
+      "mask_color_rgb": [
+        177,
+        69,
+        131
+      ],
+      "cluster_id": "no_entry_roadblock",
+      "role": "roadblock_north",
+      "local_xy_cm": [
+        180.0,
+        880.0
+      ],
+      "yaw_deg": 180.0,
+      "is_transport_target": false,
+      "world_xyz_cm": [
+        -120.0,
+        -2020.0,
+        6455.0
+      ]
+    },
+    {
+      "slot_id": "site20_prop_015",
+      "bp_name": "BP_Roadblock_03b",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_03b.BP_Roadblock_03b",
+      "prop_type_id": "roadblock_03b",
+      "mask_color_rgb": [
+        220,
+        130,
+        202
+      ],
+      "cluster_id": "no_entry_roadblock",
+      "role": "roadblock_west",
+      "local_xy_cm": [
+        120.0,
+        580.0
+      ],
+      "yaw_deg": 90.0,
+      "is_transport_target": false,
+      "world_xyz_cm": [
+        -420.0,
+        -2080.0,
+        6455.0
+      ]
+    },
+    {
+      "slot_id": "site20_prop_016",
+      "bp_name": "BP_Roadblock_03b",
+      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_03b.BP_Roadblock_03b",
+      "prop_type_id": "roadblock_03b",
+      "mask_color_rgb": [
+        73,
+        191,
+        83
+      ],
+      "cluster_id": "no_entry_roadblock",
+      "role": "roadblock_east",
+      "local_xy_cm": [
+        480.0,
+        580.0
+      ],
+      "yaw_deg": -90.0,
+      "is_transport_target": false,
+      "world_xyz_cm": [
+        -420.0,
+        -1720.0,
         6455.0
       ]
     },
@@ -466,14 +466,14 @@
       "cluster_id": "no_entry_roadblock",
       "role": "roadblock_south",
       "local_xy_cm": [
-        1165.8924307213426,
-        745.6119518180271
+        300.0,
+        520.0
       ],
       "yaw_deg": 0.0,
       "is_transport_target": false,
       "world_xyz_cm": [
-        -254.388,
-        -1034.108,
+        -480.0,
+        -1880.0,
         6455.0
       ]
     },
@@ -490,15 +490,15 @@
       "cluster_id": "no_entry_roadblock",
       "role": "roadblock_north",
       "local_xy_cm": [
-        1165.8924307213426,
-        1105.6119518180271
+        300.0,
+        880.0
       ],
       "yaw_deg": 180.0,
       "is_transport_target": false,
       "world_xyz_cm": [
-        105.612,
-        -1034.108,
-        6455.0
+        -120.0,
+        -1900.0,
+        6490.0
       ]
     },
     {
@@ -514,15 +514,15 @@
       "cluster_id": "no_entry_roadblock",
       "role": "roadblock_west",
       "local_xy_cm": [
-        1105.8924307213426,
-        805.6119518180271
+        120.0,
+        700.0
       ],
       "yaw_deg": 90.0,
       "is_transport_target": false,
       "world_xyz_cm": [
-        -194.388,
-        -1094.108,
-        6455.0
+        -300.0,
+        -2080.0,
+        6490.0
       ]
     },
     {
@@ -538,14 +538,14 @@
       "cluster_id": "no_entry_roadblock",
       "role": "roadblock_east",
       "local_xy_cm": [
-        1465.8924307213426,
-        805.6119518180271
+        480.0,
+        700.0
       ],
       "yaw_deg": -90.0,
       "is_transport_target": false,
       "world_xyz_cm": [
-        -194.388,
-        -734.108,
+        -300.0,
+        -1720.0,
         6455.0
       ]
     },
@@ -562,15 +562,15 @@
       "cluster_id": "no_entry_roadblock",
       "role": "roadblock_south",
       "local_xy_cm": [
-        1285.8924307213426,
-        745.6119518180271
+        420.0,
+        520.0
       ],
       "yaw_deg": 0.0,
       "is_transport_target": false,
       "world_xyz_cm": [
-        -254.388,
-        -914.108,
-        6455.0
+        -480.0,
+        -1780.0,
+        6490.0
       ]
     },
     {
@@ -586,14 +586,14 @@
       "cluster_id": "no_entry_roadblock",
       "role": "roadblock_north",
       "local_xy_cm": [
-        1285.8924307213426,
-        1105.6119518180271
+        420.0,
+        880.0
       ],
       "yaw_deg": 180.0,
       "is_transport_target": false,
       "world_xyz_cm": [
-        105.612,
-        -914.108,
+        -120.0,
+        -1780.0,
         6455.0
       ]
     },
@@ -610,15 +610,15 @@
       "cluster_id": "no_entry_roadblock",
       "role": "roadblock_west",
       "local_xy_cm": [
-        1105.8924307213426,
-        925.6119518180271
+        120.0,
+        820.0
       ],
       "yaw_deg": 90.0,
       "is_transport_target": false,
       "world_xyz_cm": [
-        -74.388,
-        -1094.108,
-        6455.0
+        -180.0,
+        -2080.0,
+        6461.25
       ]
     },
     {
@@ -634,111 +634,15 @@
       "cluster_id": "no_entry_roadblock",
       "role": "roadblock_east",
       "local_xy_cm": [
-        1465.8924307213426,
-        925.6119518180271
+        480.0,
+        820.0
       ],
       "yaw_deg": -90.0,
       "is_transport_target": false,
       "world_xyz_cm": [
-        -74.388,
-        -734.108,
-        6455.0
-      ]
-    },
-    {
-      "slot_id": "site20_prop_025",
-      "bp_name": "BP_Roadblock_03b",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_03b.BP_Roadblock_03b",
-      "prop_type_id": "roadblock_03b",
-      "mask_color_rgb": [
-        80,
-        170,
-        152
-      ],
-      "cluster_id": "no_entry_roadblock",
-      "role": "roadblock_south",
-      "local_xy_cm": [
-        1405.8924307213426,
-        745.6119518180271
-      ],
-      "yaw_deg": 0.0,
-      "is_transport_target": false,
-      "world_xyz_cm": [
-        -254.388,
-        -794.108,
-        6455.0
-      ]
-    },
-    {
-      "slot_id": "site20_prop_026",
-      "bp_name": "BP_Roadblock_03b",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_03b.BP_Roadblock_03b",
-      "prop_type_id": "roadblock_03b",
-      "mask_color_rgb": [
-        123,
-        41,
-        223
-      ],
-      "cluster_id": "no_entry_roadblock",
-      "role": "roadblock_north",
-      "local_xy_cm": [
-        1405.8924307213426,
-        1105.6119518180271
-      ],
-      "yaw_deg": 180.0,
-      "is_transport_target": false,
-      "world_xyz_cm": [
-        105.612,
-        -794.108,
-        6455.0
-      ]
-    },
-    {
-      "slot_id": "site20_prop_027",
-      "bp_name": "BP_Roadblock_03b",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_03b.BP_Roadblock_03b",
-      "prop_type_id": "roadblock_03b",
-      "mask_color_rgb": [
-        166,
-        102,
-        104
-      ],
-      "cluster_id": "no_entry_roadblock",
-      "role": "roadblock_west",
-      "local_xy_cm": [
-        1105.8924307213426,
-        1045.6119518180271
-      ],
-      "yaw_deg": 90.0,
-      "is_transport_target": false,
-      "world_xyz_cm": [
-        45.612,
-        -1094.108,
-        6455.0
-      ]
-    },
-    {
-      "slot_id": "site20_prop_028",
-      "bp_name": "BP_Roadblock_03b",
-      "bp_path": "/Game/SimWorld/LevelProps/Generated/Construction_VOL1/BP_Roadblock_03b.BP_Roadblock_03b",
-      "prop_type_id": "roadblock_03b",
-      "mask_color_rgb": [
-        209,
-        163,
-        175
-      ],
-      "cluster_id": "no_entry_roadblock",
-      "role": "roadblock_east",
-      "local_xy_cm": [
-        1465.8924307213426,
-        1045.6119518180271
-      ],
-      "yaw_deg": -90.0,
-      "is_transport_target": false,
-      "world_xyz_cm": [
-        45.612,
-        -734.108,
-        6455.0
+        -180.0,
+        -1720.0,
+        6490.0
       ]
     }
   ]

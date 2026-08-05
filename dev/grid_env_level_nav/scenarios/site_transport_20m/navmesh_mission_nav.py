@@ -30,11 +30,16 @@ from navmesh_config import (
     NAVMESH_STUCK_UNCHANGED_STEPS,
     NAVMESH_WAYPOINT_SPACING_CM,
     NAVMESH_WP_REACH_TOLERANCE_CM,
+    NAV_CLEARANCE_HUG_PENALTY_WEIGHT,
+    NAV_CLEARANCE_OPEN_MARGIN_CM,
     NAV_DYNAMIC_OBSTACLE_MODIFIER_ENABLED,
     NAV_FINDPATH_AGENT_RADIUS_CM,
     NAV_PATH_RESAMPLE_SPACING_CM,
     NAV_PLANNING_CENTER_CLEARANCE_CM,
     NAV_PLANNING_GOAL_PUSH_MARGIN_CM,
+    NAV_PLANNING_STRICT_CLEARANCE,
+    CLEARANCE_GRID_BLOCK_MARGIN_CM,
+    CLEARANCE_GRID_RESOLUTION_CM,
     NAV_REBUILD_LOCAL_DIRTY_MARGIN_CM,
     NAV_REGISTER_HUMANOID_NAV_MODIFIER,
     PROXIMITY_EDGE_FROM_SURFACE_CM,
@@ -42,6 +47,10 @@ from navmesh_config import (
     planning_center_clearance_required_cm,
     planning_goal_center_clearance_required_cm,
     planning_goal_position_center_clearance_cm,
+)
+from clearance_grid_plan import (
+    mean_path_clearance_cm,
+    plan_clearance_grid_waypoints,
 )
 from dynamic_nav_obstacles import (
     DynamicNavObstacleTracker,
@@ -55,6 +64,7 @@ from surface_distance import (
     SurfaceObstacle,
     adjust_xy_for_planning_clearance,
     densify_waypoints_for_chord_clearance,
+    nearest_surface_distance_cm,
     validate_path_center_clearance,
     validate_path_corridor_clearance,
 )
@@ -162,7 +172,7 @@ def _goal_xyz_for_planning(
     *,
     nav_timing: Optional[NavTimingAccumulator] = None,
 ) -> Optional[WorldXYZ]:
-    """Project goal onto NavMesh; nudge XY so SpotDog center meets prop clearance."""
+    """Project goal onto NavMesh; prefer prop clearance, else best-effort nominal goal."""
     xy = goal_xy
     if path_obstacles:
         adjusted, ok = adjust_xy_for_planning_clearance(
@@ -170,15 +180,25 @@ def _goal_xyz_for_planning(
             path_obstacles,
             min_center_clearance_cm=planning_goal_position_center_clearance_cm(),
         )
-        if not ok:
-            return None
-        if dist2d(adjusted, xy) > 1.0:
+        if ok:
+            if dist2d(adjusted, xy) > 1.0:
+                print(
+                    f"[NavMeshNav] goal shifted for prop clearance "
+                    f"({xy[0]:.0f},{xy[1]:.0f}) → ({adjusted[0]:.0f},{adjusted[1]:.0f})"
+                )
+            xy = adjusted
+        else:
+            center, _oid = nearest_surface_distance_cm(xy, path_obstacles)
+            center_s = f"{center:.1f}" if center is not None else "n/a"
             print(
-                f"[NavMeshNav] goal shifted for prop clearance "
-                f"({xy[0]:.0f},{xy[1]:.0f}) → ({adjusted[0]:.0f},{adjusted[1]:.0f})"
+                f"[NavMeshNav] goal clearance best-effort min={center_s}cm "
+                f"(target={planning_goal_position_center_clearance_cm():.0f}cm) "
+                f"— projecting nominal goal ({xy[0]:.0f},{xy[1]:.0f})"
             )
-        xy = adjusted
-    return _nav_plan_xyz(ucv, nav_actor, xy, nav_timing=nav_timing)
+    xyz = _nav_plan_xyz(ucv, nav_actor, xy, nav_timing=nav_timing)
+    if xyz is None and dist2d(xy, goal_xy) > 1.0:
+        xyz = _nav_plan_xyz(ucv, nav_actor, goal_xy, nav_timing=nav_timing)
+    return xyz
 
 
 def _densify_waypoints(
@@ -371,6 +391,7 @@ def _postprocess_nav_path(
     resample_spacing_cm: float,
     findpath_agent_radius_cm: float,
     nav_timing: Optional[NavTimingAccumulator] = None,
+    strict_corridor: bool = True,
 ) -> List[WorldXY]:
     points = nq.path_points_xy(raw)
     if not points:
@@ -416,16 +437,22 @@ def _postprocess_nav_path(
                 if corridor.min_body_edge_clearance_cm is not None
                 else "n/a"
             )
+            if strict_corridor:
+                print(
+                    "[NavMeshNav] plan rejected: corridor waypoint clearance (excl. goal) "
+                    f"min_center={min_center_s}cm "
+                    f"min_body_edge={min_edge_s}cm "
+                    f"worst={corridor.worst_obstacle_id} "
+                    f"wp_viol={corridor.violating_wp_count} "
+                    f"seg_viol={corridor.violating_segment_count} "
+                    f"(edge>={PROXIMITY_EDGE_FROM_SURFACE_CM:.0f}cm)"
+                )
+                return []
             print(
-                "[NavMeshNav] plan rejected: corridor waypoint clearance (excl. goal) "
-                f"min_center={min_center_s}cm "
-                f"min_body_edge={min_edge_s}cm "
-                f"worst={corridor.worst_obstacle_id} "
-                f"wp_viol={corridor.violating_wp_count} "
-                f"seg_viol={corridor.violating_segment_count} "
-                f"(edge>={PROXIMITY_EDGE_FROM_SURFACE_CM:.0f}cm)"
+                "[NavMeshNav] corridor clearance below target (excl. goal) "
+                f"min_center={min_center_s}cm min_body_edge={min_edge_s}cm "
+                f"— keeping shortest path (violations tracked in metrics)"
             )
-            return []
     return dense
 
 
@@ -440,6 +467,7 @@ def _attempt_navmesh_plan(
     resample_spacing_cm: float,
     path_obstacles: Optional[Sequence[SurfaceObstacle]],
     nav_timing: Optional[NavTimingAccumulator] = None,
+    strict_corridor: bool = True,
 ) -> Tuple[List[WorldXY], dict]:
     raw, use_validated = _fetch_validated_path(
         ucv,
@@ -462,10 +490,76 @@ def _attempt_navmesh_plan(
         resample_spacing_cm=resample_spacing_cm,
         findpath_agent_radius_cm=findpath_agent_radius_cm,
         nav_timing=nav_timing,
+        strict_corridor=strict_corridor,
     )
     if not dense:
         return [], raw
     return dense, raw
+
+
+def _best_effort_path_fallback(
+    ucv,
+    nav_actor: str,
+    start_xyz: WorldXYZ,
+    goal_xyz: WorldXYZ,
+    *,
+    findpath_agent_radius_cm: float,
+    path_obstacles: Optional[Sequence[SurfaceObstacle]],
+    center_clearance_cm: float,
+    nav_timing: Optional[NavTimingAccumulator] = None,
+) -> List[WorldXY]:
+    """Prefer open corridors (grid A*) over NavFindPath perimeter skating."""
+    start_xy = (float(start_xyz[0]), float(start_xyz[1]))
+    goal_xy = (float(goal_xyz[0]), float(goal_xyz[1]))
+
+    if path_obstacles:
+        t_grid = time.perf_counter()
+        grid_path = plan_clearance_grid_waypoints(
+            start_xy,
+            goal_xy,
+            path_obstacles,
+            center_clearance_cm=center_clearance_cm,
+            resolution_cm=CLEARANCE_GRID_RESOLUTION_CM,
+            block_margin_cm=CLEARANCE_GRID_BLOCK_MARGIN_CM,
+            hug_penalty_weight=NAV_CLEARANCE_HUG_PENALTY_WEIGHT,
+            hug_open_margin_cm=NAV_CLEARANCE_OPEN_MARGIN_CM,
+        )
+        if nav_timing is not None:
+            nav_timing.record_elapsed("nav_grid_plan_ms", t_grid)
+        if grid_path:
+            mean_clr = mean_path_clearance_cm(grid_path, path_obstacles)
+            print(
+                f"[NavMeshNav] open-corridor grid path {len(grid_path)} WP "
+                f"mean_center_clearance={mean_clr:.0f}cm "
+                f"(target>={center_clearance_cm:.0f}cm)"
+            )
+            return grid_path
+
+    t_find = time.perf_counter()
+    raw = nq.nav_find_path(
+        ucv,
+        nav_actor,
+        start_xyz,
+        goal_xyz,
+        agent_radius_cm=findpath_agent_radius_cm,
+    )
+    if nav_timing is not None:
+        nav_timing.record_elapsed("nav_find_path_ms", t_find)
+        nav_timing.nav_find_path_count += 1
+    points = nq.path_points_xy(raw)
+    if not points:
+        print(f"[NavMeshNav] path fallback failed: {raw.get('error', raw)}")
+        return []
+    dense = list(points)
+    if path_obstacles:
+        mean_clr = mean_path_clearance_cm(dense, path_obstacles)
+        print(
+            f"[NavMeshNav] NavFindPath fallback {len(dense)} WP "
+            f"mean_center_clearance={mean_clr:.0f}cm"
+        )
+    else:
+        print(f"[NavMeshNav] NavFindPath fallback {len(dense)} WP")
+    return dense
 
 
 def plan_navmesh_waypoints(
@@ -482,6 +576,7 @@ def plan_navmesh_waypoints(
     registry: Any = None,
     nav_timing: Optional[NavTimingAccumulator] = None,
 ) -> List[WorldXY]:
+    strict = NAV_PLANNING_STRICT_CLEARANCE
     dense, raw = _attempt_navmesh_plan(
         ucv,
         nav_actor,
@@ -492,12 +587,31 @@ def plan_navmesh_waypoints(
         resample_spacing_cm=resample_spacing_cm,
         path_obstacles=path_obstacles,
         nav_timing=nav_timing,
+        strict_corridor=strict,
     )
     if dense:
         return dense
 
-    _log_plan_failure(raw)
-    return []
+    if strict:
+        _log_plan_failure(raw)
+        return []
+
+    if raw.get("error"):
+        _log_plan_failure(raw)
+    print(
+        "[NavMeshNav] strict clearance plan unavailable — "
+        "using open-corridor grid planner (violations tracked in metrics)"
+    )
+    return _best_effort_path_fallback(
+        ucv,
+        nav_actor,
+        start_xyz,
+        goal_xyz,
+        findpath_agent_radius_cm=findpath_agent_radius_cm,
+        path_obstacles=path_obstacles,
+        center_clearance_cm=center_clearance_cm,
+        nav_timing=nav_timing,
+    )
 
 
 def _nav_plan_call_kwargs(

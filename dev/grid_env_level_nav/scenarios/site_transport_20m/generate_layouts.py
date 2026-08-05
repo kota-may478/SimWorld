@@ -15,15 +15,24 @@ from bootstrap import setup_paths
 
 setup_paths(scenario="site_transport_20m")
 
-from layout_variants import LAYOUT_COUNT, VARIANT_BASE_SEED, generate_all_layouts  # noqa: E402
+from layout_variants import (  # noqa: E402
+    LAYOUT_COUNT,
+    VARIANT_BASE_SEED,
+    generate_all_layouts,
+)
 
 
 def main() -> int:
     p = argparse.ArgumentParser(description="Generate site_transport_20m layout variants")
     p.add_argument("--count", type=int, default=LAYOUT_COUNT)
+    p.add_argument("--start-index", type=int, default=1)
     p.add_argument("--base-seed", type=int, default=VARIANT_BASE_SEED)
     args = p.parse_args()
-    generate_all_layouts(base_seed=args.base_seed, count=args.count)
+    generate_all_layouts(
+        base_seed=args.base_seed,
+        count=args.count,
+        start_index=args.start_index,
+    )
     return 0
 
 
