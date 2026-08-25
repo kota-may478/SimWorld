@@ -40,6 +40,6 @@ PIE 開始後、WSL で:
 
 ```bash
 conda activate simworld
-cd ~/00_kotaprivate/Program/SimWorld
+cd ~/01_Private/Program/SimWorld
 python dev/grid_env_level_nav/_nav_project_point_smoke_test.py
 ```

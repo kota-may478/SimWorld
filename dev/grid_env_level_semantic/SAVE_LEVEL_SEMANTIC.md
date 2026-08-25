@@ -16,7 +16,7 @@
 
 ```bash
 conda activate simworld
-cd ~/00_kotaprivate/Program/SimWorld/dev/grid_env_level_semantic
+cd ~/01_Private/Program/SimWorld/dev/grid_env_level_semantic
 ```
 
 3. まず **5×5 検証**（ノート `grid_env_level_semantic.ipynb` または CLI）:
