@@ -281,7 +281,7 @@ site_transport の静的 prop は **73 個**ありますが、**親 Blueprint �
    `dev/grid_env_level_nav/scripts/enable_ai_sight_stimuli_on_level_props_editor.py`
 
    （WSL 上の絶対パス例:  
-   `~/00_kotaprivate/Program/SimWorld/dev/grid_env_level_nav/scripts/enable_ai_sight_stimuli_on_level_props_editor.py`）
+   `~/01_Private/Program/SimWorld/dev/grid_env_level_nav/scripts/enable_ai_sight_stimuli_on_level_props_editor.py`）
 
 4. **Output Log** で次を確認:
    - `[SightStimuliProps] mode=base_and_extras targets=2`
@@ -474,7 +474,7 @@ spawn されているのは親 **`BP_SpotRobot`**（`GridEnv_SpotRobot`）です
 ### 6-B: vbp（WSL・PIE 中）
 
 ```bash
-cd /home/winder17wsl_ishizawalab/00_kotaprivate/Program/SimWorld
+cd /home/winder17wsl_ishizawalab/01_Private/Program/SimWorld
 conda run -n simworld python -c "
 import sys
 sys.path.insert(0,'dev/grid_env_hri')
@@ -733,7 +733,7 @@ delivery 前に Socket から外します。**Actor 検索ループは 9-2 と�
 2. **あなた**は WSL で次を **実行**する:
 
 ```bash
-cd ~/00_kotaprivate/Program/SimWorld
+cd ~/01_Private/Program/SimWorld
 python dev/grid_env_level_nav/scripts/probe_carry_attach_vbp.py
 ```
 

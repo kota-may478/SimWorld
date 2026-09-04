@@ -21,7 +21,7 @@
 
 ```bash
 conda activate simworld
-cd ~/00_kotaprivate/Program/SimWorld/dev/grid_env_10k
+cd ~/01_Private/Program/SimWorld/dev/grid_env_10k
 python run_phase1_spawn.py
 ```
 
