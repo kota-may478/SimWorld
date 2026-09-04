@@ -17,6 +17,7 @@ This directory contains **local research and integration prototypes** that exten
 | [`llm_material_transport/`](llm_material_transport/README.md) | `/Game/Maps/Level` | LLM-directed Humanoid → SpotDog material transport |
 | [`hri_agv/`](hri_agv/README.md) | UE Play mode (generic) | Proxemics-based Humanoid–AGV interaction in 10 m room |
 | [`hri_spotdog_follow/`](hri_spotdog_follow/README.md) | UE Play mode (generic) | SpotDog camera/depth follow of walking Humanoid |
+| [`scaffold_hrc/`](scaffold_hrc/README.md) | `/Game/Maps/Level` (3D later) | ICRA 2027 scaffolding HRC: kinematic oracle, 3F grammar, WBS + Π |
 
 ### Dependency graph (read-only imports)
 
@@ -32,6 +33,8 @@ grid_env_hri  ──────────────────────
               └── (uses grid_env_10k_pie_patrol helpers, depth_object_perception)
 
 hri_agv ──► hri_spotdog_follow (room layout parity)
+
+scaffold_hrc  (headless oracle; will import grid_env_level_nav for PIE)
 ```
 
 ### Conventions
@@ -67,6 +70,7 @@ hri_agv ──► hri_spotdog_follow (room layout parity)
 | [`llm_material_transport/`](llm_material_transport/README.md) | `/Game/Maps/Level` | LLM 指示による Humanoid → SpotDog 資材搬送 |
 | [`hri_agv/`](hri_agv/README.md) | UE Play（汎用） | 10 m 部屋での Proxemics ベース HRI |
 | [`hri_spotdog_follow/`](hri_spotdog_follow/README.md) | UE Play（汎用） | 歩行 Humanoid を SpotDog がカメラ/深度で追従 |
+| [`scaffold_hrc/`](scaffold_hrc/README.md) | `/Game/Maps/Level`（3D は後続） | ICRA 2027 足場 HRC：高速オラクル、3F 文法、WBS と Π |
 
 ### 依存関係（インポート方向）
 
