@@ -460,5 +460,8 @@ dev/**/out/
 dev/**/cache/runs/
 dev/**/cache/debug_*.png
 
+# Nested ICRA paper repo (tracked separately, not in SimWorld)
+dev/scaffold_hrc/docs/Paper/
+
 # Claude Code
 .claude/
