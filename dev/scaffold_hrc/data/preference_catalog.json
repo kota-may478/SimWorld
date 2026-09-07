@@ -1,0 +1,108 @@
+{
+  "absolute": [
+    {
+      "id": "efficient",
+      "alpha": 0.0,
+      "beta": 0.5,
+      "gloss": "Finish the job quickly. Efficiency first. Hurry. Alpha=0; beta is unused."
+    },
+    {
+      "id": "normal_distance",
+      "alpha": 0.5,
+      "beta": 0.0,
+      "gloss": "Otherwise normal, but keep more space from the human."
+    },
+    {
+      "id": "normal",
+      "alpha": 0.5,
+      "beta": 0.5,
+      "gloss": "Balanced default. As usual. Neither hurried nor extra-cautious."
+    },
+    {
+      "id": "normal_slow",
+      "alpha": 0.5,
+      "beta": 1.0,
+      "gloss": "Otherwise normal, but unhurried / do not rush."
+    },
+    {
+      "id": "safe_distance",
+      "alpha": 1.0,
+      "beta": 0.0,
+      "gloss": "Safety first by staying farther from the human."
+    },
+    {
+      "id": "safe",
+      "alpha": 1.0,
+      "beta": 0.5,
+      "gloss": "Safety first, balanced between slow and far."
+    },
+    {
+      "id": "safe_slow",
+      "alpha": 1.0,
+      "beta": 1.0,
+      "gloss": "Safety first by moving slowly."
+    }
+  ],
+  "relative": [
+    {
+      "id": "a_bit_slower",
+      "d_alpha": 0,
+      "d_beta": 1,
+      "gloss": "A little slower than now. One 5x5 step toward slow."
+    },
+    {
+      "id": "much_slower",
+      "d_alpha": 0,
+      "d_beta": 2,
+      "gloss": "Much slower than now. Two 5x5 steps toward slow."
+    },
+    {
+      "id": "a_bit_faster",
+      "d_alpha": -1,
+      "d_beta": 0,
+      "gloss": "A little faster / more efficient than now. One step down in alpha."
+    },
+    {
+      "id": "much_faster",
+      "d_alpha": -2,
+      "d_beta": 0,
+      "gloss": "Much faster / much more efficient. Two steps down in alpha."
+    },
+    {
+      "id": "a_bit_farther",
+      "d_alpha": 0,
+      "d_beta": -1,
+      "gloss": "A little more distance than now. One 5x5 step toward far."
+    },
+    {
+      "id": "much_farther",
+      "d_alpha": 0,
+      "d_beta": -2,
+      "gloss": "Much more distance than now. Two 5x5 steps toward far."
+    },
+    {
+      "id": "a_bit_safer",
+      "d_alpha": 1,
+      "d_beta": 0,
+      "gloss": "A little more careful than now. One step up in alpha."
+    },
+    {
+      "id": "much_safer",
+      "d_alpha": 2,
+      "d_beta": 0,
+      "gloss": "Much more careful than now. Two steps up in alpha."
+    }
+  ],
+  "special": [
+    {
+      "id": "reset",
+      "kind": "reset",
+      "gloss": "Return to the default balanced setting."
+    },
+    {
+      "id": "unchanged",
+      "kind": "unchanged",
+      "gloss": "Not a speed/distance preference. Keep the current setting."
+    }
+  ]
+}
