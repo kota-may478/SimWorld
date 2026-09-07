@@ -30,17 +30,19 @@ class VizTest(unittest.TestCase):
     def test_writes_pngs(self) -> None:
         result = run_erection(
             geom=STAGE1_GEOM,
-            theta=Theta(dmin_m=0.8, vmax_mps=0.5),
+            theta=Theta(vmax_mps=0.8, dmin_m=0.80),
             config=OracleConfig(
                 dt_s=0.25,
                 timeout_s=240.0,
                 erect_s=0.25,
+                truck_load_s=0.25,
+                drop_place_s=0.25,
                 sockets_per_floor=2,
             ),
         )
         front = synthetic_front()
         rows = tuple(
-            EvaluatedTheta(t, jeff=0.8, jsafe=0.0, completed=True) for t in front
+            EvaluatedTheta(t, tt=0.8, t_ssm=0.0, si_min=1.2, completed=True) for t in front
         )
         with TemporaryDirectory() as tmp:
             out = Path(tmp)

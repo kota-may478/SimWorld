@@ -15,14 +15,13 @@ if str(PKG) not in sys.path:
 
 from constraints.pareto import (  # noqa: E402
     EvaluatedTheta,
-    Theta,
-    nondominated,
+    iso_pareto,
     project,
     synthetic_front,
 )
 from fronts.evaluate import measure_t_ref  # noqa: E402
-from fronts.space import REF_THETA  # noqa: E402
-from oracle.objectives import W_SAFE, W_TCR, W_TT, score  # noqa: E402
+from fronts.space import HALLUCINATED_THETA, REF_THETA  # noqa: E402
+from oracle.objectives import score  # noqa: E402
 from oracle.simulate import OracleConfig, OracleResult, run_erection  # noqa: E402
 from paths import make_run_dir  # noqa: E402
 from scene.geometry import STAGE1_GEOM  # noqa: E402
@@ -39,14 +38,17 @@ def _result_payload(
     t_ref_s: float,
     alpha: float | None = None,
 ) -> dict:
-    breakdown = score(result, t_ref_s=t_ref_s)
+    breakdown = score(result, t_ref_s=t_ref_s, vmax_mps=theta.vmax_mps)
     row = {
-        "dmin_m": theta.dmin_m,
         "vmax_mps": theta.vmax_mps,
+        "dmin_m": theta.dmin_m,
         "completed": result.completed,
         "makespan_s": result.makespan_s,
+        "mission_s": result.makespan_s,
         "path_length_m": result.path_length_m,
         "corridor_time_s": result.corridor_time_s,
+        "scaffold_safe_s": result.scaffold_safe_s,
+        "scaffold_unsafe_s": result.scaffold_unsafe_s,
         "min_separation_m": result.min_separation_m,
         "wait_s": result.wait_s,
         "violation_s": result.violation_s,
@@ -55,9 +57,10 @@ def _result_payload(
         "floors_completed": result.floors_completed,
         "tcr": breakdown.tcr,
         "tt": breakdown.tt,
-        "jeff": breakdown.jeff,
-        "jsafe": breakdown.jsafe,
-        "j": breakdown.j,
+        "t_ssm": breakdown.t_ssm,
+        "si_min": breakdown.si_min,
+        "iso_feasible": breakdown.iso_feasible,
+        "ssm_s": result.ssm_s,
         "trace_samples": len(result.trace),
     }
     if alpha is not None:
@@ -89,24 +92,33 @@ def main() -> int:
     run_dir = make_run_dir()
     config = OracleConfig(sockets_per_floor=args.sockets_per_floor)
     t_ref_s = measure_t_ref(config, REF_THETA)
-    front = synthetic_front()
-    chosen = project(Theta(dmin_m=8.0, vmax_mps=3.0), args.alpha, front)
+    candidates = synthetic_front()
     constraint_active = not args.no_constraint
 
     rows: list[EvaluatedTheta] = []
     sweep_payload: list[dict] = []
-    for sample in front:
+    for sample in candidates:
         result = run_erection(
             geom=STAGE1_GEOM,
             theta=sample,
             config=config,
             constraint_active=constraint_active,
         )
-        breakdown = score(result, t_ref_s=t_ref_s)
-        rows.append(EvaluatedTheta(sample, breakdown.jeff, breakdown.jsafe, result.completed))
+        breakdown = score(result, t_ref_s=t_ref_s, vmax_mps=sample.vmax_mps)
+        rows.append(
+            EvaluatedTheta(
+                sample,
+                tt=breakdown.tt,
+                t_ssm=breakdown.t_ssm,
+                si_min=breakdown.si_min,
+                completed=result.completed,
+            )
+        )
         sweep_payload.append(_result_payload(sample, result, t_ref_s=t_ref_s))
 
-    nd = nondominated(tuple(rows))
+    nd = iso_pareto(tuple(rows))
+    iso_front = tuple(row.theta for row in nd) or candidates
+    chosen = project(HALLUCINATED_THETA, args.alpha, iso_front)
     representative = run_erection(
         geom=STAGE1_GEOM,
         theta=chosen,
@@ -116,7 +128,7 @@ def main() -> int:
 
     _dump_scaffold(run_dir / "scaffold_modules.json")
     write_trace_csv(run_dir / "trajectory.csv", representative)
-    write_pareto_plots(run_dir, rows=tuple(rows), front=front, chosen=chosen)
+    write_pareto_plots(run_dir, rows=tuple(rows), front=iso_front, chosen=chosen)
     write_trajectory_plots(
         run_dir,
         geom=STAGE1_GEOM,
@@ -128,10 +140,9 @@ def main() -> int:
         "run_dir": str(run_dir),
         "alpha": args.alpha,
         "constraint_active": constraint_active,
-        "weights": {"w_tcr": W_TCR, "w_tt": W_TT, "w_safe": W_SAFE},
         "t_ref_s": t_ref_s,
-        "ref_theta": {"dmin_m": REF_THETA.dmin_m, "vmax_mps": REF_THETA.vmax_mps},
-        "chosen_theta": {"dmin_m": chosen.dmin_m, "vmax_mps": chosen.vmax_mps},
+        "ref_theta": REF_THETA.as_dict(),
+        "chosen_theta": chosen.as_dict(),
         "representative": _result_payload(
             chosen, representative, t_ref_s=t_ref_s, alpha=args.alpha
         ),
@@ -139,10 +150,11 @@ def main() -> int:
         "n_nondominated": len(nd),
         "nondominated": [
             {
-                "dmin_m": row.theta.dmin_m,
-                "vmax_mps": row.theta.vmax_mps,
-                "jeff": row.jeff,
-                "jsafe": row.jsafe,
+                **row.theta.as_dict(),
+                "tt": row.tt,
+                "t_ssm": row.t_ssm,
+                "si_min": row.si_min,
+                "iso_feasible": row.iso_feasible,
             }
             for row in nd
         ],

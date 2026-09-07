@@ -42,6 +42,9 @@ def write_trace_csv(path: Path, result: OracleResult) -> Path:
                 "n_filled",
                 "current_floor",
                 "violating",
+                "si",
+                "sp_m",
+                "ssm_mode",
             ]
         )
         for sample in result.trace:
@@ -61,6 +64,9 @@ def write_trace_csv(path: Path, result: OracleResult) -> Path:
                     sample.n_filled,
                     sample.current_floor,
                     int(sample.violating),
+                    f"{sample.si:.4f}",
+                    f"{sample.sp_m:.4f}",
+                    sample.ssm_mode,
                 ]
             )
     return path
@@ -80,36 +86,37 @@ def write_pareto_plots(
     fig, ax = plt.subplots(figsize=(7.2, 4.8))
     if rows:
         ax.scatter(
-            [r.theta.dmin_m for r in rows],
             [r.theta.vmax_mps for r in rows],
-            c=[r.jeff for r in rows],
-            cmap="viridis",
+            [r.theta.dmin_m for r in rows],
+            c=[r.tt for r in rows],
+            cmap="viridis_r",
             s=42,
             zorder=3,
             label="oracle samples",
         )
         cbar = fig.colorbar(ax.collections[0], ax=ax)
-        cbar.set_label("Jeff = TCR - TT (dimensionless)")
+        cbar.set_label("TT = T / T_ref (lower better)")
     ax.plot(
-        [p.dmin_m for p in front],
         [p.vmax_mps for p in front],
+        [p.dmin_m for p in front],
         color="0.25",
         linewidth=1.4,
         label="design front P (alpha index)",
     )
     ax.scatter(
-        [chosen.dmin_m],
         [chosen.vmax_mps],
+        [chosen.dmin_m],
         marker="*",
         s=180,
         color="0.05",
         zorder=4,
         label="representative theta",
     )
-    ax.set_xlabel("d_min (m)")
-    ax.set_ylabel("v_max (m/s)")
-    ax.set_title("Parameter front: oracle Jeff over (d_min, v_max)")
-    ax.set_ylim(0.0, 1.15)
+    ax.set_xlabel("v_max (m/s)")
+    ax.set_ylabel("d_min (m)")
+    ax.set_title("Parameter front: oracle TT over (v_max, d_min)")
+    ax.set_xlim(0.15, 1.10)
+    ax.set_ylim(0.25, 1.70)
     ax.legend(loc="upper right", frameon=False)
     fig.tight_layout()
     fig.savefig(theta_path, dpi=140)
@@ -117,24 +124,24 @@ def write_pareto_plots(
 
     fig, ax = plt.subplots(figsize=(7.2, 4.8))
     ax.scatter(
-        [r.jsafe for r in rows],
-        [r.jeff for r in rows],
+        [r.theta.vmax_mps for r in rows],
+        [r.tt for r in rows],
         s=42,
         label="oracle samples",
     )
     nd = nondominated(tuple(rows))
     if nd:
-        ordered = sorted(nd, key=lambda r: r.jsafe)
+        ordered = sorted(nd, key=lambda r: r.theta.vmax_mps)
         ax.plot(
-            [r.jsafe for r in ordered],
-            [r.jeff for r in ordered],
+            [r.theta.vmax_mps for r in ordered],
+            [r.tt for r in ordered],
             color="0.15",
             linewidth=1.5,
             label="nondominated",
         )
-    ax.set_xlabel("Jsafe = T_viol / T_ref (penalty, lower is better)")
-    ax.set_ylabel("Jeff = w1 TCR - w2 TT (higher is better)")
-    ax.set_title("Objective space (maximize Jeff, Jsafe is a penalty)")
+    ax.set_xlabel("v_max (m/s) (lower better)")
+    ax.set_ylabel("TT (s) (lower better)")
+    ax.set_title("Objective space (min TT, min v_max; min_sep in fronts plots)")
     ax.legend(loc="best", frameon=False)
     fig.tight_layout()
     fig.savefig(obj_path, dpi=140)
@@ -202,7 +209,7 @@ def write_trajectory_plots(
     fig.savefig(xy_path, dpi=140)
     plt.close(fig)
 
-    fig, axes = plt.subplots(4, 1, figsize=(7.4, 8.2), sharex=True)
+    fig, axes = plt.subplots(5, 1, figsize=(7.4, 9.4), sharex=True)
     axes[0].plot(ts, sx, label="SpotDog x")
     axes[0].plot(ts, hx, linestyle="--", label="Humanoid x")
     axes[0].axhline(store_x, color="0.7", linewidth=0.7, linestyle=":")
@@ -220,9 +227,14 @@ def write_trajectory_plots(
         axes[2].axhline(theta.dmin_m, color="0.3", linestyle="--", linewidth=1.0, label="d_min")
     axes[2].set_ylabel("sep (m)")
     axes[2].legend(loc="best", frameon=False, fontsize=8)
-    axes[3].plot(ts, filled, label="boards placed")
-    axes[3].set_ylabel("filled")
-    axes[3].set_xlabel("t (s)")
+    si = [s.si for s in trace]
+    axes[3].plot(ts, si, label="SI")
+    axes[3].axhline(1.0, color="0.3", linestyle="--", linewidth=1.0, label="SI=1")
+    axes[3].set_ylabel("SI")
+    axes[3].legend(loc="best", frameon=False, fontsize=8)
+    axes[4].plot(ts, filled, label="boards placed")
+    axes[4].set_ylabel("filled")
+    axes[4].set_xlabel("t (s)")
     fig.suptitle("Time history: 3F erection (climb after each floor is built)")
     fig.tight_layout()
     fig.savefig(time_path, dpi=140)

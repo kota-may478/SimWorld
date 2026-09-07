@@ -1,4 +1,9 @@
-"""Dimensionless Jeff and Jsafe. Jsafe is a penalty, not a hard constraint."""
+"""Minimize TT [s] and v_max [m/s]. Keep-out is a constraint, not an objective.
+
+TT is Spot's scaffolding-space dwell, including waits. Mission makespan
+(truck load, corridor, stairs, drop, and hand assembly) is reported separately.
+Feasible means completed and S > S_p while keep-out is on (ISO SI = S/S_p).
+"""
 
 from __future__ import annotations
 
@@ -6,54 +11,55 @@ from dataclasses import dataclass
 
 from oracle.simulate import OracleResult
 
-W_TCR = 1.0
-W_TT = 1.0
-W_SAFE = 1.0
+ISO_SI_MIN = 1.0
 
 
 @dataclass(frozen=True)
 class ObjectiveBreakdown:
     tcr: float
     tt: float
-    jeff: float
-    jsafe: float
-    j: float
+    t_ssm: float
+    si_min: float
+    iso_feasible: bool
     n_filled: int
     n_sockets: int
     makespan_s: float
+    ssm_s: float
     violation_s: float
+    mission_s: float = 0.0
+    scaffold_safe_s: float = 0.0
+    scaffold_unsafe_s: float = 0.0
+    scaffold_time_s: float = 0.0
 
 
 def score(
     result: OracleResult,
     *,
-    w_tcr: float = W_TCR,
-    w_tt: float = W_TT,
-    w_safe: float = W_SAFE,
     t_ref_s: float | None = None,
+    vmax_mps: float = 0.0,
 ) -> ObjectiveBreakdown:
-    """Jeff = w1 TCR - w2 TT ; J = Jeff - w3 Jsafe.
+    """TT = scaffolding dwell in seconds. Second Pareto objective is v_max.
 
-    TCR is filled sockets / total.
-    TT = makespan / T_ref (may exceed 1 if slower than the reference run).
-    Jsafe = T_viol / T_ref (may exceed 1 if the run is stuck near people).
-    Maximize J; Jsafe is only a penalty when w3 > 0.
+    t_ref_s is ignored. t_ssm is filled with vmax_mps so callers that still
+    read the field as the second minimize-objective keep working.
     """
-    t_ref = t_ref_s if t_ref_s is not None else result.timeout_s
-    if t_ref <= 0.0:
-        raise ValueError("t_ref_s must be positive")
+    _ = t_ref_s
     tcr = result.n_filled / max(result.n_sockets, 1)
-    tt = result.makespan_s / t_ref
-    jsafe = result.violation_s / t_ref
-    jeff = w_tcr * tcr - w_tt * tt
+    tt = result.scaffold_time_s
+    iso_feasible = result.completed and result.si_min + 1e-9 >= ISO_SI_MIN
     return ObjectiveBreakdown(
         tcr=tcr,
         tt=tt,
-        jeff=jeff,
-        jsafe=jsafe,
-        j=jeff - w_safe * jsafe,
+        t_ssm=vmax_mps,
+        si_min=result.si_min,
+        iso_feasible=iso_feasible,
         n_filled=result.n_filled,
         n_sockets=result.n_sockets,
         makespan_s=result.makespan_s,
+        ssm_s=result.ssm_s,
         violation_s=result.violation_s,
+        mission_s=result.makespan_s,
+        scaffold_safe_s=result.scaffold_safe_s,
+        scaffold_unsafe_s=result.scaffold_unsafe_s,
+        scaffold_time_s=result.scaffold_time_s,
     )

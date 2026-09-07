@@ -1,8 +1,11 @@
 """Headless 3F erection oracle. Corridor unconstrained; scaffold uses θ.
 
-Jsafe is keep-out violation time (sep < d_safe on the scaffold), not a
-runtime hard filter and not body-collision SVR. The controller still
-refuses to close further when already inside d_min.
+Story: a worker hands cargo to Spot's arm at the truck (timed), Spot places it
+on the deck (timed), then the assembler Humanoid attaches it by hand (timed).
+
+ISO/TS 15066 SSM and d_min apply only in scaffolding space, until the
+human reaches that floor's refuge. After that, Spot may ignore keep-out
+until it leaves the scaffold. Stair hops use v_max * stair_speed_factor.
 """
 
 from __future__ import annotations
@@ -12,6 +15,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 from constraints.pareto import Theta
+from oracle.ssm import SSM_STOPPED_MPS, apply_ssm, protective_separation_m, safety_index
 from scene.geometry import ScaffoldGeom
 from scene.scaffold_grammar import ScaffoldSpec, Socket, build_scaffold
 
@@ -30,21 +34,31 @@ class TraceSample:
     n_filled: int
     current_floor: int
     violating: bool
+    si: float = 1.0
+    sp_m: float = 0.0
+    ssm_mode: str = "free"
+    unsafe: bool = False
+    retreating: bool = False
 
 
 @dataclass(frozen=True)
 class OracleConfig:
     dt_s: float = 0.1
     human_speed_mps: float = 1.2
-    timeout_s: float = 3600.0
+    human_retreat_mps: float = 0.5
+    timeout_s: float = 7200.0
     handoff_spot_m: float = 0.50
     handoff_human_m: float = 0.50
     collision_m: float = 0.40
     d_safe_m: float = 1.00
-    erect_s: float = 1.5
+    erect_s: float = 30.0
+    truck_load_s: float = 8.0
+    drop_place_s: float = 8.0
+    stair_speed_factor: float = 0.5
     sockets_per_floor: Optional[int] = None
     drop_x_m: float = 2.0
     standoff_x_m: float = 6.0
+    refuge_x_m: float = 9.0
     record_trace: bool = True
 
 
@@ -54,7 +68,7 @@ class OracleResult:
     makespan_s: float
     path_length_m: float
     corridor_time_s: float
-    min_separation_m: float
+    min_separation_m: float  # closest S while keep-out is on and Spot is moving
     wait_s: float
     violation_s: float
     n_filled: int
@@ -62,6 +76,13 @@ class OracleResult:
     floors_completed: int
     timeout_s: float
     trace: Tuple[TraceSample, ...] = ()
+    ssm_s: float = 0.0
+    si_min: float = 1.0
+    scaffold_safe_s: float = 0.0
+    scaffold_unsafe_s: float = 0.0
+    arm_load_s: float = 0.0
+    arm_place_s: float = 0.0
+    scaffold_time_s: float = 0.0
 
 
 def _horiz(a: Vec3, b: Vec3) -> float:
@@ -149,6 +170,29 @@ def _floor_done(spec: ScaffoldSpec, floor: int) -> bool:
     return bool(sockets) and all(s.filled for s in sockets)
 
 
+def _cmd_speed(
+    *,
+    in_corridor: bool,
+    constraint_active: bool,
+    vmax_mps: float,
+    stair_hop: bool,
+    stair_speed_factor: float,
+) -> float:
+    if in_corridor:
+        speed = 1.0
+    elif constraint_active:
+        speed = vmax_mps
+    else:
+        speed = 1.0
+    if stair_hop:
+        speed *= stair_speed_factor
+    return speed
+
+
+def _keepout_violated(sep_m: float, cmd_speed: float, dmin_m: float) -> bool:
+    return sep_m < protective_separation_m(cmd_speed) or sep_m < dmin_m
+
+
 def run_erection(
     *,
     geom: ScaffoldGeom,
@@ -169,41 +213,57 @@ def run_erection(
     cargo_at_drop = False
     reserved: Optional[Socket] = None
     erect_timer = 0.0
+    load_timer = 0.0
+    place_timer = 0.0
     t = 0.0
     wait_s = 0.0
     path_m = 0.0
     corridor_time_s = 0.0
-    min_sep = 1e9
+    scaffold_safe_s = 0.0
+    scaffold_unsafe_s = 0.0
+    arm_load_s = 0.0
+    arm_place_s = 0.0
+    min_sep_enforced = 1e9
+    min_sep_onsite = 1e9
     violation_s = 0.0
+    si_min = 1e9
     floors_completed = 0
-    yield_drop = False
+    evac_requested = False
+    keepout_waived = False
     trace: List[TraceSample] = []
+    scaffold_time_s = 0.0
 
     while t < config.timeout_s:
         drop = _pose(config.drop_x_m, geom, current_floor)
-        standoff = _pose(config.standoff_x_m, geom, current_floor)
+        refuge = _pose(config.refuge_x_m, geom, current_floor)
         unfilled = sum(1 for s in spec.sockets_on_floor(current_floor) if not s.filled)
         pipeline = int(spot_loaded) + int(cargo_at_drop) + int(human_loaded)
         need_fetch = unfilled > pipeline
         floor_clear = unfilled == 0 and not human_loaded and not cargo_at_drop
         next_sock = spec.next_empty_socket(current_floor)
+        spot_on_floor_scaffold = (
+            _on_scaffold(spot[0], geom) and _same_level(spot, drop)
+        )
+        if not _on_scaffold(spot[0], geom):
+            keepout_waived = False
+            evac_requested = False
 
-        if human_loaded:
+        if evac_requested or keepout_waived:
+            human_dest = refuge
+        elif human_loaded:
             if reserved is None:
                 reserved = next_sock
             human_dest = (
-                (reserved.x_m, reserved.y_m, reserved.z_m) if reserved is not None else standoff
+                (reserved.x_m, reserved.y_m, reserved.z_m) if reserved is not None else refuge
             )
-        elif cargo_at_drop:
+        elif cargo_at_drop and not spot_on_floor_scaffold:
             human_dest = drop
-        elif yield_drop:
-            human_dest = standoff
         elif floor_clear and current_floor < geom.n_floors:
-            human_dest = _pose(config.standoff_x_m, geom, current_floor + 1)
+            human_dest = _pose(config.refuge_x_m, geom, current_floor + 1)
         elif next_sock is not None:
             human_dest = (next_sock.x_m, next_sock.y_m, next_sock.z_m)
         else:
-            human_dest = standoff
+            human_dest = refuge
 
         if spot_loaded and current_floor <= spot_max_floor and not cargo_at_drop:
             spot_dest = drop
@@ -213,41 +273,71 @@ def run_erection(
             spot_dest = store
 
         in_corridor = not _on_scaffold(spot[0], geom)
-        speed = 1.0 if in_corridor or not constraint_active else theta.vmax_mps
         hop = _next_hop(geom, spot, spot_dest)
-        trial, _ = _move_toward(spot, hop, speed, config.dt_s)
+        stair_hop = abs(hop[2] - spot[2]) > 1e-6
+        cmd_speed = _cmd_speed(
+            in_corridor=in_corridor,
+            constraint_active=constraint_active,
+            vmax_mps=theta.vmax_mps,
+            stair_hop=stair_hop,
+            stair_speed_factor=config.stair_speed_factor,
+        )
         sep = _horiz(spot, human)
         on_site = (
             _on_scaffold(spot[0], geom)
             and _on_scaffold(human[0], geom)
             and _same_level(spot, human)
         )
-        opens = _horiz(trial, human) > sep + 1e-9
-        blocked = constraint_active and on_site and sep < theta.dmin_m and not opens
+        keepout_enforced = constraint_active and not keepout_waived
+        if keepout_enforced:
+            speed, ssm_mode = apply_ssm(sep, cmd_speed, on_site=on_site)
+        else:
+            speed, ssm_mode = cmd_speed, "free"
+        trial, _ = _move_toward(spot, hop, speed, config.dt_s)
+        dmin_block = keepout_enforced and on_site and sep < theta.dmin_m
+        ssm_stop = ssm_mode == "stop"
+        blocked = dmin_block or ssm_stop
         if blocked:
-            yield_drop = True
+            evac_requested = True
             wait_s += config.dt_s
             nxt, moved = spot, 0.0
+            speed = 0.0
         else:
             nxt, moved = trial, _dist3(spot, trial)
-        if cargo_at_drop or not spot_loaded:
-            yield_drop = False
+        if evac_requested or keepout_waived:
+            human_dest = refuge
+        if keepout_enforced and on_site and speed > SSM_STOPPED_MPS:
+            si_cmd = safety_index(sep, protective_separation_m(speed))
+            si_min = min(si_min, si_cmd)
 
+        retreating = evac_requested and not keepout_waived
         human_hop = _next_hop(geom, human, human_dest)
         human, _ = _move_toward(human, human_hop, config.human_speed_mps, config.dt_s)
+        if evac_requested and _horiz(human, refuge) < 0.50 and _same_level(human, refuge):
+            keepout_waived = True
+            evac_requested = False
 
         if (not spot_loaded) and need_fetch and _dist3(nxt, store) < 0.40:
-            spot_loaded = True
+            load_timer += config.dt_s
+            arm_load_s += config.dt_s
+            if load_timer >= config.truck_load_s:
+                spot_loaded = True
+                load_timer = 0.0
+        else:
+            load_timer = 0.0
+
         at_drop = _horiz(nxt, drop) < config.handoff_spot_m and _same_level(nxt, drop)
         human_at_drop = _horiz(human, drop) < theta.dmin_m and _same_level(human, drop)
-        if (
-            spot_loaded
-            and at_drop
-            and not cargo_at_drop
-            and not (constraint_active and human_at_drop)
-        ):
-            spot_loaded = False
-            cargo_at_drop = True
+        can_place = (not keepout_enforced) or not (human_at_drop or blocked)
+        if spot_loaded and at_drop and not cargo_at_drop and can_place:
+            place_timer += config.dt_s
+            arm_place_s += config.dt_s
+            if place_timer >= config.drop_place_s:
+                spot_loaded = False
+                cargo_at_drop = True
+                place_timer = 0.0
+        elif not (spot_loaded and at_drop and not cargo_at_drop):
+            place_timer = 0.0
 
         if human_loaded and reserved is not None:
             goal = (reserved.x_m, reserved.y_m, reserved.z_m)
@@ -281,17 +371,32 @@ def run_erection(
 
         spot = nxt
         path_m += moved
-        if in_corridor:
-            corridor_time_s += config.dt_s
         sep = _horiz(spot, human)
         on_site = (
             _on_scaffold(spot[0], geom)
             and _on_scaffold(human[0], geom)
             and _same_level(spot, human)
         )
-        violating = on_site and sep < config.d_safe_m
-        if on_site:
-            min_sep = min(min_sep, sep)
+        realized_speed = 0.0 if blocked else speed
+        sp_m = protective_separation_m(cmd_speed)
+        unsafe = keepout_enforced and on_site and _keepout_violated(
+            sep, cmd_speed, theta.dmin_m
+        )
+        in_corridor_now = not _on_scaffold(spot[0], geom)
+        if in_corridor_now:
+            corridor_time_s += config.dt_s
+        else:
+            scaffold_time_s += config.dt_s
+            if unsafe:
+                scaffold_unsafe_s += config.dt_s
+            else:
+                scaffold_safe_s += config.dt_s
+        si = safety_index(sep, protective_separation_m(realized_speed)) if on_site else float("inf")
+        violating = keepout_enforced and on_site and si < 1.0 and realized_speed > SSM_STOPPED_MPS
+        if on_site and realized_speed > SSM_STOPPED_MPS:
+            min_sep_onsite = min(min_sep_onsite, sep)
+        if keepout_enforced and on_site and realized_speed > SSM_STOPPED_MPS:
+            min_sep_enforced = min(min_sep_enforced, sep)
         if violating:
             violation_s += config.dt_s
         t += config.dt_s
@@ -303,19 +408,30 @@ def run_erection(
                     spot=spot,
                     human=human,
                     sep_m=sep,
-                    spot_speed_mps=0.0 if blocked else speed,
+                    spot_speed_mps=realized_speed,
                     blocked=blocked,
-                    in_corridor=in_corridor,
+                    in_corridor=in_corridor_now,
                     n_filled=max(0, filled_now),
                     current_floor=current_floor,
                     violating=violating,
+                    si=1.0 if si == float("inf") else si,
+                    sp_m=sp_m,
+                    ssm_mode=ssm_mode,
+                    unsafe=unsafe,
+                    retreating=retreating,
                 )
             )
         if floors_completed >= geom.n_floors and not human_loaded:
             break
 
-    if min_sep > 1e8:
+    if min_sep_enforced < 1e8:
+        min_sep = min_sep_enforced
+    elif min_sep_onsite < 1e8:
+        min_sep = min_sep_onsite
+    else:
         min_sep = _horiz(spot, human)
+    if si_min > 1e8:
+        si_min = 1.0
     n_filled = max(0, sum(1 for s in spec.sockets if s.filled) - (n_sockets - n_work))
     return OracleResult(
         completed=floors_completed >= geom.n_floors,
@@ -330,4 +446,11 @@ def run_erection(
         floors_completed=floors_completed,
         timeout_s=config.timeout_s,
         trace=tuple(trace),
+        ssm_s=scaffold_unsafe_s,
+        si_min=si_min,
+        scaffold_safe_s=scaffold_safe_s,
+        scaffold_unsafe_s=scaffold_unsafe_s,
+        arm_load_s=arm_load_s,
+        arm_place_s=arm_place_s,
+        scaffold_time_s=scaffold_time_s,
     )
