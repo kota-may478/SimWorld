@@ -1,52 +1,44 @@
 # Front discovery (`fronts/`)
 
-オラクル本体（`oracle/`）は変えません。このパッケージは \(\theta=(d_{\min},v_{\max})\) を渡して \((J_{\mathrm{eff}}, J_{\mathrm{safe}})\) を集め、非劣解を前線とします。
+オラクル本体（`oracle/`）は \(\theta=(v_{\max},d_{\min})\) を受けて足場滞在 \(\mathrm{TT}\) [s] と実現最小近接 \(S_{\min}\) [m] を返す。第2目的は \(v_{\max}\) そのもの。このパッケージはサンプルを集め、ISO 実行可能な 3 目的非劣解を前線 \(P\) とする。
 
-\(T_{\mathrm{ref}}\) は `REF_THETA = (0.35 m, 1.0 m/s)` の makespan です。TT と Jsafe は 1 を超えてよい。
+制約は完了かつ \(S > S_p\)（有効なあいだ。ISO の \(\mathrm{SI}\ge 1\) と同じ）。コントローラは \(S < S_p^{\mathrm{ISO}}(v)\) または \(S < d_{\min}\) で停止し、人間は退避点へ行く。\(S_{\min}\) は Spot が動いているティックだけ。
+
+提案接地は `grounding.py` の加重和 `proposed(α, β, P)`。絶対語は 3×3、目盛は 5×5。言語は `run_language.py`（Hugging Face）。比較は B1–B5 と SafeOpt（単目的: min TT s.t. \(v_{\max}\le d_{\lim}\)）。
 
 ## 手法の要点
 
-### Grid（格子掃引）
+### Grid（格子掃引）— 前線 \(P\) の主手法
 
-パラメータ箱を等間隔に切る。数学的には \(\Theta\) 上の直積格子。抜け漏れが少なく、決定空間の図が最も均一に埋まる。工学的には「まず全領域を見る」ベースライン。最適性の保証は格子幅まで。コストは \(n_d \times n_v\)。
+パラメータ箱を等間隔に切る。2 変数なら抜け漏れが少なく、決定空間の図が最も均一に埋まる。コストは \(n_v \times n_d\)。
 
-### LHS（Latin hypercube）
+### NSGA-II — 前線 \(P\) の主手法
 
-各軸を \(n\) 区間に割り、各区間からちょうど 1 点を取る層化乱数。格子より少ない点数で周辺まで届きやすい。空間充填サンプリングの定番。一様乱数より成層が良く、格子の「格子線バイアス」を避ける。
+多目的 GA。非劣ソート（ランク）と混雑距離。交叉は SBX、突然変異は polynomial。目的は min TT [s], min \(v_{\max}\), max \(S_{\min}\) [m]。3 目的の混雑距離を使う。
 
-### NSGA-II
+### SafeOpt — 比較ベースライン（前線法ではない）
 
-多目的 GA。非劣ソート（ランク）と混雑距離で「良い前線」と「前線上のばらけ」を同時に保つ。交叉は SBX、突然変異は polynomial。決定空間を進化で埋めるので、良い前線付近に点が集まる。大域探索だが乱数依存。
+TT（符号反転）と T_SSM にそれぞれ RBF GP。保守的な種から、予測上側信頼 \(\mu_{\mathrm{SSM}}+\beta\sigma \le d_{\lim}\) の点だけをクエリする。返すのは incumbents の **1 点**（その TT と T_SSM）。ISO の \(\mathrm{SI}_{\min}\ge 1\) はプラント側。
 
-### Weighted sum（加重和）
-
-\(J = J_{\mathrm{eff}} - w J_{\mathrm{safe}}\) をいくつかの \(w\) で最大化（多スタート山登り）。凸な前線なら加重和で端点が取れる。凹な前線は取れない（スカラー化の限界）。実装は単純で、ペナルティ \(w_3\) と同じ形。
-
-### ε-constraint
-
-各 \(\varepsilon\) について \(J_{\mathrm{safe}} \le \varepsilon\) のもとで \(J_{\mathrm{eff}}\) を最大にする。凹な前線も追える。\(\varepsilon\) の刻みが前線の解像度になる。実行不能な \(\varepsilon\) では点が減る。
-
-### Safe BO（Safe UCB）
-
-\(J_{\mathrm{eff}}\) と \(J_{\mathrm{safe}}\) にそれぞれ RBF GP。候補格子のうち上側信頼 \( \mu_{\mathrm{safe}}+\beta\sigma \le d_{\lim} \) だけをクエリし、その中で \( \mu_{\mathrm{eff}}+\beta\sigma \) 最大を取る（Sui / Berkenkamp 系の SafeOpt の簡易版）。既知の安全シードから外へ広げる。事故側を抑えたいときの工学的動機が論文の Safe BO に近い。逐次なので点数は他より少ないが、最後に予測安全集合を追加評価して図を厚くする。
+LHS / 加重和 / ε-制約モジュールは残してあるが、既定の `run_fronts.py` では走らせない。
 
 ## 実行
 
     MPLBACKEND=Agg python dev/scaffold_hrc/fronts/run_fronts.py
+    MPLBACKEND=Agg python dev/scaffold_hrc/fronts/run_grounding.py --quick --alpha 0.8 --beta 0.5
+    python dev/scaffold_hrc/fronts/run_language.py --text "ゆっくり動いて"
 
-`--quick` はテスト用の少点数。既定は密な予算（格子 16×16、LHS 200 など）。
+`--quick` はテスト用の少点数。
 
 出力（`out/YYYYMMDDHHMMSS/`）:
 
     grid/theta.png
     grid/objectives.png
-    lhs/...
     nsga2/...
-    weighted_sum/...
-    epsilon_constraint/...
-    safe_bo/...
+    safe_bo/...   (incumbent を samples.json に記録)
     comparison_theta.png
     comparison_objectives.png
+    ab_table.png
     fronts.json
 
-各 `*/theta.png` は決定空間の全サンプル（色 = Jeff）と非劣解（星）。`*/objectives.png` は目的空間の全サンプルとパレート前線。
+各 `*/theta.png` は決定空間 \((v_{\max},d_{\min})\) の全サンプル（色 = TT）と非劣解（星）。`*/objectives.png` は 3 目的の pairwise と 3D。接続線は描かない（2 次元射影の偽前線を避ける）。

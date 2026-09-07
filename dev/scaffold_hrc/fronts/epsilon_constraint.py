@@ -1,4 +1,4 @@
-"""Epsilon-constraint: maximize Jeff subject to Jsafe <= eps, for several eps."""
+"""Epsilon-constraint: minimize TT subject to T_SSM <= eps."""
 
 from __future__ import annotations
 

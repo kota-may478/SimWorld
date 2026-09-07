@@ -1,14 +1,16 @@
-"""Safe UCB Bayesian optimization: max Jeff s.t. Jsafe <= d_lim.
+"""SafeOpt-style search: min TT s.t. v_max <= d_lim.
 
 Two independent RBF GPs on a discrete candidate grid. New queries are
-taken only from the predicted safe set (upper confidence of Jsafe).
+taken only from the predicted safe set (upper confidence of T_SSM).
+ISO SI_min >= 1 is enforced by the plant plus iso_pareto filtering, not by d_lim.
+
+This is a constrained single-objective baseline, not a Pareto-front method.
 """
 
 from __future__ import annotations
 
-from typing import List, Sequence, Tuple
-
 import math
+from typing import List, Sequence, Tuple
 
 from constraints.pareto import EvaluatedTheta, Theta
 from fronts.evaluate import OracleEvaluator
@@ -85,12 +87,16 @@ class _GP:
         return mean, var
 
 
-def _candidates(box: ThetaBox, n_dmin: int, n_vmax: int) -> list[Theta]:
+def _theta_key(theta: Theta) -> tuple[float, float]:
+    return (round(theta.vmax_mps, 5), round(theta.dmin_m, 5))
+
+
+def _candidates(box: ThetaBox, n_vmax: int, n_dmin: int) -> list[Theta]:
     pts: list[Theta] = []
-    for i in range(n_dmin):
-        for j in range(n_vmax):
-            u = i / max(n_dmin - 1, 1)
-            v = j / max(n_vmax - 1, 1)
+    for i in range(n_vmax):
+        for j in range(n_dmin):
+            u = i / max(n_vmax - 1, 1)
+            v = j / max(n_dmin - 1, 1)
             pts.append(box.from_unit(u, v))
     return pts
 
@@ -105,31 +111,53 @@ def _near_safe(unit: Vec, safe_units: Sequence[Vec], radius: float = 0.18) -> bo
     return False
 
 
+def default_safe_seeds(box: ThetaBox) -> tuple[Theta, ...]:
+    """Conservative seeds: low v_max, large ranging keep-out."""
+    return (
+        Theta(vmax_mps=0.45, dmin_m=min(box.dmin_hi, 1.45)),
+        box.conservative(),
+        Theta(vmax_mps=0.70, dmin_m=min(box.dmin_hi, 1.35)),
+        Theta(vmax_mps=0.50, dmin_m=min(box.dmin_hi, 1.20)),
+    )
+
+
+def best_safe_incumbent(
+    rows: Sequence[EvaluatedTheta],
+    *,
+    d_lim: float,
+) -> EvaluatedTheta:
+    """Best ISO-feasible point with v_max <= d_lim.
+
+    Falls back to any ISO-feasible point, then to the lowest-TT row if none
+    completed. Callers must inspect .iso_feasible.
+    """
+    if not rows:
+        raise ValueError("SafeOpt produced no evaluations")
+    capped = [r for r in rows if r.iso_feasible and r.jsafe <= d_lim]
+    pool = capped or [r for r in rows if r.iso_feasible] or list(rows)
+    return min(pool, key=lambda r: (r.tt, r.theta.vmax_mps))
+
+
 def run_safe_bo(
     evaluator: OracleEvaluator,
     *,
     n_iter: int = 16,
-    d_lim: float = 0.05,
+    d_lim: float = 0.55,
     beta: float = 1.5,
-    n_dmin: int = 9,
-    n_vmax: int = 7,
+    n_vmax: int = 9,
+    n_dmin: int = 7,
     box: ThetaBox | None = None,
     seed_theta: Theta | None = None,
-    densify: bool = True,
+    densify: bool = False,
 ) -> List[EvaluatedTheta]:
     space = box or ThetaBox()
-    seeds = [
-        seed_theta or Theta(dmin_m=1.45, vmax_mps=0.45),
-        Theta(dmin_m=1.60, vmax_mps=0.30),
-        Theta(dmin_m=1.35, vmax_mps=0.70),
-        Theta(dmin_m=1.20, vmax_mps=0.50),
-    ]
-    cands = _candidates(space, n_dmin, n_vmax)
+    seeds = [seed_theta] if seed_theta is not None else list(default_safe_seeds(space))
+    cands = _candidates(space, n_vmax, n_dmin)
     rows: list[EvaluatedTheta] = []
     queried: set[tuple[float, float]] = set()
     for seed in seeds:
         row = evaluator.evaluate(space.clip(seed))
-        key = (round(row.theta.dmin_m, 5), round(row.theta.vmax_mps, 5))
+        key = _theta_key(row.theta)
         if key in queried:
             continue
         rows.append(row)
@@ -146,12 +174,14 @@ def run_safe_bo(
         mu_e, var_e = gp_eff.predict(units)
         mu_s, var_s = gp_safe.predict(units)
         safe_units = [
-            space.to_unit(r.theta) for r in rows if r.jsafe <= d_lim
+            space.to_unit(r.theta)
+            for r in rows
+            if r.jsafe <= d_lim and r.iso_feasible
         ]
         best_i = -1
         best_acq = -1e18
         for i, theta in enumerate(cands):
-            key = (round(theta.dmin_m, 5), round(theta.vmax_mps, 5))
+            key = _theta_key(theta)
             if key in queried:
                 continue
             u_safe = mu_s[i] + beta * math.sqrt(var_s[i])
@@ -168,18 +198,20 @@ def run_safe_bo(
             break
         nxt = evaluator.evaluate(cands[best_i])
         rows.append(nxt)
-        queried.add(
-            (round(nxt.theta.dmin_m, 5), round(nxt.theta.vmax_mps, 5))
-        )
+        queried.add(_theta_key(nxt.theta))
 
     if densify:
-        safe_units = [space.to_unit(r.theta) for r in rows if r.jsafe <= d_lim]
+        safe_units = [
+            space.to_unit(r.theta)
+            for r in rows
+            if r.jsafe <= d_lim and r.iso_feasible
+        ]
         xs = [space.to_unit(r.theta) for r in rows]
         gp_safe.fit(xs, [r.jsafe for r in rows])
         units = [space.to_unit(th) for th in cands]
         mu_s, var_s = gp_safe.predict(units)
         for i, theta in enumerate(cands):
-            key = (round(theta.dmin_m, 5), round(theta.vmax_mps, 5))
+            key = _theta_key(theta)
             if key in queried:
                 continue
             u_safe = mu_s[i] + beta * math.sqrt(var_s[i])

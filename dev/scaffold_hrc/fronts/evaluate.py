@@ -14,7 +14,7 @@ Key = Tuple[float, float]
 
 
 def _key(theta: Theta) -> Key:
-    return (round(theta.dmin_m, 5), round(theta.vmax_mps, 5))
+    return (round(theta.vmax_mps, 5), round(theta.dmin_m, 5))
 
 
 @dataclass
@@ -36,8 +36,18 @@ class OracleEvaluator:
             config=self.config,
             constraint_active=self.constraint_active,
         )
-        breakdown = score(result, t_ref_s=self.t_ref_s)
-        row = EvaluatedTheta(theta, breakdown.jeff, breakdown.jsafe, result.completed)
+        breakdown = score(result, vmax_mps=theta.vmax_mps)
+        row = EvaluatedTheta(
+            theta,
+            tt=breakdown.tt,
+            t_ssm=theta.vmax_mps,
+            si_min=breakdown.si_min,
+            completed=result.completed,
+            mission_s=result.makespan_s,
+            scaffold_safe_s=result.scaffold_safe_s,
+            scaffold_unsafe_s=result.scaffold_unsafe_s,
+            min_sep_m=result.min_separation_m,
+        )
         self.cache[key] = row
         return row
 
@@ -63,6 +73,6 @@ def measure_t_ref(config: OracleConfig, theta: Theta, *, geom: ScaffoldGeom = ST
         config=quiet,
         constraint_active=True,
     )
-    if result.makespan_s <= 0.0:
-        raise ValueError("reference run produced non-positive makespan")
-    return result.makespan_s
+    if result.scaffold_time_s <= 0.0:
+        raise ValueError("reference run produced non-positive scaffold time")
+    return result.scaffold_time_s

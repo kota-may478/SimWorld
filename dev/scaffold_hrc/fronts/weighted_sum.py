@@ -1,4 +1,4 @@
-"""Scalarization: maximize J = Jeff - w * Jsafe for several penalty weights."""
+"""Scalarization: maximize -TT - w * T_SSM (equiv. min TT + w T_SSM)."""
 
 from __future__ import annotations
 

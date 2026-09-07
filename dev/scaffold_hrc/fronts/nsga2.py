@@ -1,4 +1,4 @@
-"""NSGA-II on (max Jeff, min Jsafe) over the theta box."""
+"""NSGA-II on (min TT [s], min v_max, max min_sep)."""
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ Individual = Tuple[float, float]
 
 
 def _dominates(a: EvaluatedTheta, b: EvaluatedTheta) -> bool:
-    better = a.jeff >= b.jeff and a.jsafe <= b.jsafe
-    strict = a.jeff > b.jeff or a.jsafe < b.jsafe
+    better = a.jeff >= b.jeff and a.jsafe <= b.jsafe and a.jdist <= b.jdist
+    strict = a.jeff > b.jeff or a.jsafe < b.jsafe or a.jdist < b.jdist
     return better and strict
 
 
@@ -54,6 +54,7 @@ def _crowding(pop: Sequence[EvaluatedTheta], ranks: Sequence[int]) -> List[float
         for getter in (
             lambda k: pop[k].jeff,
             lambda k: -pop[k].jsafe,
+            lambda k: -pop[k].jdist,
         ):
             ordered = sorted(members, key=getter)
             crowd[ordered[0]] = float("inf")
@@ -99,9 +100,9 @@ def _sbx(
         c2 = 0.5 * ((x + y) + beta * (y - x))
         return min(hi, max(lo, c1)), min(hi, max(lo, c2))
 
-    d0, d1 = mix(a.dmin_m, b.dmin_m, box.dmin_lo, box.dmin_hi)
     v0, v1 = mix(a.vmax_mps, b.vmax_mps, box.vmax_lo, box.vmax_hi)
-    return Theta(d0, v0), Theta(d1, v1)
+    d0, d1 = mix(a.dmin_m, b.dmin_m, box.dmin_lo, box.dmin_hi)
+    return Theta(vmax_mps=v0, dmin_m=d0), Theta(vmax_mps=v1, dmin_m=d1)
 
 
 def _mutate(rng: random.Random, theta: Theta, box: ThetaBox, eta: float = 16.0) -> Theta:
@@ -116,8 +117,8 @@ def _mutate(rng: random.Random, theta: Theta, box: ThetaBox, eta: float = 16.0) 
         return min(hi, max(lo, x + delta * (hi - lo)))
 
     return Theta(
-        dmin_m=poly(theta.dmin_m, box.dmin_lo, box.dmin_hi),
         vmax_mps=poly(theta.vmax_mps, box.vmax_lo, box.vmax_hi),
+        dmin_m=poly(theta.dmin_m, box.dmin_lo, box.dmin_hi),
     )
 
 
