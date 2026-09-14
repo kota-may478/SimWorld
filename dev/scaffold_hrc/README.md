@@ -1,6 +1,6 @@
 # scaffold_hrc
 
-ICRA 2027 向け **足場 HRC** の Stage 1 プロトタイプです。いま動くのは **Unreal Engine なしの運動学オラクル** です。1 配送のナビ検証ではなく、**1F から 3F まで布板をくみ上げる** シミュレーションです。
+ICRA 2027 向け **足場 HRC** の Stage 1 プロトタイプです。パレート前線 \(P\) は **Unreal Engine なしの運動学オラクル** で作ります。UE5 の `/Game/Maps/Level` は、凍結した \(\theta\) の検証と論文図用です。
 
 ---
 
@@ -12,7 +12,7 @@ Spot が資材置き場でアームに荷を受け取り（所要時間あり）
 - 通路（置き場〜階段入口）は **常に 1.0 m/s、距離制約なし**
 - **階段とデッキ**では \(\theta = (v_{\max}, d_{\min})\) が効く。\(v_{\max}\) は足場上の速度指令。階段ホップは \(v_{\max}\) に \(0.5\) をかけて進む。\(d_{\min}\) は速度によらない測距キープアウト。Spot は \(S < S_p^{\mathrm{ISO}}(v)\) または \(S < d_{\min}\) なら停止する。そのとき Humanoid はその階の退避点 \((9.0, 1.2)\,\mathrm{m}\) へ行く。着いたあと、Spot は制約なしで荷下ろしして足場を出る。
 - 発話の好み \(\alpha \in [0,1]\) は **ISO 実行可能なパレート前線** \(P\) 上の 1 点を選ぶ（LLM は後段。いまは \(\alpha\) を直接渡す）
-- 最小化は \(\mathrm{TT}\)（足場滞在秒、停止を含む）と \(v_{\max}\) [m/s]。制約は有効時 \(S > S_p\) かつ \(S > d_{\min}\)。ミッション全体時間は `mission_s`。
+- 最小化は \(\mathrm{TT}\)（ミッション全体秒。ヤード・通路・階段・足場・待ちを含む）と \(v_{\max}\) [m/s]。制約は有効時 \(S > S_p\) かつ \(S > d_{\min}\)。足場滞在だけは診断用 `scaffold_time_s`。
 - \(\mathrm{SI}_{\min}\ge 1\) は制約。\(T_{\mathrm{viol}}\)（実現 SI<1 の時間）は診断用で目的関数には入れない
 - \(d_{\min}\) は測距キープアウト。\(v_{\max}\) は SSM 停止判定前の足場上速度指令。両方とも設計変数。ISO は \(S>S_p(v)\)、加えて \(S>d_{\min}\)
 
@@ -24,6 +24,14 @@ Spot が資材置き場でアームに荷を受け取り（所要時間あり）
 conda activate simworld
 python -m unittest discover -s dev/scaffold_hrc -p 'test_*.py' -v
 MPLBACKEND=Agg python dev/scaffold_hrc/run_oracle.py --alpha 0.8
+```
+
+フィールド整合（UE 階段・ヤード反映）と論文用条件カードは `docs/field_alignment.md`。パレート再取得:
+
+```bash
+MPLBACKEND=Agg python dev/scaffold_hrc/fronts/run_fronts.py --sockets-per-floor 4
+python dev/scaffold_hrc/scripts/run_condition_cards.py --fronts out/<run>/fronts.json --out out/<run>/cards
+python dev/scaffold_hrc/scripts/make_paper_figures.py --fronts out/<run>/fronts.json --cards out/<run>/cards/condition_cards.json --out out/<run>/paper_figs
 ```
 
 `--sockets-per-floor N` で各階の布板数を減らせます（既定は 10 枚 = 文法の全ソケット）。`--no-constraint` は keep-out 待ちを切った比較用です。
@@ -43,6 +51,46 @@ MPLBACKEND=Agg python dev/scaffold_hrc/run_oracle.py --alpha 0.8
 | `trajectory_time.png` | \(x(t)\)、\(z(t)\)（1F→3F）、離隔、設置枚数 |
 | `trajectory.csv` | 毎 tick |
 | `scaffold_modules.json` | 建枠・ソケット・踏面 |
+
+---
+
+## 2.1 UE5（`/Game/Maps/Level`）
+
+足場キットは使いません。**枠組足場（建地・交差筋違・布板）** を細い箱で組みます。荷受けヤードは local (1.5 m, 2.8 m)、足場の入り口は local (0, 14 m)。昇降は作業床の外の **1.8 m 階段塔**（踊り場＋折り返し）で 3F まで上がります。
+
+### 起動（Windows）
+
+ナビ検証には **Editor の PIE** が必要です（`BP_NavQueryService` と Dynamic NavMesh）。パッケージ版だけでも UnrealCV は起きますが、NavMesh 問い合わせは Editor 側のセットアップ前提です。
+
+**A. 推奨: Unreal Editor で PIE**
+
+1. Windows で SimWorld の `.uproject` を開く。
+2. マップ `/Game/Maps/Level` を開く。
+3. `NavMeshBoundsVolume` がヤード〜3F を覆うこと。入り口 World はおよそ `(400, -2200)`、ヤード（トラック）はおよそ `(-850, -2050)`、デッキは World X 4–14 m（local Y 14–24 m）。`Runtime Generation = Dynamic` 済み。階段の Recast 投影には **Cell Height を 50→10** が必要（2F/3F デッキは現状の 50 でも載る）。
+4. **Play**（PIE）。ログに `Start listening on port 9000` が出るまで待つ。
+5. Jupyter / 別の Python が `:9000` を掴んでいたら止める。
+
+**B. パッケージ実行ファイルだけ見る場合**
+
+PowerShell:
+
+    cd C:\SimWorldServer
+    .\SimWorld.exe -windowed -log /Game/Maps/Level
+
+こちらは配置の目視確認用です。Dynamic NavMesh の問い合わせは A を使ってください。
+
+### WSL から配置
+
+```bash
+conda activate simworld
+python -m unittest discover -s dev/scaffold_hrc -p 'test_*.py' -v
+MPLBACKEND=Agg python dev/scaffold_hrc/ue/plot_layout.py
+python dev/scaffold_hrc/ue/spawn_scaffold_pie.py
+```
+
+`spawn_scaffold_pie.py` は PIE が :9000 で待っているときだけ成功します。失敗したら「Start PIE on /Game/Maps/Level first」と出ます。
+
+凍結 \(\theta\)（12 点 / 命名 7 セル）は `data/frozen_theta_table.json` です。UE 上でパレート探索はしません。
 
 ---
 
@@ -113,7 +161,9 @@ MPLBACKEND=Agg python dev/scaffold_hrc/run_oracle.py --alpha 0.8
 | `oracle/ssm.py` | ISO \(S_p\) / SI / stop |
 | `oracle/objectives.py` | TT, T_SSM, SI_min 制約 |
 | `fronts/` | パレート前線と B1–B5 / 提案接地 |
-| `fronts/grounding.py` | 提案 \(\mathrm{project}(\alpha,P)\) と従来法 |
+| `fronts/frozen.py` | UE 検証用に凍結した 5×5 \(\theta\) 表 |
+| `data/frozen_theta_table.json` | T1–T12 と 7 命名セル |
+| `ue/` | Level マップ配置（寸法モジュール） |
 | `viz.py` | PNG / CSV |
 | `paths.py` | `out/YYYYMMDDHHMMSS` |
 | `run_oracle.py` | 掃引 + 代表ラン |
