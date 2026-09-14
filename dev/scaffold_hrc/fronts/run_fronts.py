@@ -22,6 +22,8 @@ from fronts.space import REF_THETA  # noqa: E402
 from fronts.viz_fronts import write_ab_table_plot, write_front_comparison, write_method_plots  # noqa: E402
 from oracle.simulate import OracleConfig  # noqa: E402
 from paths import make_run_dir  # noqa: E402
+from scene.erect_plan import build_erect_sequence  # noqa: E402
+from scene.geometry import STAGE1_GEOM  # noqa: E402
 
 
 def _dump_rows(rows: tuple[EvaluatedTheta, ...]) -> list[dict]:
@@ -67,12 +69,26 @@ def main() -> int:
     args = parser.parse_args()
 
     run_dir = make_run_dir()
-    base = OracleConfig(sockets_per_floor=args.sockets_per_floor, record_trace=False)
+    n_members = len(build_erect_sequence(STAGE1_GEOM))
+    # Bare full-member erect (~10k s sim at REF_THETA); keep timeout above that.
+    base = OracleConfig(
+        sockets_per_floor=args.sockets_per_floor,
+        record_trace=False,
+        timeout_s=36000.0,
+    )
     config = opt_config(base)
-    t_ref = measure_t_ref(config, REF_THETA)
+    # Full 3F member list (posts/braces/stairs/ledgers/boards). Do not thin boards.
+    bare_boards = None
+    print(f"run_dir={run_dir} n_members={n_members}", flush=True)
+    t_ref = measure_t_ref(config, REF_THETA, bare_boards_per_floor=bare_boards)
+    print(f"t_ref_s={t_ref:.1f}", flush=True)
 
     def fresh() -> OracleEvaluator:
-        return OracleEvaluator(config=config, t_ref_s=t_ref)
+        return OracleEvaluator(
+            config=config,
+            t_ref_s=t_ref,
+            bare_boards_per_floor=bare_boards,
+        )
 
     if args.quick:
         jobs = {
@@ -100,9 +116,11 @@ def main() -> int:
     packed: dict[str, tuple[EvaluatedTheta, ...]] = {}
     incumbents: dict[str, dict] = {}
     for name, job in jobs.items():
+        print(f"start {name}", flush=True)
         ev = fresh()
         job(ev)
         packed[name] = _unique(list(ev.cache.values()))
+        print(f"done {name} n={len(packed[name])}", flush=True)
         method_dir = run_dir / name
         write_method_plots(method_dir, name, packed[name])
         payload = {
@@ -142,9 +160,11 @@ def main() -> int:
 
     meta = {
         "run_dir": str(run_dir),
+        "n_members": n_members,
         "t_ref_s": t_ref,
         "ref_theta": REF_THETA.as_dict(),
         "sockets_per_floor": args.sockets_per_floor,
+        "boards_per_floor": bare_boards,
         "n_unique_evals": sum(len(rows) for rows in packed.values()),
         "methods": {
             name: {

@@ -191,31 +191,36 @@ def write_front_comparison(
     obj_path = out_dir / "comparison_objectives.png"
     theta_path = out_dir / "comparison_theta.png"
 
-    fig, axes = plt.subplots(1, 3, figsize=(14.4, 4.4))
-    pairs = (
+    pair_specs = (
         (
-            axes[0],
+            "comparison_objectives_vmax_tt.png",
             lambda r: r.theta.vmax_mps,
             lambda r: r.tt,
             "v_max (m/s) (lower better)",
             "TT (s) (lower better)",
+            "v_max vs TT",
         ),
         (
-            axes[1],
+            "comparison_objectives_smin_tt.png",
             lambda r: r.min_sep_m,
             lambda r: r.tt,
             "min sep (m) (higher better)",
             "TT (s) (lower better)",
+            "min sep vs TT",
         ),
         (
-            axes[2],
+            "comparison_objectives_vmax_smin.png",
             lambda r: r.theta.vmax_mps,
             lambda r: r.min_sep_m,
             "v_max (m/s) (lower better)",
             "min sep (m) (higher better)",
+            "v_max vs min sep",
         ),
     )
-    for ax, x_of, y_of, xlabel, ylabel in pairs:
+
+    # Combined 1x3 (legacy) + three standalone panels for paper subfigures.
+    fig, axes = plt.subplots(1, 3, figsize=(14.4, 4.4))
+    for ax, (fname, x_of, y_of, xlabel, ylabel, title) in zip(axes, pair_specs):
         for name, rows in methods.items():
             if not rows:
                 continue
@@ -237,6 +242,34 @@ def write_front_comparison(
         ax.set_xlabel(xlabel)
         ax.set_ylabel(ylabel)
         ax.legend(loc="best", frameon=False, fontsize=7)
+
+        fig_i, ax_i = plt.subplots(figsize=(4.8, 4.0))
+        for name, rows in methods.items():
+            if not rows:
+                continue
+            nd = nondominated(tuple(rows))
+            ax_i.scatter(
+                [x_of(r) for r in rows],
+                [y_of(r) for r in rows],
+                s=10,
+                alpha=0.18,
+            )
+            if nd:
+                ax_i.scatter(
+                    [x_of(r) for r in nd],
+                    [y_of(r) for r in nd],
+                    s=36,
+                    marker="*",
+                    label=_title(name),
+                )
+        ax_i.set_xlabel(xlabel)
+        ax_i.set_ylabel(ylabel)
+        ax_i.set_title(title)
+        ax_i.legend(loc="best", frameon=False, fontsize=7)
+        fig_i.tight_layout()
+        fig_i.savefig(out_dir / fname, dpi=160)
+        plt.close(fig_i)
+
     fig.suptitle("All methods: 3-objective nondominated set", fontsize=11)
     fig.tight_layout()
     fig.savefig(obj_path, dpi=140)

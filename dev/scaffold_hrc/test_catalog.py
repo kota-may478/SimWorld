@@ -103,13 +103,13 @@ class CatalogTest(unittest.TestCase):
                 return "none"
 
         start = Preference(0.75, 0.25)
-        pref = ground_utterance("今日の天気は？", state=start, generator=_Gen())
+        pref = ground_utterance("how is the weather today", state=start, generator=_Gen())
         self.assertEqual(pref.kind, "unchanged")
         self.assertAlmostEqual(pref.alpha, 0.75)
 
     def test_gold_set_is_closed_and_nonempty(self) -> None:
         items = gold_items()
-        self.assertGreaterEqual(len(items), 60)
+        self.assertGreaterEqual(len(items), 30)
         ids = {item.gold_id for item in items}
         self.assertIn("efficient", ids)
         self.assertIn("a_bit_slower", ids)

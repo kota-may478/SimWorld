@@ -40,9 +40,10 @@ def main() -> int:
         record_trace=False,
         dt_s=0.25 if args.quick else 0.1,
         timeout_s=480.0 if args.quick else 7200.0,
-        erect_s=0.25 if args.quick else 30.0,
-        truck_load_s=0.25 if args.quick else 8.0,
-        drop_place_s=0.25 if args.quick else 8.0,
+        erect_s=0.25 if args.quick else 10.0,
+        truck_load_s=0.25 if args.quick else 10.0,
+        drop_place_s=0.25 if args.quick else 10.0,
+        assembler_pickup_s=0.25 if args.quick else 5.0,
     )
     config = opt_config(base)
     t_ref = measure_t_ref(config, REF_THETA)

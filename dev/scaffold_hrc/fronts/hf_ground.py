@@ -36,7 +36,7 @@ class HuggingFaceEmbedder:
         if self._model is None:
             from sentence_transformers import SentenceTransformer
 
-            self._model = SentenceTransformer(self.model_id)
+            self._model = SentenceTransformer(self.model_id, local_files_only=True)
         vectors = self._model.encode(list(texts), normalize_embeddings=True)
         return [list(map(float, row)) for row in vectors]
 

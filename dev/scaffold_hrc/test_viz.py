@@ -37,6 +37,7 @@ class VizTest(unittest.TestCase):
                 erect_s=0.25,
                 truck_load_s=0.25,
                 drop_place_s=0.25,
+                assembler_pickup_s=0.25,
                 sockets_per_floor=2,
             ),
         )
