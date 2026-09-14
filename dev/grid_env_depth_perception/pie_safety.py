@@ -28,7 +28,7 @@ import grid_env_hri_simulation as geh  # noqa: E402
 
 # Destroy batch on Level: longer than grid_env defaults.
 POST_DESTROY_SETTLE_S = 8.0
-PRE_SPAWN_COOLDOWN_S = 6.0
+PRE_SPAWN_COOLDOWN_S = 8.0
 DESTROY_BETWEEN_S = 0.55
 SPAWN_SETTLE_S = 0.65
 BATCH_PAUSE_EVERY = 2

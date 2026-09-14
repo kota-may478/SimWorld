@@ -553,12 +553,14 @@ class UnrealCV(object):
     # Robot System
     ##############################################################
 
-    def dog_move(self, robot_name, action):
+    def dog_move(self, robot_name, action, wait=True):
         """Apply transition action.
 
         Args:
             robot_name: Robot name.
             action: Action in the form [speed, duration, direction].
+            wait: If True, block for ``duration`` seconds. False lets another
+                actor move while this gait plays in-engine.
         """
         [speed, duration, direction] = action
         if speed < 0:
@@ -574,7 +576,8 @@ class UnrealCV(object):
         cmd = f'vbp {robot_name} Move_Speed {speed} {duration} {direction}'
         with self.lock:
             self.client.request(cmd)
-        time.sleep(duration)
+        if wait:
+            time.sleep(duration)
 
     def dog_rotate(self, robot_name, action):
         """Apply rotation action.

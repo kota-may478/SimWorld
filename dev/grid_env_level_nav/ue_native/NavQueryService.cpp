@@ -9,6 +9,7 @@
 #include "NavigationPath.h"
 #include "NavigationSystem.h"
 #include "NavModifierComponent.h"
+#include "NavMesh/RecastNavMesh.h"
 
 ANavQueryService::ANavQueryService()
 {
@@ -19,6 +20,25 @@ ANavQueryService::ANavQueryService()
 static UNavigationSystemV1* GetNavSys(UWorld* World)
 {
 	return World ? UNavigationSystemV1::GetCurrent(World) : nullptr;
+}
+
+static void ApplyRecastClimbSettings(UNavigationSystemV1* NavSys)
+{
+	if (!NavSys)
+	{
+		return;
+	}
+	ANavigationData* NavData = NavSys->GetDefaultNavDataInstance(
+		FNavigationSystem::DontCreate);
+	ARecastNavMesh* Recast = Cast<ARecastNavMesh>(NavData);
+	if (!Recast)
+	{
+		return;
+	}
+	// Level RecastNavMesh_0 keeps AgentMaxSlope=44, which voxelizes 43° ramps as walls.
+	Recast->AgentRadius = 15.0f;
+	Recast->AgentMaxSlope = 60.0f;
+	Recast->AgentMaxStepHeight = 45.0f;
 }
 
 static bool ProjectToNav(
@@ -846,6 +866,7 @@ FString ANavQueryService::NavRebuild()
 		}
 	}
 
+	ApplyRecastClimbSettings(NavSys);
 	NavSys->Build();
 	return FString::Printf(
 		TEXT("{\"ok\":true,\"dirty_margin_cm\":%.3f,\"planning_obstacles\":%d}"),
@@ -884,6 +905,7 @@ FString ANavQueryService::NavRebuildDirtyRegion(
 
 	const float Margin = FMath::Max(0.0f, MarginCm);
 	NavSys->AddDirtyArea(DirtyBox.ExpandBy(Margin), ENavigationDirtyFlag::All);
+	ApplyRecastClimbSettings(NavSys);
 	NavSys->Build();
 	const FVector Size = DirtyBox.GetSize();
 	return FString::Printf(

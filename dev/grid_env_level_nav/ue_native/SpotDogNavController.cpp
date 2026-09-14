@@ -157,15 +157,13 @@ bool ASpotDogNavController::SnapPawnToNavMesh(APawn* InPawn) const
 
 	const FVector Current = InPawn->GetActorLocation();
 	const float LateralSnapCm = Dist2D(Current, NavLoc.Location);
-	if (LateralSnapCm > MaxLateralSnapCm)
+	FVector Snapped = Current;
+	Snapped.Z = NavLoc.Location.Z + NavSnapFootOffsetCm;
+	if (bSnapAfterMove && LateralSnapCm <= MaxLateralSnapCm)
 	{
-		return false;
+		Snapped.X = NavLoc.Location.X;
+		Snapped.Y = NavLoc.Location.Y;
 	}
-
-	const FVector Snapped(
-		NavLoc.Location.X,
-		NavLoc.Location.Y,
-		Current.Z);
 	InPawn->SetActorLocation(
 		Snapped,
 		false,
@@ -209,10 +207,7 @@ bool ASpotDogNavController::ApplyDirectMoveToward(
 			nullptr,
 			ETeleportType::TeleportPhysics);
 	}
-	if (bSnapAfterMove)
-	{
-		return SnapPawnToNavMesh(InPawn);
-	}
+	SnapPawnToNavMesh(InPawn);
 	return true;
 }
 
@@ -247,10 +242,7 @@ bool ASpotDogNavController::ApplyDirectMoveAlongHeading(
 			nullptr,
 			ETeleportType::TeleportPhysics);
 	}
-	if (bSnapAfterMove)
-	{
-		return SnapPawnToNavMesh(InPawn);
-	}
+	SnapPawnToNavMesh(InPawn);
 	return true;
 }
 
@@ -874,7 +866,8 @@ void ASpotDogNavController::TickFollowPath()
 			{
 				const FVector SnappedLoc = ControlledPawn->GetActorLocation();
 				if (bHasLastProgressLocation
-					&& Dist2D(SnappedLoc, LastProgressLocation) < StuckMoveThresholdCm)
+					&& Dist2D(SnappedLoc, LastProgressLocation) < StuckMoveThresholdCm
+					&& FMath::Abs(SnappedLoc.Z - LastProgressLocation.Z) < StuckMoveThresholdCm)
 				{
 					UnchangedCommandCycles++;
 					if (UnchangedCommandCycles >= StuckUnchangedCycles)

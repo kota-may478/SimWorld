@@ -101,7 +101,7 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "NavMove")
 	bool bUseDirectTranslation = true;
 
-	/** When true, snap pawn XY onto navigable mesh after motion (see bSnapAfterMove). */
+	/** When true, snap pawn height onto the NavMesh (XY only if bSnapAfterMove). */
 	UPROPERTY(EditAnywhere, Category = "NavMove")
 	bool bSnapPawnToNavMesh = true;
 
@@ -112,6 +112,10 @@ protected:
 	/** Skip nav snap when lateral correction would exceed this [cm]. */
 	UPROPERTY(EditAnywhere, Category = "NavMove")
 	float MaxLateralSnapCm = 12.0f;
+
+	/** Added to projected nav Z so the pawn center sits above the mesh. */
+	UPROPERTY(EditAnywhere, Category = "NavMove")
+	float NavSnapFootOffsetCm = 50.0f;
 
 	/** Retry ProjectPointToNavigation with this extent [cm] when the default fails. */
 	UPROPERTY(EditAnywhere, Category = "NavMove")

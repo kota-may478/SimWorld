@@ -11,6 +11,7 @@ import grid_env_hri_simulation as geh
 from pie_safety import (
     DESTROY_BETWEEN_S,
     PieSessionLost,
+    SPAWN_SETTLE_S,
     cooldown_before_spawn_batch,
     require_live_ucv,
     settle_after_destroy_batch,
@@ -21,6 +22,15 @@ RECONNECT_BACKOFF_S = 5.0
 RECONNECT_INITIAL_WAIT_S = 12.0
 RECONNECT_PROBE_TIMEOUT_S = 90.0
 MAX_SPAWN_ATTEMPTS = 4
+
+
+def _vrun_slomo(ucv, rate: float) -> None:
+    """Best-effort console slomo. Spawn at 1x; restore playback after."""
+    try:
+        with ucv.lock:
+            ucv.client.request(f"vrun slomo {float(rate):g}", -1)
+    except Exception:
+        pass
 
 
 def ping_ok(ucv) -> bool:
@@ -78,17 +88,39 @@ def spawn_bp_resilient(
     name: str,
     *,
     timeout_s: float = 120.0,
+    playback_rate: float = 1.0,
+    pause_playback: bool = True,
 ) -> Tuple[bool, object]:
-    """spawn_bp with reconnect retries (destroy→spawn often resets :9000 once)."""
+    """spawn_bp with reconnect retries (destroy→spawn often resets :9000 once).
+
+    After a destroy batch, keep ``pause_playback=True`` (slomo 1 + settle).
+    In-mission member/cargo spawns should pass ``pause_playback=False`` so
+    locomotion at slomo N is not frozen for a wall second per piece.
+    """
+    rate = max(0.25, float(playback_rate))
+    pause = bool(pause_playback)
     for attempt in range(1, MAX_SPAWN_ATTEMPTS + 1):
         ucv = ensure_live_or_reconnect(ucv, reason=f"spawn {name!r} attempt {attempt}")
-        if geh.spawn_bp(ucv, bp_path, name, timeout_s=timeout_s):
+        if pause:
+            _vrun_slomo(ucv, 1.0)
+            tick_settle(ucv, settle_s=0.40, ticks=2)
+        ok = geh.spawn_bp(ucv, bp_path, name, timeout_s=timeout_s)
+        if ok:
+            if pause:
+                tick_settle(ucv, settle_s=SPAWN_SETTLE_S, ticks=1)
+                if rate != 1.0:
+                    _vrun_slomo(ucv, rate)
             return True, ucv
         print(f"[PieSpawn] spawn_bp retry {attempt}/{MAX_SPAWN_ATTEMPTS} for {name!r}")
         if ping_ok(ucv):
-            tick_settle(ucv, settle_s=4.0, ticks=3)
+            if pause:
+                tick_settle(ucv, settle_s=4.0, ticks=3)
+                if rate != 1.0:
+                    _vrun_slomo(ucv, rate)
             continue
         ucv = recover_ucv(ucv, reason=f"spawn_bp failed {name!r}")
+        if pause and rate != 1.0:
+            _vrun_slomo(ucv, rate)
     return False, ucv
 
 
@@ -104,8 +136,17 @@ def destroy_actor_level(ucv, name: str) -> Tuple[bool, object]:
     return gone, ucv
 
 
-def destroy_by_prefix(ucv, prefix: str) -> Tuple[int, object]:
-    names: List[str] = sorted(n for n in geh.actor_names(ucv) if n.startswith(prefix))
+def destroy_by_prefix(
+    ucv,
+    prefix: str,
+    skip: Tuple[str, ...] = (),
+) -> Tuple[int, object]:
+    skip_set = set(skip)
+    names: List[str] = sorted(
+        n
+        for n in geh.actor_names(ucv)
+        if n.startswith(prefix) and n not in skip_set
+    )
     removed = 0
     for name in names:
         gone, ucv = destroy_actor_level(ucv, name)
