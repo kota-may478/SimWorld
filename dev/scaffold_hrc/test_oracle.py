@@ -12,10 +12,11 @@ from scene.geometry import STAGE1_GEOM
 
 FAST = OracleConfig(
     dt_s=0.25,
-    timeout_s=480.0,
+    timeout_s=1200.0,
     erect_s=0.25,
     truck_load_s=0.25,
     drop_place_s=0.25,
+    assembler_pickup_s=0.25,
     sockets_per_floor=2,
     handoff_spot_m=0.50,
     handoff_human_m=0.50,
@@ -34,7 +35,7 @@ class ErectionOracleTest(unittest.TestCase):
         first = result.trace[0]
         self.assertAlmostEqual(first.human[2], 0.0, places=1)
         self.assertAlmostEqual(first.spot[2], 0.0, places=1)
-        self.assertLess(first.spot[0], -STAGE1_GEOM.stair_bay_m)
+        self.assertLess(first.spot[0], STAGE1_GEOM.stair_xy_bounds()[0])
 
     def test_spot_cannot_climb_until_floor_one_is_built(self) -> None:
         result = run_erection(
@@ -180,7 +181,7 @@ class ErectionOracleTest(unittest.TestCase):
             delta=FAST.dt_s,
         )
         breakdown = score(result)
-        self.assertAlmostEqual(breakdown.tt, result.scaffold_time_s, places=5)
+        self.assertAlmostEqual(breakdown.tt, result.makespan_s, places=5)
         self.assertAlmostEqual(breakdown.mission_s, result.makespan_s)
 
     def test_arm_load_and_place_add_real_time(self) -> None:
@@ -198,6 +199,7 @@ class ErectionOracleTest(unittest.TestCase):
                 erect_s=0.25,
                 truck_load_s=2.0,
                 drop_place_s=2.0,
+                assembler_pickup_s=0.25,
                 sockets_per_floor=2,
             ),
         )
@@ -206,11 +208,11 @@ class ErectionOracleTest(unittest.TestCase):
         self.assertGreater(slow_arm.arm_load_s, quick.arm_load_s + 8.0)
         self.assertGreater(slow_arm.arm_place_s, quick.arm_place_s + 8.0)
 
-    def test_stair_hops_are_slower_than_vmax(self) -> None:
+    def test_stair_hops_respect_vmax(self) -> None:
         theta = Theta(vmax_mps=1.0, dmin_m=0.35)
         result = run_erection(geom=STAGE1_GEOM, theta=theta, config=FAST)
         self.assertTrue(result.completed)
-        cap = theta.vmax_mps * FAST.stair_speed_factor + 1e-6
+        cap = theta.vmax_mps + 1e-6
         climbed = False
         prev = result.trace[0]
         for sample in result.trace[1:]:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for TT scoring (scaffold dwell in seconds)."""
+"""Unit tests for TT scoring (full mission time in seconds)."""
 
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ def _result(
 
 
 class ObjectiveScoreTest(unittest.TestCase):
-    def test_tt_is_scaffold_dwell_seconds_including_stops(self) -> None:
+    def test_tt_is_full_mission_time_including_corridor(self) -> None:
         out = score(
             _result(
                 filled=15,
@@ -54,8 +54,9 @@ class ObjectiveScoreTest(unittest.TestCase):
             )
         )
         self.assertAlmostEqual(out.tcr, 0.5)
-        self.assertAlmostEqual(out.tt, 44.0)
+        self.assertAlmostEqual(out.tt, 80.0)
         self.assertAlmostEqual(out.mission_s, 80.0)
+        self.assertAlmostEqual(out.scaffold_time_s, 44.0)
         self.assertTrue(out.iso_feasible)
 
     def test_tt_does_not_use_a_reference_ratio(self) -> None:
@@ -68,7 +69,7 @@ class ObjectiveScoreTest(unittest.TestCase):
             ),
             t_ref_s=40.0,
         )
-        self.assertAlmostEqual(out.tt, 12.5)
+        self.assertAlmostEqual(out.tt, 50.0)
 
     def test_iso_infeasible_when_si_min_below_one(self) -> None:
         out = score(

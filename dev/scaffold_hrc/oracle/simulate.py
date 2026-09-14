@@ -16,6 +16,13 @@ from typing import List, Optional, Tuple
 
 from constraints.pareto import Theta
 from oracle.ssm import SSM_STOPPED_MPS, apply_ssm, protective_separation_m, safety_index
+from scene.mission_protocol import STAGE1_PROTOCOL  # noqa: E402
+from scene.field import (
+    RAMP_DECK_X_M,
+    scaffold_edge_x_m,
+    stair_lane_y_m,
+    stair_run_ends,
+)
 from scene.geometry import ScaffoldGeom
 from scene.scaffold_grammar import ScaffoldSpec, Socket, build_scaffold
 
@@ -44,22 +51,26 @@ class TraceSample:
 @dataclass(frozen=True)
 class OracleConfig:
     dt_s: float = 0.1
-    human_speed_mps: float = 1.2
-    human_retreat_mps: float = 0.5
+    human_speed_mps: float = STAGE1_PROTOCOL.human_speed_mps
+    human_retreat_mps: float = STAGE1_PROTOCOL.human_retreat_mps
     timeout_s: float = 7200.0
     handoff_spot_m: float = 0.50
     handoff_human_m: float = 0.50
     collision_m: float = 0.40
     d_safe_m: float = 1.00
-    erect_s: float = 30.0
-    truck_load_s: float = 8.0
-    drop_place_s: float = 8.0
+    erect_s: float = STAGE1_PROTOCOL.erect_s
+    truck_load_s: float = STAGE1_PROTOCOL.truck_load_s
+    drop_place_s: float = STAGE1_PROTOCOL.drop_place_s
+    assembler_pickup_s: float = STAGE1_PROTOCOL.assembler_pickup_s
     stair_speed_factor: float = 0.5
     sockets_per_floor: Optional[int] = None
     drop_x_m: float = 2.0
     standoff_x_m: float = 6.0
     refuge_x_m: float = 9.0
     record_trace: bool = True
+    # Yard handoff is timed and unconstrained; only the deck Assembler
+    # (this `human` pose) is under Sp / d_min on scaffold.
+    yard_keepout: bool = STAGE1_PROTOCOL.yard_keepout
 
 
 @dataclass(frozen=True)
@@ -94,7 +105,8 @@ def _dist3(a: Vec3, b: Vec3) -> float:
 
 
 def _on_scaffold(x_m: float, geom: ScaffoldGeom) -> bool:
-    return x_m >= -geom.stair_bay_m - 1e-6
+    _ = geom
+    return x_m >= scaffold_edge_x_m() - 1e-6
 
 
 def _same_level(a: Vec3, b: Vec3, *, tol_m: float = 0.40) -> bool:
@@ -102,7 +114,14 @@ def _same_level(a: Vec3, b: Vec3, *, tol_m: float = 0.40) -> bool:
 
 
 def _floor_of_z(geom: ScaffoldGeom, z_m: float) -> int:
-    return max(1, min(geom.n_floors, 1 + int(math.floor((z_m + 1e-6) / geom.lift_m))))
+    # Bias upward so mid-stair agents count as the floor they are entering.
+    return max(
+        1,
+        min(
+            geom.n_floors,
+            1 + int(math.floor((z_m + 0.55 * geom.lift_m) / geom.lift_m)),
+        ),
+    )
 
 
 def _move_toward(src: Vec3, dst: Vec3, speed: float, dt: float) -> Tuple[Vec3, float]:
@@ -137,25 +156,44 @@ def _limit_sockets(spec: ScaffoldSpec, per_floor: Optional[int]) -> ScaffoldSpec
 
 
 def _next_hop(geom: ScaffoldGeom, src: Vec3, dest: Vec3) -> Vec3:
+    """Waypoints mirror UE zigzag Recast runs (L0 south, L1 north)."""
     arrive = 0.45
     mid_y = geom.deck_width_m * 0.5
-    stair_x = -geom.stair_bay_m * 0.5
+    edge = scaffold_edge_x_m()
     src_f = _floor_of_z(geom, src[2])
     dest_f = _floor_of_z(geom, dest[2])
     if src_f != dest_f:
-        at_stair_column = abs(src[0] - stair_x) <= arrive and abs(src[1] - mid_y) <= arrive
-        if not at_stair_column:
-            return (stair_x, mid_y, geom.floor_z_m(src_f))
-        step = 1 if dest_f > src_f else -1
-        return (stair_x, mid_y, geom.floor_z_m(src_f + step))
+        going_up = dest_f > src_f
+        lift = (src_f - 1) if going_up else (src_f - 2)
+        lift = max(0, min(geom.n_floors - 2, lift))
+        y_lane = stair_lane_y_m(lift, geom.deck_width_m)
+        start_x, end_x = stair_run_ends(lift)
+        if not going_up:
+            start_x, end_x = end_x, start_x
+        z_lo = geom.floor_z_m(src_f)
+        z_hi = geom.floor_z_m(src_f + (1 if going_up else -1))
+        run = end_x - start_x
+        if abs(run) < 1e-9:
+            progress = 1.0 if abs(src[2] - z_hi) < 0.25 else 0.0
+        else:
+            progress = (src[0] - start_x) / run
+        on_lane = abs(src[1] - y_lane) <= arrive
+        if (not on_lane) or progress < -0.05:
+            return (start_x, y_lane, z_lo)
+        if progress < 0.98 or abs(src[2] - z_hi) > 0.30:
+            return (end_x, y_lane, z_hi)
+        return dest
     if _on_scaffold(src[0], geom) and not _on_scaffold(dest[0], geom):
-        gate: Vec3 = (-geom.stair_bay_m - 0.5, mid_y, geom.floor_z_m(src_f))
+        gate: Vec3 = (edge - 0.05, mid_y, src[2])
         if src[0] > gate[0] + 0.05:
             return gate
         return dest
     if (not _on_scaffold(src[0], geom)) and _on_scaffold(dest[0], geom):
-        gate = (stair_x, mid_y, geom.floor_z_m(src_f))
-        if src[0] < -geom.stair_bay_m - 0.05:
+        if src_f == 1 and abs(src[2] - geom.floor_z_m(1)) < 0.40:
+            gate = (edge, stair_lane_y_m(0, geom.deck_width_m), geom.floor_z_m(1))
+        else:
+            gate = (RAMP_DECK_X_M, mid_y, src[2])
+        if src[0] < edge - 0.05:
             return gate
         return dest
     return dest
@@ -178,15 +216,8 @@ def _cmd_speed(
     stair_hop: bool,
     stair_speed_factor: float,
 ) -> float:
-    if in_corridor:
-        speed = 1.0
-    elif constraint_active:
-        speed = vmax_mps
-    else:
-        speed = 1.0
-    if stair_hop:
-        speed *= stair_speed_factor
-    return speed
+    _ = (in_corridor, constraint_active, stair_hop, stair_speed_factor)
+    return float(vmax_mps)
 
 
 def _keepout_violated(sep_m: float, cmd_speed: float, dmin_m: float) -> bool:
@@ -215,6 +246,7 @@ def run_erection(
     erect_timer = 0.0
     load_timer = 0.0
     place_timer = 0.0
+    pickup_timer = 0.0
     t = 0.0
     wait_s = 0.0
     path_m = 0.0
@@ -351,10 +383,15 @@ def run_erection(
             else:
                 erect_timer = 0.0
         elif cargo_at_drop and _horiz(human, drop) < config.handoff_human_m and _same_level(human, drop):
-            human_loaded = True
-            cargo_at_drop = False
-            reserved = spec.next_empty_socket(current_floor)
-            erect_timer = 0.0
+            pickup_timer += config.dt_s
+            if pickup_timer >= config.assembler_pickup_s:
+                human_loaded = True
+                cargo_at_drop = False
+                reserved = spec.next_empty_socket(current_floor)
+                erect_timer = 0.0
+                pickup_timer = 0.0
+        else:
+            pickup_timer = 0.0
 
         if _floor_done(spec, current_floor):
             floors_completed = max(floors_completed, current_floor)

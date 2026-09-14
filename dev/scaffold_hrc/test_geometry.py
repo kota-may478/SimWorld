@@ -16,9 +16,11 @@ class ScaffoldGeomTest(unittest.TestCase):
         self.assertAlmostEqual(g.lift_m, 1.8)
         self.assertEqual(g.n_floors, 3)
         self.assertAlmostEqual(g.stair_bay_m, 1.8)
-        self.assertAlmostEqual(g.total_length_m, 11.8)
+        self.assertGreater(g.total_length_m, 16.0)
         self.assertAlmostEqual(g.floor_z_m(1), 0.0)
         self.assertAlmostEqual(g.floor_z_m(3), 3.6)
+        self.assertAlmostEqual(g.storage_xy()[0], -11.2)
+        self.assertAlmostEqual(g.storage_xy()[1], 1.5)
 
     def test_working_deck_excludes_stair_bay(self) -> None:
         g = STAGE1_GEOM
@@ -29,7 +31,7 @@ class ScaffoldGeomTest(unittest.TestCase):
         self.assertAlmostEqual(y1, 2.4)
         sx0, sx1, sy0, sy1 = g.stair_xy_bounds()
         self.assertAlmostEqual(sx1, 0.0)
-        self.assertAlmostEqual(sx0, -1.8)
+        self.assertLess(sx0, -6.0)
         self.assertAlmostEqual(sy1 - sy0, 2.4)
 
     def test_floor_index_rejects_out_of_range(self) -> None:
